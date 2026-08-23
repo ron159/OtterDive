@@ -158,19 +158,19 @@ jobs:
           }
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: npm install --global @tauri-apps/cli@^2
 
       - name: Build validation bundles
         if: github.event_name == 'workflow_dispatch'
         working-directory: crates/otterdive-app
-        run: cargo tauri build ${{ matrix.build_args }} --features custom-protocol --no-sign --config tauri.validation.conf.json
+        run: tauri build ${{ matrix.build_args }} --features custom-protocol --no-sign --config tauri.validation.conf.json
 
       - name: Build release bundles
         if: startsWith(github.ref, 'refs/tags/v')
         working-directory: crates/otterdive-app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: cargo tauri build ${{ matrix.build_args }} --features custom-protocol
+        run: tauri build ${{ matrix.build_args }} --features custom-protocol
 
       - name: Collect release assets
         shell: bash
