@@ -178,7 +178,8 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let save = macos_menu_item(app, "file.save", "保存", Some("CmdOrCtrl+S"))?;
     let save_all = macos_menu_item(app, "file.save_all", "全部保存", Some("CmdOrCtrl+Alt+S"))?;
     let save_as = macos_menu_item(app, "file.save_as", "另存为…", Some("CmdOrCtrl+Shift+S"))?;
-    let print = macos_menu_item(app, "file.print", "打印为 PDF…", Some("CmdOrCtrl+P"))?;
+    let export_pdf = macos_menu_item(app, "file.export_pdf", "导出带大纲 PDF…", None)?;
+    let print = macos_menu_item(app, "file.print", "系统打印…", Some("CmdOrCtrl+P"))?;
     let close_document = macos_menu_item(app, "file.close", "关闭当前标签", Some("CmdOrCtrl+W"))?;
     let file_menu = SubmenuBuilder::new(app, "文件")
         .items(&[&new_document, &new_markdown])
@@ -190,7 +191,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &close_workspace,
         ])
         .separator()
-        .items(&[&save, &save_all, &save_as, &print])
+        .items(&[&save, &save_all, &save_as, &export_pdf, &print])
         .separator()
         .item(&close_document)
         .build()?;
@@ -559,6 +560,7 @@ pub fn run() {
             open_path,
             reopen_path_with_encoding,
             pick_save_path,
+            pick_pdf_save_path,
             transfer_image_file,
             save_document,
             pick_workspace_path,
@@ -580,6 +582,7 @@ pub fn run() {
             set_default_app_candidate,
             supported_languages,
             supported_encodings,
+            crate::pdf_export::export_pdf_with_outline,
             crate::analyse::run_analyse,
             crate::analyse::run_analyse_path,
             crate::analyse::cancel_analyse,
@@ -704,6 +707,14 @@ async fn save_document(request: SaveRequest) -> Result<DocumentDto, String> {
 #[tauri::command]
 fn pick_save_path(request: DialogPathRequest) -> Result<Option<String>, String> {
     Ok(configure_dialog(request)
+        .save_file()
+        .map(|path| path.display().to_string()))
+}
+
+#[tauri::command]
+fn pick_pdf_save_path(request: DialogPathRequest) -> Result<Option<String>, String> {
+    Ok(configure_dialog(request)
+        .add_filter("PDF", &["pdf"])
         .save_file()
         .map(|path| path.display().to_string()))
 }

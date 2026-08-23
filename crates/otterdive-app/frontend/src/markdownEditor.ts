@@ -210,12 +210,36 @@ export async function renderMarkdownPreviewDiagrams(root: HTMLElement, options: 
 }
 
 function assignHeadingIds(root: HTMLElement) {
-  const used = new Set<string>();
-  root.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6").forEach((heading) => {
+  const headings = [...root.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")];
+  const headingSet = new Set(headings);
+  const used = new Set(
+    [...root.querySelectorAll<HTMLElement>("[id]")]
+      .filter((element) => !headingSet.has(element))
+      .map((element) => element.id),
+  );
+  const preservedHeadingIds = new Set<string>();
+  for (const heading of headings) {
+    const existingId = heading.id;
+    if (!existingId || used.has(existingId) || preservedHeadingIds.has(existingId)) continue;
+    preservedHeadingIds.add(existingId);
+    used.add(existingId);
+  }
+  const emittedHeadingIds = new Set<string>();
+  const nextSuffix = new Map<string, number>();
+  headings.forEach((heading) => {
+    const existingId = heading.id;
+    if (existingId && preservedHeadingIds.has(existingId) && !emittedHeadingIds.has(existingId)) {
+      emittedHeadingIds.add(existingId);
+      return;
+    }
     const base = githubHeadingSlug(heading.textContent ?? "") || "heading";
-    let id = base;
-    let suffix = 1;
-    while (used.has(id)) id = `${base}-${suffix++}`;
+    let suffix = nextSuffix.get(base) ?? 0;
+    let id = suffix === 0 ? base : `${base}-${suffix}`;
+    while (used.has(id)) {
+      suffix += 1;
+      id = `${base}-${suffix}`;
+    }
+    nextSuffix.set(base, suffix + 1);
     used.add(id);
     heading.id = id;
   });

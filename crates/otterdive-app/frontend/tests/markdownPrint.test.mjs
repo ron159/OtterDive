@@ -5,6 +5,7 @@ import ts from "typescript";
 
 const markdownPrint = await loadTypeScriptModule("../src/markdownPrint.ts");
 const mainSource = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const markdownEditorSource = fs.readFileSync(new URL("../src/markdownEditor.ts", import.meta.url), "utf8");
 const appSource = fs.readFileSync(new URL("../../src/app.rs", import.meta.url), "utf8");
 const stylesSource = fs.readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const capabilities = JSON.parse(
@@ -15,6 +16,7 @@ test("uses a clean Markdown title as the suggested PDF name", () => {
   assert.equal(markdownPrint.markdownPrintTitle("Guide.md"), "Guide");
   assert.equal(markdownPrint.markdownPrintTitle(" 设计说明.markdown "), "设计说明");
   assert.equal(markdownPrint.markdownPrintTitle(""), "OtterDive Markdown");
+  assert.equal(markdownPrint.markdownPdfFileName("Guide.md"), "Guide.pdf");
 });
 
 test("namespaces only valid internal print targets", () => {
@@ -29,13 +31,29 @@ test("namespaces only valid internal print targets", () => {
   ]);
 });
 
-test("wires Markdown printing through the app and native macOS menu", () => {
-  assert.match(mainSource, /command\("file\.print", "打印为 PDF"/);
+test("wires outline export and system printing through the app", () => {
+  assert.match(mainSource, /command\("file\.exportPdf", "导出带大纲 PDF"/);
+  assert.match(mainSource, /command\("file\.print", "系统打印"/);
+  assert.match(mainSource, /invoke<string>\("export_pdf_with_outline"/);
   assert.match(mainSource, /renderMarkdownPreviewDiagrams/);
   assert.match(mainSource, /refreshMarkdownResources\(root, doc\)/);
+  assert.match(appSource, /"file\.export_pdf"/);
   assert.match(appSource, /"file\.print"/);
+  assert.match(appSource, /crate::pdf_export::export_pdf_with_outline/);
   assert.match(stylesSource, /@media print/);
   assert.ok(capabilities.permissions.includes("core:webview:allow-print"));
+});
+
+test("reserves existing footnote targets before assigning heading ids", () => {
+  assert.match(markdownEditorSource, /querySelectorAll<HTMLElement>\("\[id\]"\)/);
+  assert.match(markdownEditorSource, /filter\(\(element\) => !headingSet\.has\(element\)\)/);
+  assert.match(markdownEditorSource, /preservedHeadingIds\.add\(existingId\)/);
+  assert.match(markdownEditorSource, /emittedHeadingIds\.add\(existingId\)/);
+});
+
+test("does not count front matter as a Markdown heading", () => {
+  assert.match(mainSource, /const frontMatterEnd = frontMatterMarkers\[lines\[0\] \?\? ""\]/);
+  assert.match(mainSource, /for \(let index = contentStart; index < lines\.length/);
 });
 
 async function loadTypeScriptModule(relativePath) {

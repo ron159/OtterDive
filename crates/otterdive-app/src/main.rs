@@ -3,8 +3,9 @@
 #[cfg(all(not(debug_assertions), not(feature = "custom-protocol")))]
 compile_error!("OtterDive release builds must enable the custom-protocol feature");
 
-mod app;
 mod analyse;
+mod app;
+mod pdf_export;
 mod session_store;
 mod shell_integration;
 

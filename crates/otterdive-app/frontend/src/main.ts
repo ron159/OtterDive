@@ -138,7 +138,11 @@ import {
 } from "./analysePanel";
 import { mapWithConcurrency, type BatchResult } from "./openBatch";
 import { finishOpenPerformance, startOpenPerformance } from "./openPerformance";
-import { printMarkdownDocument } from "./markdownPrint";
+import {
+  createMarkdownPdfExport,
+  markdownPdfFileName,
+  printMarkdownDocument,
+} from "./markdownPrint";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
@@ -1722,7 +1726,11 @@ function registerAppCommands() {
     command("file.save", "保存", "文件", () => saveActive(), { allowInInput: true }),
     command("file.saveAs", "另存为", "文件", () => saveAsActive(), { allowInInput: true }),
     command("file.saveAll", "保存全部", "文件", () => saveAll(), { allowInInput: true }),
-    command("file.print", "打印为 PDF", "文件", printActiveMarkdown, {
+    command("file.exportPdf", "导出带大纲 PDF", "文件", exportActiveMarkdownPdf, {
+      allowInInput: true,
+      when: () => isMarkdownLikeDocument(),
+    }),
+    command("file.print", "系统打印", "文件", printActiveMarkdown, {
       allowInInput: true,
       when: () => isMarkdownLikeDocument(),
     }),
@@ -1977,7 +1985,7 @@ function bindActions() {
   $("saveButton").addEventListener("click", saveActive);
   $("saveAsButton").addEventListener("click", saveAsActive);
   $("saveAllButton").addEventListener("click", saveAll);
-  $("printButton").addEventListener("click", () => void printActiveMarkdown());
+  $("printButton").addEventListener("click", () => void exportActiveMarkdownPdf());
   $("undoButton").addEventListener("click", undoEditor);
   $("redoButton").addEventListener("click", redoEditor);
   $("uppercaseButton").addEventListener("click", transformToUppercase);
@@ -2367,6 +2375,7 @@ function bindAppMenus() {
   bindMenuAction("menuSaveButton", () => void saveActive());
   bindMenuAction("menuSaveAllButton", () => void saveAll());
   bindMenuAction("menuSaveAsButton", () => void saveAsActive());
+  bindMenuAction("menuExportPdfButton", () => void exportActiveMarkdownPdf());
   bindMenuAction("menuPrintButton", () => void printActiveMarkdown());
   bindMenuAction("menuCloseButton", () => void closeDocument(activeDocument().id));
   bindMenuAction("menuUndoButton", undoEditor);
@@ -2409,6 +2418,7 @@ function bindNativeMenuListener() {
       "file.save": () => void saveActive(),
       "file.save_all": () => void saveAll(),
       "file.save_as": () => void saveAsActive(),
+      "file.export_pdf": () => void exportActiveMarkdownPdf(),
       "file.print": () => void printActiveMarkdown(),
       "file.close": () => void closeDocument(activeDocument().id),
       "edit.uppercase": transformToUppercase,
@@ -4048,6 +4058,48 @@ async function saveAsActive() {
   await saveDocument(doc, true);
 }
 
+async function exportActiveMarkdownPdf() {
+  const doc = activeDocument();
+  if (!isMarkdownLikeDocument(doc)) {
+    log("仅 Markdown 文档支持导出带大纲 PDF");
+    return;
+  }
+  syncMarkdownModelFromEditor(doc);
+  const outputPath = await invoke<string | null>("pick_pdf_save_path", {
+    request: {
+      defaultDir: preferredDialogDirectory(doc),
+      fileName: markdownPdfFileName(doc.title),
+    },
+  });
+  if (!outputPath) return;
+
+  const markdown = documentText(doc);
+  try {
+    const result = await withBusy(`导出带大纲 PDF ${doc.title}`, async () => {
+      const { renderMarkdownPreviewDiagrams, renderMarkdownPreviewHtml } = await loadMarkdownModule();
+      const prepared = await createMarkdownPdfExport({
+        title: doc.title,
+        markdown,
+        renderHtml: (source) => renderMarkdownPreviewHtml(source, { darkMode: false }),
+        renderDiagrams: (root) => renderMarkdownPreviewDiagrams(root, { darkMode: false }),
+        prepareResources: (root) => refreshMarkdownResources(root, doc),
+        onResourceWarning: (message) => log(`Markdown PDF 导出提示：${message}`),
+      });
+      const browser = await invoke<string>("export_pdf_with_outline", {
+        request: {
+          outputPath,
+          html: prepared.html,
+          headingCount: prepared.headingCount,
+        },
+      });
+      return { browser, headingCount: prepared.headingCount };
+    }, { lockEditor: false });
+    log(`已通过 ${result.browser} 导出带大纲 PDF：${outputPath}（${result.headingCount} 个标题）`);
+  } catch (error) {
+    log(`带大纲 PDF 导出失败：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function printActiveMarkdown() {
   const doc = activeDocument();
   if (!isMarkdownLikeDocument(doc)) {
@@ -4066,7 +4118,7 @@ async function printActiveMarkdown() {
       prepareResources: (root) => refreshMarkdownResources(root, doc),
       onResourceWarning: (message) => log(`Markdown 打印提示：${message}，PDF 中可能显示为空白`),
     }), { lockEditor: false });
-    log("系统打印流程已启动；选择虚拟打印机或“另存为 PDF”，文档内目标与外部链接可继续跳转");
+    log("系统打印流程已启动；PDF 大纲和文档内跳转是否保留取决于所选打印驱动");
   } catch (error) {
     log(`Markdown 打印失败：${error instanceof Error ? error.message : String(error)}`);
   }
@@ -6375,6 +6427,7 @@ function renderChrome() {
   $<HTMLButtonElement>("menuSaveButton").disabled = $<HTMLButtonElement>("saveButton").disabled;
   $<HTMLButtonElement>("menuSaveAsButton").disabled = $<HTMLButtonElement>("saveAsButton").disabled;
   $<HTMLButtonElement>("menuSaveAllButton").disabled = $<HTMLButtonElement>("saveAllButton").disabled;
+  $<HTMLButtonElement>("menuExportPdfButton").disabled = !markdownDocument;
   $<HTMLButtonElement>("menuPrintButton").disabled = !markdownDocument;
   $<HTMLButtonElement>("menuUppercaseButton").disabled = doc.readOnly;
   $<HTMLButtonElement>("menuLowercaseButton").disabled = doc.readOnly;
@@ -6427,7 +6480,7 @@ function commandElementIds(): Record<string, string> {
   saveButton: "file.save",
   saveAsButton: "file.saveAs",
   saveAllButton: "file.saveAll",
-  printButton: "file.print",
+  printButton: "file.exportPdf",
   undoButton: "edit.undo",
   redoButton: "edit.redo",
   uppercaseButton: "edit.uppercase",
@@ -6447,6 +6500,7 @@ function commandElementIds(): Record<string, string> {
   menuSaveButton: "file.save",
   menuSaveAsButton: "file.saveAs",
   menuSaveAllButton: "file.saveAll",
+  menuExportPdfButton: "file.exportPdf",
   menuPrintButton: "file.print",
   menuCloseButton: "file.close",
   menuUndoButton: "edit.undo",
@@ -7912,8 +7966,20 @@ function markdownHeadingLocations(markdown: string) {
   const lines = markdown.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   const headings: Array<{ level: number; text: string; line: number }> = [];
   let fence: { marker: "`" | "~"; length: number } | null = null;
+  const frontMatterMarkers: Record<string, string> = {
+    "---": "---",
+    "+++": "+++",
+    ";;;": ";;;",
+    "{": "}",
+  };
+  const frontMatterEnd = frontMatterMarkers[lines[0] ?? ""];
+  let contentStart = 0;
+  if (frontMatterEnd) {
+    const closingIndex = lines.findIndex((line, index) => index > 0 && line === frontMatterEnd);
+    if (closingIndex > 0) contentStart = closingIndex + 1;
+  }
 
-  for (let index = 0; index < lines.length; index += 1) {
+  for (let index = contentStart; index < lines.length; index += 1) {
     const line = lines[index];
     const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (fence) {
