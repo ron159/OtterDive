@@ -74,6 +74,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Pilcrow,
+  Printer,
   Redo2,
   RefreshCw,
   Replace,
@@ -137,6 +138,7 @@ import {
 } from "./analysePanel";
 import { mapWithConcurrency, type BatchResult } from "./openBatch";
 import { finishOpenPerformance, startOpenPerformance } from "./openPerformance";
+import { printMarkdownDocument } from "./markdownPrint";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
@@ -1120,6 +1122,7 @@ const lucideIcons: Record<string, IconNode> = {
   PanelRightClose,
   PanelRightOpen,
   Pilcrow,
+  Printer,
   Redo2,
   RefreshCw,
   Replace,
@@ -1719,6 +1722,10 @@ function registerAppCommands() {
     command("file.save", "保存", "文件", () => saveActive(), { allowInInput: true }),
     command("file.saveAs", "另存为", "文件", () => saveAsActive(), { allowInInput: true }),
     command("file.saveAll", "保存全部", "文件", () => saveAll(), { allowInInput: true }),
+    command("file.print", "打印为 PDF", "文件", printActiveMarkdown, {
+      allowInInput: true,
+      when: () => isMarkdownLikeDocument(),
+    }),
     command("file.close", "关闭当前标签", "文件", async () => { await closeDocument(activeDocument().id); }, { allowInInput: true }),
     command("file.reopenClosed", "重新打开已关闭标签", "文件", reopenClosedDocument, {
       allowInInput: true,
@@ -1970,6 +1977,7 @@ function bindActions() {
   $("saveButton").addEventListener("click", saveActive);
   $("saveAsButton").addEventListener("click", saveAsActive);
   $("saveAllButton").addEventListener("click", saveAll);
+  $("printButton").addEventListener("click", () => void printActiveMarkdown());
   $("undoButton").addEventListener("click", undoEditor);
   $("redoButton").addEventListener("click", redoEditor);
   $("uppercaseButton").addEventListener("click", transformToUppercase);
@@ -2359,6 +2367,7 @@ function bindAppMenus() {
   bindMenuAction("menuSaveButton", () => void saveActive());
   bindMenuAction("menuSaveAllButton", () => void saveAll());
   bindMenuAction("menuSaveAsButton", () => void saveAsActive());
+  bindMenuAction("menuPrintButton", () => void printActiveMarkdown());
   bindMenuAction("menuCloseButton", () => void closeDocument(activeDocument().id));
   bindMenuAction("menuUndoButton", undoEditor);
   bindMenuAction("menuRedoButton", redoEditor);
@@ -2400,6 +2409,7 @@ function bindNativeMenuListener() {
       "file.save": () => void saveActive(),
       "file.save_all": () => void saveAll(),
       "file.save_as": () => void saveAsActive(),
+      "file.print": () => void printActiveMarkdown(),
       "file.close": () => void closeDocument(activeDocument().id),
       "edit.uppercase": transformToUppercase,
       "edit.lowercase": transformToLowercase,
@@ -4036,6 +4046,30 @@ async function saveActive() {
 async function saveAsActive() {
   const doc = activeDocument();
   await saveDocument(doc, true);
+}
+
+async function printActiveMarkdown() {
+  const doc = activeDocument();
+  if (!isMarkdownLikeDocument(doc)) {
+    log("仅 Markdown 文档支持打印为 PDF");
+    return;
+  }
+  syncMarkdownModelFromEditor(doc);
+  const markdown = documentText(doc);
+  try {
+    const { renderMarkdownPreviewDiagrams, renderMarkdownPreviewHtml } = await loadMarkdownModule();
+    await withBusy(`准备打印 ${doc.title}`, () => printMarkdownDocument({
+      title: doc.title,
+      markdown,
+      renderHtml: (source) => renderMarkdownPreviewHtml(source, { darkMode: false }),
+      renderDiagrams: (root) => renderMarkdownPreviewDiagrams(root, { darkMode: false }),
+      prepareResources: (root) => refreshMarkdownResources(root, doc),
+      onResourceWarning: (message) => log(`Markdown 打印提示：${message}，PDF 中可能显示为空白`),
+    }), { lockEditor: false });
+    log("系统打印流程已启动；选择虚拟打印机或“另存为 PDF”，文档内目标与外部链接可继续跳转");
+  } catch (error) {
+    log(`Markdown 打印失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function saveDocument(doc: OpenDocument, forceSaveAs: boolean) {
@@ -6335,11 +6369,13 @@ function renderChrome() {
   $<HTMLButtonElement>("saveButton").disabled = doc.readOnly || (Boolean(doc.path) && !doc.dirty);
   $<HTMLButtonElement>("saveAsButton").disabled = doc.readOnly;
   $<HTMLButtonElement>("saveAllButton").disabled = !state.documents.some((item) => item.dirty && !item.readOnly);
+  $<HTMLButtonElement>("printButton").disabled = !markdownDocument;
   $<HTMLButtonElement>("uppercaseButton").disabled = doc.readOnly;
   $<HTMLButtonElement>("lowercaseButton").disabled = doc.readOnly;
   $<HTMLButtonElement>("menuSaveButton").disabled = $<HTMLButtonElement>("saveButton").disabled;
   $<HTMLButtonElement>("menuSaveAsButton").disabled = $<HTMLButtonElement>("saveAsButton").disabled;
   $<HTMLButtonElement>("menuSaveAllButton").disabled = $<HTMLButtonElement>("saveAllButton").disabled;
+  $<HTMLButtonElement>("menuPrintButton").disabled = !markdownDocument;
   $<HTMLButtonElement>("menuUppercaseButton").disabled = doc.readOnly;
   $<HTMLButtonElement>("menuLowercaseButton").disabled = doc.readOnly;
   const formattingDisabled = doc.readOnly || isMarkdownWysiwygActive(doc);
@@ -6391,6 +6427,7 @@ function commandElementIds(): Record<string, string> {
   saveButton: "file.save",
   saveAsButton: "file.saveAs",
   saveAllButton: "file.saveAll",
+  printButton: "file.print",
   undoButton: "edit.undo",
   redoButton: "edit.redo",
   uppercaseButton: "edit.uppercase",
@@ -6410,6 +6447,7 @@ function commandElementIds(): Record<string, string> {
   menuSaveButton: "file.save",
   menuSaveAsButton: "file.saveAs",
   menuSaveAllButton: "file.saveAll",
+  menuPrintButton: "file.print",
   menuCloseButton: "file.close",
   menuUndoButton: "edit.undo",
   menuRedoButton: "edit.redo",

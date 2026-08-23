@@ -6693,3 +6693,152 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
     }
   }
 }
+
+.markdown-print-root {
+  position: fixed;
+  top: 0;
+  left: -100000px;
+  width: 720px;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  opacity: 0;
+  pointer-events: none;
+  contain: none;
+  background: #ffffff;
+}
+
+.markdown-print-root .markdown-preview-body {
+  max-width: none;
+}
+
+@media print {
+  @page {
+    margin: 16mm 18mm 18mm;
+  }
+
+  html,
+  body.markdown-printing {
+    width: auto !important;
+    height: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+
+  body.markdown-printing > :not(.markdown-print-root) {
+    display: none !important;
+  }
+
+  body.markdown-printing > .markdown-print-root {
+    --surface: #ffffff;
+    --surface-2: #f6f8fa;
+    --surface-3: #eef2f6;
+    --line: #cbd5e1;
+    --line-soft: #dbe3ec;
+    --table-border-color: #cbd5e1;
+    --text: #111827;
+    --text-2: #334155;
+    --text-3: #64748b;
+    --primary: #1d4ed8;
+    --primary-2: #eff6ff;
+    --editor-font-size: 10.5pt;
+    display: block !important;
+    position: static !important;
+    inset: auto !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    opacity: 1 !important;
+    color: var(--text) !important;
+    background: #ffffff !important;
+    pointer-events: auto;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .markdown-print-root .markdown-preview-body {
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .markdown-print-root .markdown-body {
+    color: var(--text);
+    background: #ffffff;
+    font-family: var(--font);
+    font-size: 10.5pt;
+    line-height: 1.62;
+  }
+
+  .markdown-print-root h1,
+  .markdown-print-root h2,
+  .markdown-print-root h3,
+  .markdown-print-root h4,
+  .markdown-print-root h5,
+  .markdown-print-root h6 {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  .markdown-print-root h1 {
+    font-size: 23pt;
+  }
+
+  .markdown-print-root h2 {
+    font-size: 18pt;
+  }
+
+  .markdown-print-root h3 {
+    font-size: 14pt;
+  }
+
+  .markdown-print-root p,
+  .markdown-print-root li {
+    orphans: 3;
+    widows: 3;
+  }
+
+  .markdown-print-root pre,
+  .markdown-print-root blockquote,
+  .markdown-print-root table,
+  .markdown-print-root figure,
+  .markdown-print-root .markdown-diagram {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .markdown-print-root pre {
+    overflow: visible;
+  }
+
+  .markdown-print-root pre code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-print-root thead {
+    display: table-header-group;
+  }
+
+  .markdown-print-root img,
+  .markdown-print-root svg {
+    max-width: 100% !important;
+    max-height: 245mm;
+    object-fit: contain;
+  }
+
+  .markdown-print-root a {
+    color: #1d4ed8;
+    text-decoration: underline;
+    text-decoration-thickness: 0.06em;
+    text-underline-offset: 0.12em;
+  }
+
+  body.dark.markdown-printing .markdown-print-root pre .token {
+    color: inherit !important;
+  }
+}

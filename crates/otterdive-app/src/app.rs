@@ -178,6 +178,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let save = macos_menu_item(app, "file.save", "保存", Some("CmdOrCtrl+S"))?;
     let save_all = macos_menu_item(app, "file.save_all", "全部保存", Some("CmdOrCtrl+Alt+S"))?;
     let save_as = macos_menu_item(app, "file.save_as", "另存为…", Some("CmdOrCtrl+Shift+S"))?;
+    let print = macos_menu_item(app, "file.print", "打印为 PDF…", Some("CmdOrCtrl+P"))?;
     let close_document = macos_menu_item(app, "file.close", "关闭当前标签", Some("CmdOrCtrl+W"))?;
     let file_menu = SubmenuBuilder::new(app, "文件")
         .items(&[&new_document, &new_markdown])
@@ -189,7 +190,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &close_workspace,
         ])
         .separator()
-        .items(&[&save, &save_all, &save_as])
+        .items(&[&save, &save_all, &save_as, &print])
         .separator()
         .item(&close_document)
         .build()?;
@@ -233,7 +234,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         app,
         "search.command_palette",
         "命令面板…",
-        Some("CmdOrCtrl+P"),
+        Some("CmdOrCtrl+Shift+P"),
     )?;
     let search_menu = SubmenuBuilder::new(app, "查找")
         .items(&[&find, &replace])
