@@ -338,6 +338,7 @@ interface SessionSnapshot {
   activePath: string | null;
   activeDraftId: string | null;
   darkMode: boolean;
+  themePreference: ThemePreference;
   themeOverrides?: ThemeOverrides;
   contextMenuEnabled?: boolean;
   defaultAppCandidateEnabled?: boolean;
@@ -459,6 +460,7 @@ type WorkspaceSearchStatus = "idle" | "searching" | "previewing" | "applying" | 
 type WorkspaceSearchAction = "search" | "preview" | "apply";
 type RenderWhitespaceMode = "none" | "selection" | "all";
 type ThemeMode = "light" | "dark";
+type ThemePreference = "system" | ThemeMode;
 type ThemeColorKey = "background" | "surface" | "input" | "editor" | "text" | "accent";
 type ThemePalette = Record<ThemeColorKey, string>;
 type ThemeOverrides = Record<ThemeMode, Partial<ThemePalette>>;
@@ -737,6 +739,8 @@ const treeExtensionIcons: Record<string, TreeIconDescriptor> = {
 };
 
 const SESSION_KEY = "otterdive.session.v1";
+const THEME_PREFERENCE_KEY = "otterdive.theme.preference";
+const SYSTEM_THEME_QUERY = window.matchMedia("(prefers-color-scheme: dark)");
 const DEFAULT_SKIP_DIRS = ".git;target;target-codex-run;node_modules;dist;build";
 const DRAFT_ID_PREFIX = "draft";
 const DEFAULT_AUTO_SAVE_DELAY_SECONDS = 5;
@@ -835,6 +839,8 @@ const DEFAULT_ANALYSE_SETTINGS: AnalysePanelSettings = {
   workingPatterns: [],
 };
 
+const initialThemePreference = readInitialThemePreference();
+
 const state = {
   documents: [] as OpenDocument[],
   activeId: 0,
@@ -852,7 +858,8 @@ const state = {
   markdownEditMode: "wysiwyg" as MarkdownEditMode,
   markdownContentWidth: "typora" as MarkdownContentWidth,
   doubleClickDocumentType: "txt" as DoubleClickDocumentType,
-  darkMode: false,
+  themePreference: initialThemePreference,
+  darkMode: resolveThemeDark(initialThemePreference),
   themeOverrides: { light: {}, dark: {} } as ThemeOverrides,
   panel: "results" as "results" | "preview" | "logs",
   logs: [] as string[],
@@ -1271,6 +1278,8 @@ function setIconSlot(slot: HTMLElement | null, name: string) {
   slot.innerHTML = iconSvg(name);
 }
 
+syncDocumentThemeState();
+SYSTEM_THEME_QUERY.addEventListener("change", handleSystemThemeChange);
 bootstrap();
 
 function bootstrap() {
@@ -1308,7 +1317,7 @@ function bootstrap() {
 
   editor = monaco.editor.create($("editor"), {
     model: ensureDocumentModel(initial),
-    theme: "otterdive-light",
+    theme: state.darkMode ? "otterdive-dark" : "otterdive-light",
     automaticLayout: true,
     fontFamily: resolveEditorFontStack(),
     fontSize: state.fontSize,
@@ -2127,8 +2136,9 @@ function bindActions() {
   document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach((button) => {
     button.addEventListener("click", () => selectSettingsSection(button.dataset.settingsSection as SettingsSection));
   });
-  $("settingsThemeLight").addEventListener("click", () => setThemeMode(false));
-  $("settingsThemeDark").addEventListener("click", () => setThemeMode(true));
+  $("settingsThemeSystem").addEventListener("click", () => setThemePreference("system"));
+  $("settingsThemeLight").addEventListener("click", () => setThemePreference("light"));
+  $("settingsThemeDark").addEventListener("click", () => setThemePreference("dark"));
   for (const [key, id] of Object.entries(THEME_COLOR_CONTROLS) as Array<[ThemeColorKey, string]>) {
     $<HTMLInputElement>(id).addEventListener("input", (event) => {
       setThemeColor(key, (event.currentTarget as HTMLInputElement).value);
@@ -3052,9 +3062,15 @@ function bindOpenRequestListener() {
   }).catch((error) => log(`监听系统打开请求失败：${String(error)}`));
 }
 
-function setThemeMode(darkMode: boolean) {
+function setThemePreference(preference: ThemePreference) {
+  state.themePreference = preference;
+  persistThemePreference();
+  applyResolvedTheme(resolveThemeDark(preference));
+}
+
+function applyResolvedTheme(darkMode: boolean) {
   state.darkMode = darkMode;
-  document.body.classList.toggle("dark", state.darkMode);
+  syncDocumentThemeState();
   applyThemePalette();
   defineThemes();
   monaco.editor.setTheme(state.darkMode ? "otterdive-dark" : "otterdive-light");
@@ -3063,6 +3079,11 @@ function setThemeMode(darkMode: boolean) {
   setThemeButton();
   renderSettingsMenu();
   scheduleSessionSave();
+}
+
+function handleSystemThemeChange() {
+  if (state.themePreference !== "system") return;
+  applyResolvedTheme(SYSTEM_THEME_QUERY.matches);
 }
 
 function setThemeColor(key: ThemeColorKey, value: string) {
@@ -6017,6 +6038,37 @@ function currentThemeMode(): ThemeMode {
   return state.darkMode ? "dark" : "light";
 }
 
+function isThemePreference(value: unknown): value is ThemePreference {
+  return value === "system" || value === "light" || value === "dark";
+}
+
+function readInitialThemePreference(): ThemePreference {
+  const hinted = document.documentElement.dataset.themePreference;
+  if (isThemePreference(hinted)) return hinted;
+  try {
+    const stored = localStorage.getItem(THEME_PREFERENCE_KEY);
+    if (isThemePreference(stored)) return stored;
+  } catch {}
+  return "system";
+}
+
+function resolveThemeDark(preference: ThemePreference) {
+  return preference === "dark" || (preference === "system" && SYSTEM_THEME_QUERY.matches);
+}
+
+function persistThemePreference() {
+  try {
+    localStorage.setItem(THEME_PREFERENCE_KEY, state.themePreference);
+  } catch {}
+}
+
+function syncDocumentThemeState() {
+  document.body.classList.toggle("dark", state.darkMode);
+  document.documentElement.classList.toggle("startup-dark", state.darkMode);
+  document.documentElement.dataset.themePreference = state.themePreference;
+  document.documentElement.style.colorScheme = state.darkMode ? "dark" : "light";
+}
+
 function resolvedThemePalette(mode: ThemeMode): ThemePalette {
   return { ...DEFAULT_THEME_PALETTES[mode], ...state.themeOverrides[mode] };
 }
@@ -6702,8 +6754,9 @@ function renderSettingsMenu() {
   document.querySelectorAll<HTMLElement>("[data-settings-panel]").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.settingsPanel === state.settingsSection);
   });
-  $("settingsThemeLight").classList.toggle("active", !state.darkMode);
-  $("settingsThemeDark").classList.toggle("active", state.darkMode);
+  $("settingsThemeSystem").classList.toggle("active", state.themePreference === "system");
+  $("settingsThemeLight").classList.toggle("active", state.themePreference === "light");
+  $("settingsThemeDark").classList.toggle("active", state.themePreference === "dark");
   const palette = resolvedThemePalette(currentThemeMode());
   for (const [key, id] of Object.entries(THEME_COLOR_CONTROLS) as Array<[ThemeColorKey, string]>) {
     $<HTMLInputElement>(id).value = palette[key];
@@ -9569,12 +9622,13 @@ async function restoreSession() {
     applySearchSnapshot(snapshot);
     setFindView(state.findView, false);
 
-    state.darkMode = Boolean(snapshot.darkMode);
-    document.body.classList.toggle("dark", state.darkMode);
-    applyThemePalette();
-    defineThemes();
-    monaco.editor.setTheme(state.darkMode ? "otterdive-dark" : "otterdive-light");
-    setThemeButton();
+    state.themePreference = isThemePreference(snapshot.themePreference)
+      ? snapshot.themePreference
+      : typeof snapshot.darkMode === "boolean"
+        ? snapshot.darkMode ? "dark" : "light"
+        : state.themePreference;
+    persistThemePreference();
+    applyResolvedTheme(resolveThemeDark(state.themePreference));
 
     const rightSidebarOpen = Boolean(snapshot.rightSidebarOpen);
     $("findPopover").classList.toggle("hidden", !rightSidebarOpen);
@@ -9896,7 +9950,7 @@ async function saveSession() {
   if (activeBeforeSave) activeBeforeSave.viewState = editor.saveViewState() ?? undefined;
   const active = activeDocument();
   const snapshot: SessionSnapshot = {
-    version: 10,
+    version: 11,
     openFiles: uniquePaths(state.documents.flatMap((doc) => (doc.path ? [doc.path] : []))),
     draftDocuments: draftDocumentSnapshots(),
     documentOrder: state.documents.map(documentSessionKey),
@@ -9922,6 +9976,7 @@ async function saveSession() {
     activePath: active?.path ?? null,
     activeDraftId: active && !active.path ? ensureDraftId(active) : null,
     darkMode: state.darkMode,
+    themePreference: state.themePreference,
     themeOverrides: state.themeOverrides,
     contextMenuEnabled: state.contextMenuEnabled,
     defaultAppCandidateEnabled: state.defaultAppCandidateEnabled,
@@ -10009,10 +10064,16 @@ function uniquePaths(paths: string[]) {
 }
 
 function toggleTheme() {
-  setThemeMode(!state.darkMode);
+  setThemePreference(state.darkMode ? "light" : "dark");
 }
 
 function setThemeButton() {
+  if (state.themePreference === "system") {
+    const resolved = state.darkMode ? "深色" : "亮色";
+    setButtonLabel("themeButton", `系统·${resolved}`, `当前跟随系统（${resolved}），点击切换主题`);
+    setIconSlot($("themeButton").querySelector<HTMLElement>(".icon-slot"), "MonitorCog");
+    return;
+  }
   setButtonLabel("themeButton", state.darkMode ? "亮色" : "深色", state.darkMode ? "切换到亮色" : "切换到深色");
   setIconSlot($("themeButton").querySelector<HTMLElement>(".icon-slot"), state.darkMode ? "Sun" : "Moon");
 }

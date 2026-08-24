@@ -3,9 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/png" href="/icon.png" />
     <title>OtterDive</title>
+    <script>
+      (() => {
+        const preferenceKey = "otterdive.theme.preference";
+        let preference = "system";
+        try {
+          const stored = localStorage.getItem(preferenceKey);
+          if (stored === "system" || stored === "light" || stored === "dark") preference = stored;
+        } catch {}
+        const dark = preference === "dark"
+          || (preference === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.themePreference = preference;
+        document.documentElement.classList.toggle("startup-dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      })();
+    </script>
     <style>
+      :root {
+        --boot-background: #e8eef6;
+        --boot-text: #334155;
+      }
+
+      html.startup-dark {
+        --boot-background: #121722;
+        --boot-text: #c8d1df;
+      }
+
       html,
       body {
         width: 100%;
@@ -14,7 +40,7 @@
       }
 
       body {
-        background: #e8eef6;
+        background: var(--boot-background);
         overflow: hidden;
       }
 
@@ -28,8 +54,8 @@
         z-index: 9999;
         display: grid;
         place-items: center;
-        color: #334155;
-        background: #e8eef6;
+        color: var(--boot-text);
+        background: var(--boot-background);
         font: 600 13px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
       }
 
@@ -383,9 +409,17 @@
           <section class="settings-panel active" data-settings-panel="appearance">
             <header class="settings-section-head">
               <strong>主题</strong>
-              <span>浅色优先，深色作为快速切换</span>
+              <span>跟随系统，也可以固定使用亮色或深色</span>
             </header>
             <div class="theme-grid">
+              <button class="theme-card" id="settingsThemeSystem">
+                <span class="theme-swatches system-swatch">
+                  <i></i><i></i><i></i>
+                </span>
+                <strong>跟随系统</strong>
+                <span>System · 自动匹配系统外观</span>
+                <em>当前</em>
+              </button>
               <button class="theme-card" id="settingsThemeLight">
                 <span class="theme-swatches">
                   <i></i><i></i><i></i>

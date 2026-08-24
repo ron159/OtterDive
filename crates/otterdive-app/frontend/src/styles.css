@@ -4079,9 +4079,9 @@ tbody tr.result-active {
 
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
   gap: 10px;
-  max-width: 600px;
+  max-width: 900px;
 }
 
 .theme-card {
@@ -4177,6 +4177,18 @@ tbody tr.result-active {
 
 .theme-swatches.dark-swatch i:nth-child(3) {
   background: #858bff;
+}
+
+.theme-swatches.system-swatch i:nth-child(1) {
+  background: linear-gradient(135deg, #f8fafc 0 50%, #121722 50% 100%);
+}
+
+.theme-swatches.system-swatch i:nth-child(2) {
+  background: linear-gradient(135deg, #ffffff 0 50%, #202838 50% 100%);
+}
+
+.theme-swatches.system-swatch i:nth-child(3) {
+  background: linear-gradient(135deg, #3238d8 0 50%, #858bff 50% 100%);
 }
 
 .theme-color-grid {
