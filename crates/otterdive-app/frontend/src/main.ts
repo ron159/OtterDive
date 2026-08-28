@@ -750,6 +750,7 @@ const DEFAULT_SHELL_FONT_PRESET: ShellFontPreset = "system";
 const DEFAULT_EDITOR_FONT_PRESET: EditorFontPreset = "cascadia";
 const DEFAULT_SHELL_FONT_SIZE = 14;
 const DEFAULT_EDITOR_FONT_SIZE = 14;
+const DEFAULT_SEARCH_RESULT_FONT_SIZE = 11;
 const DEFAULT_EXPLORER_WIDTH = 272;
 const MIN_EXPLORER_WIDTH = 180;
 const MAX_EXPLORER_WIDTH = 640;
@@ -997,6 +998,8 @@ let searchHistoryField: "find" | "replace" | null = null;
 let searchHistoryActiveIndex = -1;
 let searchResultRenderVersion = 0;
 let editorWheelZoomAt = 0;
+let searchResultWheelZoomAt = 0;
+let searchResultFontSize = DEFAULT_SEARCH_RESULT_FONT_SIZE;
 let activeBottomResultTool: BottomResultTool = "search";
 let analyseResultsAvailable = false;
 let markdownEditor: MarkdownEditorBridge | null = null;
@@ -1751,6 +1754,7 @@ function registerAppCommands() {
     command("tabs.next", "切换到下一个标签", "标签", () => activateAdjacentDocument(1), { allowInInput: true }),
     command("tabs.previous", "切换到上一个标签", "标签", () => activateAdjacentDocument(-1), { allowInInput: true }),
     command("tabs.closeOthers", "关闭其他标签", "标签", () => closeOtherTabsFor(state.activeId)),
+    command("tabs.closeLeft", "关闭左侧标签", "标签", () => closeTabsToLeftFor(state.activeId)),
     command("tabs.closeRight", "关闭右侧标签", "标签", () => closeTabsToRightFor(state.activeId)),
     command("tabs.closeSaved", "关闭已保存标签", "标签", closeSavedTabs),
     command("edit.undo", "撤销", "编辑", undoEditor, { when: () => isEditorSurfaceFocused() }),
@@ -2032,7 +2036,7 @@ function bindActions() {
   });
   $("closeBottomResultsButton").addEventListener("click", closeBottomResults);
   $("editorArea").addEventListener("wheel", handleEditorWheelZoom, { passive: false });
-  $("findResultsBody").addEventListener("wheel", handleSearchResultHorizontalScroll, { passive: false });
+  $("findResultsBody").addEventListener("wheel", handleSearchResultWheel, { passive: false });
   $("findCurrentButton").addEventListener("click", () => findSelectedDocuments(true));
   $("findNextButton").addEventListener("click", () => void findNextResult());
   $("findPreviousButton").addEventListener("click", () => void findPreviousResult());
@@ -2198,6 +2202,7 @@ function bindActions() {
   $("tabRevealButton").addEventListener("click", () => void revealTabPath());
   $("tabCloseButton").addEventListener("click", () => void closeTabFromMenu());
   $("tabCloseOthersButton").addEventListener("click", () => void closeOtherTabsFromMenu());
+  $("tabCloseLeftButton").addEventListener("click", () => void closeTabsToLeftFromMenu());
   $("tabCloseRightButton").addEventListener("click", () => void closeTabsToRightFromMenu());
   $("tabCloseSavedButton").addEventListener("click", () => void closeSavedTabs());
   $("languageSearchInput").addEventListener("input", () =>
@@ -4471,6 +4476,7 @@ function updateTabMenuState() {
   $<HTMLButtonElement>("tabRevealButton").disabled = !doc?.path;
   $<HTMLButtonElement>("tabCloseButton").disabled = !doc || state.documents.length <= 1;
   $<HTMLButtonElement>("tabCloseOthersButton").disabled = !doc || state.documents.length <= 1;
+  $<HTMLButtonElement>("tabCloseLeftButton").disabled = !doc || index <= 0;
   $<HTMLButtonElement>("tabCloseRightButton").disabled = !doc || index < 0 || index >= state.documents.length - 1;
   $<HTMLButtonElement>("tabCloseSavedButton").disabled = savedClosableCount === 0 || state.documents.length <= 1;
 }
@@ -4731,6 +4737,22 @@ async function closeOtherTabsFromMenu() {
 async function closeOtherTabsFor(targetId: number) {
   if (state.documents.some((doc) => doc.id === targetId)) activateDocument(targetId);
   const ids = state.documents.filter((doc) => doc.id !== targetId).map((doc) => doc.id);
+  for (const id of ids) {
+    if (!(await closeDocument(id))) break;
+  }
+  if (state.documents.some((doc) => doc.id === targetId)) activateDocument(targetId);
+}
+
+async function closeTabsToLeftFromMenu() {
+  const targetId = tabMenuDocumentId || state.activeId;
+  closeMenus();
+  await closeTabsToLeftFor(targetId);
+}
+
+async function closeTabsToLeftFor(targetId: number) {
+  const targetIndex = state.documents.findIndex((doc) => doc.id === targetId);
+  if (targetIndex <= 0) return;
+  const ids = state.documents.slice(0, targetIndex).map((doc) => doc.id);
   for (const id of ids) {
     if (!(await closeDocument(id))) break;
   }
@@ -5401,6 +5423,24 @@ function handleEditorWheelZoom(event: WheelEvent) {
   if (now - editorWheelZoomAt < 55) return;
   editorWheelZoomAt = now;
   setFontSize(state.fontSize + (event.deltaY < 0 ? 1 : -1));
+}
+
+function handleSearchResultWheel(event: WheelEvent) {
+  if (event.ctrlKey && event.deltaY !== 0) {
+    event.preventDefault();
+    event.stopPropagation();
+    const now = performance.now();
+    if (searchResultWheelZoomAt !== 0 && now - searchResultWheelZoomAt < 55) return;
+    searchResultWheelZoomAt = now;
+    setSearchResultFontSize(searchResultFontSize + (event.deltaY < 0 ? 1 : -1));
+    return;
+  }
+  handleSearchResultHorizontalScroll(event);
+}
+
+function setSearchResultFontSize(value: number) {
+  searchResultFontSize = Math.min(24, Math.max(10, value));
+  $("findResultsBody").style.setProperty("--search-result-font-size", `${searchResultFontSize}px`);
 }
 
 function handleSearchResultHorizontalScroll(event: WheelEvent) {
@@ -6573,6 +6613,7 @@ function commandElementIds(): Record<string, string> {
   tabSaveAsButton: "file.saveAs",
   tabCloseButton: "file.close",
   tabCloseOthersButton: "tabs.closeOthers",
+  tabCloseLeftButton: "tabs.closeLeft",
   tabCloseRightButton: "tabs.closeRight",
   tabCloseSavedButton: "tabs.closeSaved",
   };

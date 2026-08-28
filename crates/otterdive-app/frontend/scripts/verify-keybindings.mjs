@@ -54,14 +54,38 @@ if (
 if (!mainSource.includes('if (scope !== "current" || showPanel) openBottomResults("search")')) {
   failures.push("当前文件全部查找没有打开底部结果面板");
 }
+if (
+  !htmlSource.includes('id="tabCloseLeftButton"')
+  || !mainSource.includes('command("tabs.closeLeft", "关闭左侧标签"')
+  || !mainSource.includes('$("tabCloseLeftButton").addEventListener("click", () => void closeTabsToLeftFromMenu())')
+  || !mainSource.includes('$<HTMLButtonElement>("tabCloseLeftButton").disabled = !doc || index <= 0')
+  || !mainSource.includes("state.documents.slice(0, targetIndex).map((doc) => doc.id)")
+  || !mainSource.includes('tabCloseLeftButton: "tabs.closeLeft"')
+) {
+  failures.push("标签菜单没有完整支持关闭左侧标签");
+}
 if (!mainSource.includes('$("editorArea").addEventListener("wheel", handleEditorWheelZoom')) {
   failures.push("编辑页面没有注册 Ctrl+滚轮字号缩放");
 }
+const searchResultWheelHandler = mainSource.slice(
+  mainSource.indexOf("function handleSearchResultWheel"),
+  mainSource.indexOf("async function openSearchResult"),
+);
 if (
-  !mainSource.includes('$("findResultsBody").addEventListener("wheel", handleSearchResultHorizontalScroll')
+  !mainSource.includes('$("findResultsBody").addEventListener("wheel", handleSearchResultWheel')
+  || !searchResultWheelHandler.includes("if (event.ctrlKey && event.deltaY !== 0)")
+  || !searchResultWheelHandler.includes("event.preventDefault()")
+  || !searchResultWheelHandler.includes("setSearchResultFontSize(")
+  || !searchResultWheelHandler.includes("Math.min(24, Math.max(10, value))")
+  || !stylesSource.includes("font-size: var(--search-result-font-size)")
+) {
+  failures.push("普通搜索结果没有支持 Ctrl+滚轮字号缩放");
+}
+if (
+  !searchResultWheelHandler.includes("handleSearchResultHorizontalScroll(event)")
   || !mainSource.includes("resultList.scrollLeft += event.deltaX")
   || !stylesSource.includes(".find-results-body:has(> .find-result-list)")
-  || !stylesSource.includes("grid-template-columns: 48px max-content")
+  || !stylesSource.includes("grid-template-columns: minmax(48px, max-content) max-content")
   || !stylesSource.includes("white-space: pre")
 ) {
   failures.push("普通搜索结果没有把横向滚轮映射到结果内容滚动");

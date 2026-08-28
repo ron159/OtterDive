@@ -21,6 +21,20 @@ assert.match(panelSource, /runButtonContent\(running\)/);
 assert.match(mainSource, /getDocuments: \(\) => state\.documents\.map/);
 assert.match(stylesSource, /button\.analyse-run-button\.primary:hover:not\(:disabled\)[^{]*\{[^}]*color: #fff;[^}]*background: var\(--text\);/s);
 assert.match(stylesSource, /\.analyse-panel-head \.analyse-run-button > span[^{]*\{[^}]*color: #fff !important;/s);
+assert.match(stylesSource, /\.analyse-profile-bar button,[^{]*\.analyse-profile-bar select\s*\{[^}]*font-size: 12px;/s);
+assert.match(stylesSource, /\.analyse-panel button\s*\{[^}]*font-size: 12px;/s);
+assert.match(stylesSource, /\.analyse-panel select\s*\{[^}]*font-size: 12px;/s);
+assert.match(stylesSource, /\.analyse-actions button\s*\{[^}]*font-size: 12px;/s);
+assert.match(stylesSource, /\.analyse-result-find select,[^{]*\.analyse-result-find button\s*\{[^}]*font-size: 12px;/s);
+assert.match(stylesSource, /\.analyse-result-actions button\s*\{[^}]*font-size: 12px;/s);
+assert.match(
+  stylesSource,
+  /\.analyse-draft::-webkit-scrollbar-thumb,[^{]*\.analyse-patterns::-webkit-scrollbar-thumb,[^{]*\.analyse-result-actions::-webkit-scrollbar-thumb\s*\{[^}]*border-radius: 0;/s,
+);
+assert.match(
+  stylesSource,
+  /\.analyse-result-editor \.monaco-scrollable-element > \.scrollbar > \.slider\s*\{[^}]*border-radius: 0 !important;/s,
+);
 assert.match(panelSource, /element\("result-editor"\)\.addEventListener\("wheel", handleResultWheelZoom/);
 assert.match(panelSource, /setResultFontSize\(currentFontSize \+ \(event\.deltaY < 0 \? 1 : -1\)\)/);
 assert.match(panelSource, /resultSelectionDecorations\.set\(selections\.map/);
