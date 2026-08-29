@@ -2482,7 +2482,7 @@ dependencies = [
 
 [[package]]
 name = "otterdive-app"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "otterdive-core",
  "regex",
@@ -2501,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "otterdive-core"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "encoding_rs",
  "fancy-regex",
