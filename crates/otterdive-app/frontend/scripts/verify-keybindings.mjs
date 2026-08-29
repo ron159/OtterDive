@@ -91,7 +91,7 @@ if (
   failures.push("普通搜索结果没有把横向滚轮映射到结果内容滚动");
 }
 if (
-  [...mainSource.matchAll(/!mouseClickHasTextSelection\(event, row\)/g)].length !== 2
+  [...mainSource.matchAll(/!mouseClickHasTextSelection\(event, row\)/g)].length !== 3
   || !/\.find-result-row\s*\{[^}]*user-select: text;/s.test(stylesSource)
 ) {
   failures.push("普通搜索结果没有支持文字拖选或抑制选区松开后的跳转");

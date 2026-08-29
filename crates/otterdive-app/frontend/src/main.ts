@@ -139,6 +139,11 @@ import {
 import { mapWithConcurrency, type BatchResult } from "./openBatch";
 import { finishOpenPerformance, startOpenPerformance } from "./openPerformance";
 import {
+  addSearchResultHistory,
+  toggleSearchResultHistory,
+  type SearchResultHistoryEntry,
+} from "./searchResultHistory";
+import {
   createMarkdownPdfExport,
   markdownPdfFileName,
   printMarkdownDocument,
@@ -865,6 +870,7 @@ const state = {
   panel: "results" as "results" | "preview" | "logs",
   logs: [] as string[],
   results: null as SearchReportDto | null,
+  searchResultHistory: [] as SearchResultHistoryEntry<SearchReportDto, SearchScope>[],
   replacePreview: null as ReplacePreviewDto | null,
   replacePreviewApplied: false,
   activeResultIndex: -1,
@@ -5274,12 +5280,16 @@ function setSearchResults(
   activeIndex = report.total > 0 ? 0 : -1,
   showPanel = false,
 ) {
+  const query = ($("findInput") as HTMLInputElement).value;
   state.results = report;
   state.searchScope = scope;
-  state.searchQuery = ($("findInput") as HTMLInputElement).value;
+  state.searchQuery = query;
   state.searchSignature = currentSearchSignature(scope);
   state.activeResultIndex = activeIndex;
   state.panel = "results";
+  if (showPanel) {
+    state.searchResultHistory = addSearchResultHistory(state.searchResultHistory, query, scope, report);
+  }
   if (scope === "workspace") {
     state.workspaceSearchVisibleResults = 400;
     state.rightTool = "search";
@@ -5297,9 +5307,12 @@ function setSearchResults(
 }
 
 function flattenSearchResults() {
+  return state.results ? flattenSearchReport(state.results) : [];
+}
+
+function flattenSearchReport(report: SearchReportDto) {
   const items: Array<{ path: string; fileName: string; match: TextMatchDto }> = [];
-  if (!state.results) return items;
-  for (const hit of state.results.hits) {
+  for (const hit of report.hits) {
     for (const match of hit.matches) {
       items.push({ path: hit.path, fileName: hit.fileName, match });
     }
@@ -5491,6 +5504,17 @@ async function openSearchResult(index: number) {
   scrollActiveResultIntoView();
 }
 
+async function openHistoricalSearchResult(batchId: number, resultIndex: number) {
+  const entry = state.searchResultHistory.find((item) => item.id === batchId);
+  if (!entry) return;
+  if (entry.report === state.results) {
+    await openSearchResult(resultIndex);
+    return;
+  }
+  const item = flattenSearchReport(entry.report)[resultIndex];
+  if (item) await openResult(item.path, item.match.line, item.match.column);
+}
+
 function initialSearchResultIndex(total: number) {
   if (total <= 0) return -1;
   return ($("reverseSearchInput") as HTMLInputElement).checked ? total - 1 : 0;
@@ -5502,11 +5526,12 @@ function searchDirection() {
 
 function scrollActiveResultIntoView() {
   $("findResultsBody")
-    .querySelector<HTMLElement>(`[data-result-index="${state.activeResultIndex}"]`)
+    .querySelector<HTMLElement>(`[data-current-search-results="true"] [data-result-index="${state.activeResultIndex}"]`)
     ?.scrollIntoView({ block: "nearest" });
 }
 
 function clearSearchResults() {
+  state.searchResultHistory = [];
   resetSearchResults();
   log("已清除查找结果");
 }
@@ -7333,6 +7358,7 @@ function nativeResultsAvailable() {
   return workspaceSearchIsBusy()
     || state.workspaceSearchStatus === "error"
     || state.results !== null
+    || state.searchResultHistory.length > 0
     || state.replacePreview !== null;
 }
 
@@ -7445,6 +7471,10 @@ function renderSearchSidebarResults() {
     return;
   }
   title.textContent = "搜索结果";
+  if (state.searchResultHistory.length > 0) {
+    renderSearchResultHistory(body, summary, renderVersion);
+    return;
+  }
   if (!state.results) {
     summary.textContent = "等待搜索";
     body.innerHTML = `<div class="empty">输入关键词，让水獭帮你捞出线索</div>`;
@@ -7457,7 +7487,7 @@ function renderSearchSidebarResults() {
     return;
   }
   summary.textContent = searchReportSummary(state.results);
-  body.innerHTML = `<div class="find-result-actions"><button class="tool-button" id="clearResultsButton">${iconSvg("X")}<span>清除</span></button></div><div class="find-result-list" id="workspaceSearchResultList"></div>`;
+  body.innerHTML = `<div class="find-result-actions"><button class="tool-button" id="clearResultsButton">${iconSvg("X")}<span>清除</span></button></div><div class="find-result-list" id="workspaceSearchResultList" data-current-search-results="true"></div>`;
   $("clearResultsButton").addEventListener("click", clearSearchResults);
   const list = $("workspaceSearchResultList");
   list.addEventListener("click", (event) => {
@@ -7467,6 +7497,53 @@ function renderSearchSidebarResults() {
     }
   });
   renderProgressiveSearchResults(state.results, list, renderVersion);
+}
+
+function renderSearchResultHistory(body: HTMLElement, summary: HTMLElement, renderVersion: number) {
+  const entries = state.searchResultHistory;
+  const latest = entries[entries.length - 1];
+  summary.textContent = `${entries.length} 次搜索 · ${searchReportSummary(latest.report)}`;
+  body.innerHTML = `<div class="find-result-actions"><button class="tool-button" id="clearResultsButton">${iconSvg("X")}<span>清除全部</span></button></div><div class="find-result-history-list" id="searchResultHistoryList"></div>`;
+  $("clearResultsButton").addEventListener("click", clearSearchResults);
+  const historyList = $("searchResultHistoryList");
+  historyList.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const toggle = target.closest<HTMLButtonElement>("[data-search-history-toggle]");
+    if (toggle) {
+      const batchId = Number(toggle.dataset.searchBatchId ?? "0");
+      state.searchResultHistory = toggleSearchResultHistory(state.searchResultHistory, batchId);
+      renderSearchSidebarResults();
+      return;
+    }
+    const row = target.closest<HTMLButtonElement>("[data-search-batch-id][data-result-index]");
+    if (row && !mouseClickHasTextSelection(event, row)) {
+      const batchId = Number(row.dataset.searchBatchId ?? "0");
+      const resultIndex = Number(row.dataset.resultIndex ?? "0");
+      void openHistoricalSearchResult(batchId, resultIndex);
+    }
+  });
+
+  for (const entry of entries) {
+    const section = document.createElement("section");
+    section.className = "find-result-history-entry";
+    const resultsId = `search-result-history-${entry.id}`;
+    const details = `${searchScopeLabel(entry.scope)} · ${searchReportSummary(entry.report)}`;
+    section.innerHTML = `<button class="find-result-history-toggle" type="button" data-search-history-toggle data-search-batch-id="${entry.id}" aria-expanded="${String(entry.expanded)}" aria-controls="${resultsId}">${iconSvg(entry.expanded ? "ChevronDown" : "ChevronRight")}<strong title="${escapeAttr(entry.query)}">“${escapeHtml(entry.query)}”</strong><span>${escapeHtml(details)}</span></button><div class="find-result-list ${entry.expanded ? "" : "hidden"}" id="${resultsId}"></div>`;
+    historyList.appendChild(section);
+    if (!entry.expanded) continue;
+    const list = section.lastElementChild as HTMLElement;
+    if (entry.report.total === 0) {
+      list.innerHTML = `<div class="find-result-history-empty">没有找到匹配内容</div>`;
+      continue;
+    }
+    renderProgressiveSearchResults(entry.report, list, renderVersion, entry.id);
+  }
+}
+
+function searchScopeLabel(scope: SearchScope) {
+  if (scope === "current") return "当前文件";
+  if (scope === "open") return "所有打开文件";
+  return "工作区";
 }
 
 function mouseClickHasTextSelection(event: MouseEvent, row: HTMLElement) {
@@ -7522,12 +7599,18 @@ function formatSearchDuration(milliseconds: number) {
   return milliseconds < 1000 ? `${milliseconds} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
 }
 
-function renderProgressiveSearchResults(report: SearchReportDto, list: HTMLElement, renderVersion: number) {
+function renderProgressiveSearchResults(
+  report: SearchReportDto,
+  list: HTMLElement,
+  renderVersion: number,
+  batchId?: number,
+) {
   let hitIndex = 0;
   let matchIndex = 0;
   let resultIndex = 0;
   let rows: HTMLElement | null = null;
   const limit = Math.min(report.total, state.workspaceSearchVisibleResults);
+  list.dataset.currentSearchResults = String(report === state.results);
 
   const appendBatch = () => {
     if (renderVersion !== searchResultRenderVersion || !list.isConnected) return;
@@ -7544,8 +7627,10 @@ function renderProgressiveSearchResults(report: SearchReportDto, list: HTMLEleme
       }
       const match = hit.matches[matchIndex];
       const row = document.createElement("button");
-      row.className = `find-result-row ${resultIndex === state.activeResultIndex ? "result-active" : ""}`;
+      const active = report === state.results && resultIndex === state.activeResultIndex;
+      row.className = `find-result-row ${active ? "result-active" : ""}`;
       row.dataset.resultIndex = String(resultIndex);
+      if (batchId !== undefined) row.dataset.searchBatchId = String(batchId);
       row.innerHTML = `<span class="find-result-line">${match.line}:${match.column}</span><span class="find-result-preview">${highlightMatchLine(match)}</span>`;
       rows?.appendChild(row);
       matchIndex += 1;

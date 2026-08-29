@@ -5651,7 +5651,8 @@ tbody tr.result-active {
   --search-result-font-size: 11px;
 }
 
-.find-results-body:has(> .find-result-list) {
+.find-results-body:has(> .find-result-list),
+.find-results-body:has(> .find-result-history-list) {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
@@ -5680,19 +5681,94 @@ tbody tr.result-active {
   gap: 0;
 }
 
-.find-result-list::-webkit-scrollbar {
+.find-result-history-list {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  overflow: auto;
+  scrollbar-color: var(--text-3) var(--surface-2);
+  scrollbar-gutter: stable;
+}
+
+.find-result-list::-webkit-scrollbar,
+.find-result-history-list::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
-.find-result-list::-webkit-scrollbar-track {
+.find-result-list::-webkit-scrollbar-track,
+.find-result-history-list::-webkit-scrollbar-track {
   background: var(--surface-2);
 }
 
-.find-result-list::-webkit-scrollbar-thumb {
+.find-result-list::-webkit-scrollbar-thumb,
+.find-result-history-list::-webkit-scrollbar-thumb {
   border: 2px solid var(--surface-2);
   border-radius: 999px;
   background: var(--text-3);
+}
+
+.find-result-history-entry {
+  width: max-content;
+  min-width: 100%;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.find-result-history-toggle {
+  width: 100%;
+  min-height: 36px;
+  border: 0;
+  display: grid;
+  grid-template-columns: 16px minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  color: var(--text-2);
+  background: var(--surface);
+  text-align: left;
+}
+
+.find-result-history-toggle:hover {
+  background: var(--surface-2);
+}
+
+.find-result-history-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.find-result-history-toggle .lucide-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-3);
+}
+
+.find-result-history-toggle strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--search-result-font-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.find-result-history-toggle span {
+  color: var(--text-3);
+  font-size: max(10px, calc(var(--search-result-font-size) - 1px));
+  white-space: nowrap;
+}
+
+.find-result-history-entry > .find-result-list {
+  overflow: visible;
+}
+
+.find-result-history-empty {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 6px 35px;
+  color: var(--text-3);
+  font-size: max(10px, calc(var(--search-result-font-size) - 1px));
 }
 
 .find-result-group {
