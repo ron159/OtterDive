@@ -112,6 +112,7 @@ import {
   bindingLabel,
   bindingStartsWith,
   commandBindings,
+  isInputMethodComposing,
   isKeymapProfile,
   keyboardEventStroke,
   normalizeBinding,
@@ -1886,6 +1887,7 @@ function markdownCommand(id: string, title: string, action: string, when: () => 
 }
 
 function bindKeybindings() {
+  document.addEventListener("keydown", handleGlobalFindKeybinding, true);
   $("editor").addEventListener("keydown", handleEditorKeybinding, true);
   $("markdownWysiwyg").addEventListener("keydown", handleEditorKeybinding, true);
 }
@@ -1895,6 +1897,18 @@ const NATIVE_CLIPBOARD_SHORTCUTS = new globalThis.Map([
   ["Ctrl+X", "edit.cut"],
   ["Ctrl+V", "edit.paste"],
 ]);
+
+function handleGlobalFindKeybinding(event: KeyboardEvent) {
+  if (recordingKeybindingCommandId) return;
+  if (event.defaultPrevented) return;
+  const stroke = keyboardEventStroke(event);
+  if (!stroke || !activeCommandBindings("search.find").includes(stroke)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  clearPendingKeybindingChord();
+  closeMenus();
+  openCurrentFind("find");
+}
 
 function handleEditorKeybinding(event: KeyboardEvent) {
   const stroke = keyboardEventStroke(event);
@@ -2079,7 +2093,9 @@ function bindActions() {
     syncCurrentFindControls();
     replaceAllSelectedDocuments();
   });
-  $("currentFindInput").addEventListener("input", scheduleCurrentFind);
+  $("currentFindInput").addEventListener("input", handleCurrentFindInput);
+  $("currentFindInput").addEventListener("compositionstart", cancelScheduledCurrentFind);
+  $("currentFindInput").addEventListener("compositionend", scheduleCurrentFind);
   $("currentReplaceInput").addEventListener("input", syncCurrentFindControls);
   ["currentMatchCaseInput", "currentWholeWordInput", "currentRegexInput"].forEach((id) => {
     $(id).addEventListener("change", scheduleCurrentFind);
@@ -2097,6 +2113,7 @@ function bindActions() {
   });
   $("currentFindInput").addEventListener("keydown", (event) => {
     const keyboardEvent = event as KeyboardEvent;
+    if (isInputMethodComposing(keyboardEvent)) return;
     if (keyboardEvent.altKey && keyboardEvent.key === "ArrowDown") {
       event.preventDefault();
       openCurrentFindHistory();
@@ -2264,8 +2281,10 @@ function bindActions() {
     $(id).addEventListener("change", scheduleSessionSave);
   });
   $("findInput").addEventListener("keydown", (event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    if (isInputMethodComposing(keyboardEvent)) return;
     if (handleSearchHistoryKeydown(event as KeyboardEvent, "find")) return;
-    if ((event as KeyboardEvent).key !== "Enter") return;
+    if (keyboardEvent.key !== "Enter") return;
     event.preventDefault();
     if (state.findView === "workspace-find") {
       void searchWorkspace();
@@ -2275,7 +2294,7 @@ function bindActions() {
       void previewWorkspaceReplace();
       return;
     }
-    if ((event as KeyboardEvent).shiftKey) {
+    if (keyboardEvent.shiftKey) {
       void findPreviousResult();
     } else {
       void findNextResult();
@@ -2283,8 +2302,10 @@ function bindActions() {
   });
   $("closeWorkspaceButton").addEventListener("click", () => void closeWorkspace());
   $("replaceInput").addEventListener("keydown", (event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    if (isInputMethodComposing(keyboardEvent)) return;
     if (handleSearchHistoryKeydown(event as KeyboardEvent, "replace")) return;
-    if ((event as KeyboardEvent).key !== "Enter" || state.findView !== "workspace-replace") return;
+    if (keyboardEvent.key !== "Enter" || state.findView !== "workspace-replace") return;
     event.preventDefault();
     void previewWorkspaceReplace();
   });
@@ -8567,6 +8588,18 @@ function toggleFindOpen(options: { prefillFromSelection?: boolean } = {}) {
   input.focus();
   input.select();
   if (!workspace) scheduleCurrentFind();
+}
+
+function handleCurrentFindInput(event: Event) {
+  if (isInputMethodComposing(event as InputEvent)) {
+    cancelScheduledCurrentFind();
+    return;
+  }
+  scheduleCurrentFind();
+}
+
+function cancelScheduledCurrentFind() {
+  window.clearTimeout(currentFindTimer);
 }
 
 function scheduleCurrentFind() {

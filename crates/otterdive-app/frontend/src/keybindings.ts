@@ -208,8 +208,16 @@ export function commandBindings(
   return [...(profileKeymap(profile, workMode)[commandId] ?? [])].map(normalizeBinding);
 }
 
+export function isInputMethodComposing(event: {
+  isComposing?: boolean;
+  key?: string;
+  keyCode?: number;
+}): boolean {
+  return event.isComposing === true || event.key === "Process" || event.keyCode === 229;
+}
+
 export function keyboardEventStroke(event: KeyboardEvent): string | null {
-  if (event.isComposing || ["Control", "Shift", "Alt", "Meta"].includes(event.key)) return null;
+  if (isInputMethodComposing(event) || ["Control", "Shift", "Alt", "Meta"].includes(event.key)) return null;
   let key = KEY_ALIASES[event.key] ?? event.key;
   if (key.length === 1 && /[a-z]/i.test(key)) key = key.toUpperCase();
   const modifiers = [

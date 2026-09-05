@@ -33,6 +33,19 @@ if (!mainSource.includes('$("markdownWysiwyg").addEventListener("keydown", handl
 if (/document\.addEventListener\("keydown",\s*handleEditorKeybinding/.test(mainSource)) {
   failures.push("编辑器快捷键不得注册到 document");
 }
+const globalFindHandler = mainSource.slice(
+  mainSource.indexOf("function handleGlobalFindKeybinding"),
+  mainSource.indexOf("function handleEditorKeybinding"),
+);
+if (
+  !mainSource.includes('document.addEventListener("keydown", handleGlobalFindKeybinding, true)')
+  || !globalFindHandler.includes("if (recordingKeybindingCommandId) return")
+  || !globalFindHandler.includes('activeCommandBindings("search.find").includes(stroke)')
+  || !globalFindHandler.includes("event.preventDefault()")
+  || !globalFindHandler.includes('openCurrentFind("find")')
+) {
+  failures.push("Ctrl+F 没有在应用级拦截页面查找并打开应用内查找");
+}
 const editorKeybindingHandler = mainSource.slice(
   mainSource.indexOf("function handleEditorKeybinding"),
   mainSource.indexOf("function matchingCommands"),
@@ -110,6 +123,23 @@ if (!mainSource.includes('document.body.classList.toggle("current-find-open", op
 }
 if (!mainSource.includes("currentSearchPatternError(query)")) {
   failures.push("当前查找没有校验正则表达式");
+}
+if (
+  typeof keybindings.isInputMethodComposing !== "function"
+  || !keybindings.isInputMethodComposing({ isComposing: true })
+  || !keybindings.isInputMethodComposing({ isComposing: false, key: "Process" })
+  || !keybindings.isInputMethodComposing({ isComposing: false, key: "Enter", keyCode: 229 })
+) {
+  failures.push("输入法组合态识别不完整");
+}
+if (
+  !mainSource.includes('$("currentFindInput").addEventListener("input", handleCurrentFindInput)')
+  || !mainSource.includes('$("currentFindInput").addEventListener("compositionstart", cancelScheduledCurrentFind)')
+  || !mainSource.includes('$("currentFindInput").addEventListener("compositionend", scheduleCurrentFind)')
+  || !mainSource.includes("if (isInputMethodComposing(event as InputEvent))")
+  || [...mainSource.matchAll(/if \(isInputMethodComposing\(keyboardEvent\)\) return;/g)].length < 3
+) {
+  failures.push("查找输入框没有在中文输入法组合期间暂停搜索和回车提交");
 }
 if (/\slist="(?:findHistoryList|replaceHistoryDataList)"/.test(htmlSource)) {
   failures.push("文件查找历史仍在使用原生 datalist");
