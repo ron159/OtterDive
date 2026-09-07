@@ -163,6 +163,7 @@
           <button class="tool-button" id="formatDocumentButton" aria-label="格式化文档 Shift+Alt+F" title="格式化文档 Shift+Alt+F" aria-keyshortcuts="Shift+Alt+F"><span class="icon-slot" data-icon="Braces"></span><span data-label>格式化文档</span></button>
           <span class="tool-divider"></span>
           <button class="tool-button" id="findButton" aria-label="查找 Ctrl+F" title="查找 Ctrl+F" aria-keyshortcuts="Control+F"><span class="icon-slot" data-icon="Search"></span><span data-label>查找</span></button>
+          <button class="tool-button" id="analyseButton" aria-label="打开 Analyse" title="打开 Analyse" aria-pressed="false"><span class="icon-slot" data-icon="Sigma"></span><span data-label>Analyse</span></button>
           <button class="tool-button" id="replaceButton" aria-label="替换 Ctrl+H" title="替换 Ctrl+H" aria-keyshortcuts="Control+H"><span class="icon-slot" data-icon="Replace"></span><span data-label>替换</span></button>
           <button class="tool-button" id="goToLineButton" aria-label="跳转到行 Ctrl+G" title="跳转到行 Ctrl+G" aria-keyshortcuts="Control+G"><span class="icon-slot" data-icon="ListRestart"></span><span data-label>跳转到行</span></button>
           <button class="tool-button" id="commandButton" aria-label="命令面板 Ctrl+P" title="命令面板 Ctrl+P" aria-keyshortcuts="Control+P"><span class="icon-slot" data-icon="Command"></span><span data-label>命令面板</span></button>
@@ -177,7 +178,6 @@
         <header class="right-tool-tabs" id="rightToolTabs" aria-label="右侧工具">
           <button class="right-tool-tab active" id="rightSearchToolButton" data-right-tool="search"><span class="icon-slot" data-icon="Search"></span><span>文件查找</span></button>
           <button class="right-tool-tab hidden" id="rightOutlineToolButton" data-right-tool="outline"><span class="icon-slot" data-icon="ListTree"></span><span>大纲</span></button>
-          <button class="right-tool-tab" id="rightAnalyseToolButton" data-right-tool="analyse"><span class="icon-slot" data-icon="Sigma"></span><span>Analyse</span></button>
           <span class="right-tool-spacer"></span>
           <button class="right-sidebar-toggle" id="rightSidebarToggleButton" aria-label="打开搜索侧栏" title="打开搜索侧栏"><span class="icon-slot" data-icon="PanelRightOpen"></span></button>
         </header>
@@ -1093,7 +1093,7 @@
         </div>
         </div>
         <div class="right-tool-pane hidden" id="outlineToolPane">
-          <header class="outline-head"><strong>Markdown 大纲</strong><span id="outlineSummary"></span></header>
+          <header class="outline-head"><strong>Markdown 大纲</strong><span id="outlineSummary"></span><button id="outlinePositionButton" type="button" aria-label="将大纲移到左侧" title="移到左侧">移到左侧</button></header>
           <nav class="outline-list" id="outlineList" role="tree" aria-label="Markdown 大纲"></nav>
         </div>
         <div class="right-tool-pane hidden" id="analyseToolPane" aria-label="Analyse"></div>

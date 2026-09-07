@@ -6984,3 +6984,40 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
     color: inherit !important;
   }
 }
+
+/* The outline shares the tool pane, but can dock on the left independently. */
+#app.right-sidebar-open.outline-left {
+  grid-template-columns: var(--right-sidebar-width) minmax(0, 1fr);
+  grid-template-areas:
+    "titlebar titlebar"
+    "toolbar toolbar"
+    "right tabs"
+    "right workspace"
+    "results results"
+    "status status";
+}
+
+.platform-macos #app.right-sidebar-open.outline-left {
+  grid-template-areas:
+    "toolbar toolbar"
+    "right tabs"
+    "right workspace"
+    "results results"
+    "status status";
+}
+
+#app.outline-left .right-sidebar {
+  border-left: 0;
+  border-right: 1px solid var(--line);
+}
+
+#app.outline-left .right-sidebar-resize {
+  left: auto;
+  right: -4px;
+}
+
+#outlinePositionButton {
+  flex-shrink: 0;
+  padding: 3px 6px;
+  font-size: 11px;
+}
