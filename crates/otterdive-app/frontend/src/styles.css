@@ -7021,3 +7021,148 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   padding: 3px 6px;
   font-size: 11px;
 }
+
+/* Blend the outline into the document instead of framing it as a tool panel. */
+#app.outline-active .right-sidebar,
+#app.outline-active .outline-head {
+  border: 0;
+  background: var(--editor);
+  box-shadow: none;
+}
+
+#app.outline-active #outlineToolPane {
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: 16px 12px;
+  background: var(--editor);
+}
+
+#app.outline-active .outline-head {
+  height: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 0 8px 12px;
+}
+
+.outline-controls {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#outlineDisplayMode,
+#outlinePositionButton {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
+#outlineDisplayMode:hover,
+#outlinePositionButton:hover {
+  background: var(--surface-2);
+}
+
+#app.outline-active .outline-row {
+  border-radius: 6px;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+/* The hover outline occupies no column: revealing it never shifts the text. */
+#app.right-sidebar-open.outline-hover {
+  grid-template-columns: minmax(0, 1fr) 0;
+  grid-template-areas:
+    "titlebar titlebar"
+    "toolbar toolbar"
+    "tabs tabs"
+    "workspace workspace"
+    "results results"
+    "status status";
+}
+
+.platform-macos #app.right-sidebar-open.outline-hover {
+  grid-template-areas:
+    "toolbar toolbar"
+    "tabs tabs"
+    "workspace workspace"
+    "results results"
+    "status status";
+}
+
+#app.outline-hover .right-sidebar {
+  grid-area: workspace;
+  justify-self: end;
+  width: min(var(--right-sidebar-width), 320px, 85vw);
+  z-index: 8;
+  background: transparent;
+  pointer-events: none;
+}
+
+#app.outline-hover.outline-left .right-sidebar {
+  justify-self: start;
+}
+
+.outline-hover-trigger {
+  position: absolute;
+  top: 24px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--editor) 92%, transparent);
+  color: var(--text-3);
+  font-size: 11px;
+  pointer-events: auto;
+  transition: opacity 180ms ease;
+}
+
+.outline-left .outline-hover-trigger {
+  right: auto;
+  left: 12px;
+}
+
+#app.outline-hover #outlineToolPane {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(8px);
+  border-radius: 12px;
+  pointer-events: none;
+  transition: opacity 200ms ease 120ms, transform 200ms ease 120ms, visibility 0s linear 320ms;
+}
+
+#app.outline-hover.outline-left #outlineToolPane {
+  transform: translateX(-8px);
+}
+
+#app.outline-hover .right-sidebar:is(:hover, :focus-within) #outlineToolPane {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0);
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+#app.outline-hover .right-sidebar:is(:hover, :focus-within) .outline-hover-trigger {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#app.outline-hover .right-sidebar-resize {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app.outline-active .outline-row,
+  #app.outline-hover #outlineToolPane,
+  .outline-hover-trigger {
+    transition: none;
+    transform: none;
+  }
+}

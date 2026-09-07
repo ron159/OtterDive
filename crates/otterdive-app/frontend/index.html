@@ -1092,8 +1092,18 @@
           </div>
         </div>
         </div>
+        <button class="outline-hover-trigger hidden" id="outlineHoverTrigger" type="button" aria-label="显示文档大纲" aria-controls="outlineToolPane" title="悬停或聚焦以显示大纲"><span class="icon-slot" data-icon="ListTree"></span><span>大纲</span></button>
         <div class="right-tool-pane hidden" id="outlineToolPane">
-          <header class="outline-head"><strong>Markdown 大纲</strong><span id="outlineSummary"></span><button id="outlinePositionButton" type="button" aria-label="将大纲移到左侧" title="移到左侧">移到左侧</button></header>
+          <header class="outline-head">
+            <strong>文档大纲</strong><span id="outlineSummary"></span>
+            <div class="outline-controls">
+              <select id="outlineDisplayMode" aria-label="大纲显示方式" title="大纲显示方式">
+                <option value="hover">悬浮显示</option>
+                <option value="always">始终显示</option>
+              </select>
+              <button id="outlinePositionButton" type="button" aria-label="将大纲移到左侧" title="移到左侧">移到左侧</button>
+            </div>
+          </header>
           <nav class="outline-list" id="outlineList" role="tree" aria-label="Markdown 大纲"></nav>
         </div>
         <div class="right-tool-pane hidden" id="analyseToolPane" aria-label="Analyse"></div>

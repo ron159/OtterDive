@@ -351,6 +351,7 @@ interface SessionSnapshot {
   rightSidebarOpen: boolean;
   rightTool: RightTool;
   outlinePosition?: "left" | "right";
+  outlineDisplayMode?: "hover" | "always";
   rightSidebarWidth: number;
   bottomResultsHeight?: number;
   explorerWidth?: number;
@@ -924,6 +925,7 @@ const state = {
   defaultAppCandidateBusy: false,
   rightTool: "search" as RightTool,
   outlinePosition: "right" as "left" | "right",
+  outlineDisplayMode: "hover" as "hover" | "always",
   rightSidebarWidth: 420,
   bottomResultsHeight: DEFAULT_BOTTOM_RESULTS_HEIGHT,
   explorerWidth: DEFAULT_EXPLORER_WIDTH,
@@ -2003,6 +2005,11 @@ function bindActions() {
     const target = event.target instanceof HTMLElement ? event.target : null;
     if (target?.closest(".monaco-editor, input, textarea") || target?.isContentEditable) return;
     event.preventDefault();
+  });
+  $("outlineDisplayMode").addEventListener("change", () => {
+    state.outlineDisplayMode = $<HTMLSelectElement>("outlineDisplayMode").value === "always" ? "always" : "hover";
+    renderRightSidebar();
+    scheduleSessionSave();
   });
   $("outlinePositionButton").addEventListener("click", () => {
     state.outlinePosition = state.outlinePosition === "left" ? "right" : "left";
@@ -8865,6 +8872,12 @@ function renderRightSidebar() {
     $("findPopover").classList.add("hidden");
     $("app").classList.remove("right-sidebar-open");
   }
+  const outlineActive = state.rightTool === "outline";
+  const outlineHover = outlineActive && state.outlineDisplayMode === "hover";
+  $("app").classList.toggle("outline-active", outlineActive);
+  $("app").classList.toggle("outline-hover", outlineHover);
+  $("outlineHoverTrigger").classList.toggle("hidden", !outlineHover);
+  $<HTMLSelectElement>("outlineDisplayMode").value = state.outlineDisplayMode;
   $("app").classList.toggle("outline-left", isOutlineDockedLeft());
   $("findPopover").setAttribute("aria-label", isOutlineDockedLeft() ? "左侧大纲" : "右侧工具栏");
   const positionButton = $("outlinePositionButton");
@@ -9765,6 +9778,7 @@ async function restoreSession() {
       ? snapshot.rightTool
       : "search";
     state.outlinePosition = snapshot.outlinePosition === "left" ? "left" : "right";
+    state.outlineDisplayMode = snapshot.outlineDisplayMode === "always" ? "always" : "hover";
     state.rightSidebarWidth = snapshot.rightSidebarWidth ?? state.rightSidebarWidth;
     state.bottomResultsHeight = Number.isFinite(snapshot.bottomResultsHeight)
       ? snapshot.bottomResultsHeight ?? DEFAULT_BOTTOM_RESULTS_HEIGHT
@@ -10177,6 +10191,7 @@ async function saveSession() {
     rightSidebarOpen: !$("findPopover").classList.contains("hidden"),
     rightTool: state.rightTool,
     outlinePosition: state.outlinePosition,
+    outlineDisplayMode: state.outlineDisplayMode,
     rightSidebarWidth: state.rightSidebarWidth,
     bottomResultsHeight: state.bottomResultsHeight,
     explorerWidth: state.explorerWidth,
