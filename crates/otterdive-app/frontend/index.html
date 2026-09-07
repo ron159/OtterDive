@@ -312,6 +312,15 @@
               </div>
               <div class="current-find-history-menu hidden" id="currentFindHistoryMenu" role="listbox" aria-label="搜索历史"></div>
             </div>
+            <div class="large-file-toolbar hidden" id="largeFileToolbar">
+              <strong>大文件 · 只读分页</strong>
+              <button class="tool-button" id="largeFilePrevious">上一页</button>
+              <button class="tool-button" id="largeFileNext">下一页</button>
+              <input id="largeFileLine" type="number" min="1" value="1" aria-label="大文件目标行号" />
+              <button class="tool-button" id="largeFileGo">跳转到行</button>
+              <button class="tool-button" id="largeFileReload">重新载入</button>
+              <span id="largeFileStatus" role="status"></span>
+            </div>
             <div id="editor"></div>
             <div id="markdownWysiwyg" class="markdown-wysiwyg" aria-label="Markdown 即时编辑器" aria-hidden="true"></div>
           </div>
@@ -1127,6 +1136,21 @@
         <div class="bottom-results-content">
           <section class="find-results-pane hidden" id="searchResultsPane" aria-label="搜索结果" aria-live="polite" aria-busy="false">
             <header><strong id="findResultsTitle">搜索结果</strong><span id="findResultsSummary">等待搜索</span></header>
+            <div class="result-analysis-toolbar" id="resultAnalysisToolbar">
+              <select id="resultAnalysisSource" aria-label="分析来源"><option value="current">当前搜索结果</option></select>
+              <input id="resultAnalysisQuery" placeholder="在结果中筛选；提取时输入捕获组正则" aria-label="结果分析条件" />
+              <label><input type="checkbox" id="resultAnalysisRegex" />正则</label>
+              <label><input type="checkbox" id="resultAnalysisCase" />区分大小写</label>
+              <button class="tool-button" data-result-action="include">保留匹配</button>
+              <button class="tool-button" data-result-action="exclude">排除匹配</button>
+              <button class="tool-button" data-result-action="extract">提取捕获组</button>
+              <button class="tool-button" data-result-action="dedupe">去重</button>
+              <button class="tool-button" id="resultAnalysisUndo">撤销一步</button>
+              <button class="tool-button" id="resultAnalysisReset">返回搜索结果</button>
+              <button class="tool-button" id="resultAnalysisCsv">导出 CSV</button>
+              <button class="tool-button" id="resultAnalysisJson">导出 JSON</button>
+              <span id="resultAnalysisStatus" role="status"></span>
+            </div>
             <div class="find-results-body" id="findResultsBody"><div class="empty">输入关键词，让水獭帮你捞出线索</div></div>
           </section>
           <section class="analyse-result-host hidden" id="analyseResultHost" aria-label="Analyse 结果"></section>

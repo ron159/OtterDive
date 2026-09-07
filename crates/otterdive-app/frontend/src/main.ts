@@ -1,4 +1,5 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { exportResultRows, type ResultRow, type AnalysisStep } from "./resultAnalysis";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -176,6 +177,14 @@ type EncodingLabel =
   | "UTF-16 Big Endian"
   | "UTF-16 Little Endian";
 
+interface LargePage {
+  text: string;
+  startLine: number;
+  nextLine: number;
+  eof: boolean;
+  truncated: boolean;
+}
+
 interface DocumentDto {
   title: string;
   path?: string | null;
@@ -187,6 +196,7 @@ interface DocumentDto {
   readOnlyReason?: string | null;
   language: string;
   largeFile: boolean;
+  largePage?: LargePage | null;
 }
 
 interface TreeItemDto {
@@ -239,8 +249,19 @@ interface SearchReportDto {
   hits: FileHitDto[];
   skipped: string[];
   total: number;
+  cancelled?: boolean;
+  truncated?: boolean;
+  error?: string;
   filesScanned?: number;
   elapsedMs?: number;
+}
+
+interface SearchEvent {
+  report: SearchReportDto;
+  done: boolean;
+  cancelled: boolean;
+  truncated: boolean;
+  error?: string;
 }
 
 interface ReplacePreviewDto {
@@ -258,6 +279,10 @@ interface FileReplacePreviewDto {
 }
 
 interface OpenDocument extends DocumentDto {
+  fileRevision?: number;
+  pageLoading?: boolean;
+  pageRequest?: number;
+  pageHistory?: number[];
   id: number;
   draftId?: string;
   skipSessionRestore?: boolean;
@@ -1294,6 +1319,14 @@ function setIconSlot(slot: HTMLElement | null, name: string) {
 
 syncDocumentThemeState();
 SYSTEM_THEME_QUERY.addEventListener("change", handleSystemThemeChange);
+let analysedRows: ResultRow[] | null = null;
+let analysisUndo: ResultRow[][] = [];
+let analysisWorker: Worker | null = null;
+let analysisGeneration = 0;
+let analysisVisibleRows = 400;
+let workspaceSearchRunId: number | null = null;
+let workspaceSearchCancelRequested = false;
+
 bootstrap();
 
 function bootstrap() {
@@ -1381,6 +1414,8 @@ function bootstrap() {
     },
   });
 
+  bindLargeFileControls();
+  bindResultAnalysis();
   searchDecorations = editor.createDecorationsCollection();
   activeSearchDecoration = editor.createDecorationsCollection();
   bookmarkDecorations = editor.createDecorationsCollection();
@@ -1415,13 +1450,11 @@ function bootstrap() {
       revision: documentVersion(doc),
     })),
     getSelectedText: selectedSourceTextForAnalyse,
-    getSourceLine: () => editor.getPosition()?.lineNumber ?? 1,
+    getSourceLine: () => (editor.getPosition()?.lineNumber ?? 1) + (activeDocument().largePage?.startLine ?? 1) - 1,
     navigate: (documentId, line) => {
       if (!state.documents.some((doc) => doc.id === documentId)) return;
       activateDocument(documentId);
-      editor.setPosition({ lineNumber: line, column: 1 });
-      editor.revealLineInCenterIfOutsideViewport(line);
-      editor.focus();
+      void navigateSourceLine(activeDocument(), line, 1);
     },
     revealSource: (documentId, line) => {
       if (activeDocument().id !== documentId) return;
@@ -3819,11 +3852,12 @@ function createDocument(
 function ensureDocumentModel(doc: OpenDocument) {
   if (doc.model && !doc.model.isDisposed()) return doc.model;
   const uri = monaco.Uri.parse(`otterdive://model/${doc.id}/${encodeURIComponent(doc.title)}`);
-  const model = monaco.editor.createModel(doc.text, doc.language, uri);
+  const model = monaco.editor.createModel(doc.text, doc.largePage ? "plaintext" : doc.language, uri);
   doc.model = model;
   doc.text = "";
   doc.savedAlternativeVersionId = doc.dirty ? 0 : model.getAlternativeVersionId();
   model.onDidChangeContent(() => {
+    if (doc.largePage) return;
     const wasDirty = doc.dirty;
     doc.dirty = doc.metadataDirty || model.getAlternativeVersionId() !== doc.savedAlternativeVersionId;
     state.searchRevision += 1;
@@ -3847,6 +3881,7 @@ function documentText(doc: OpenDocument) {
 }
 
 function documentVersion(doc: OpenDocument) {
+  if (doc.largePage) return doc.fileRevision ?? 1;
   return doc.model?.getVersionId() ?? 1;
 }
 
@@ -3896,6 +3931,91 @@ function nextUntitledTitle(extension = "txt") {
   let index = max + 1;
   while (used.has(`Untitled-${index}.${extension}`)) index += 1;
   return `Untitled-${index}.${extension}`;
+}
+
+function renderLargeFileControls() {
+  const doc = activeDocument();
+  const page = doc.largePage;
+  $("largeFileToolbar").classList.toggle("hidden", !page);
+  $("editorArea").classList.toggle("has-large-page", Boolean(page));
+  if (!page) return;
+  $<HTMLButtonElement>("largeFilePrevious").disabled = Boolean(doc.pageLoading) || page.startLine <= 1;
+  $<HTMLButtonElement>("largeFileNext").disabled = Boolean(doc.pageLoading) || page.eof;
+  $<HTMLButtonElement>("largeFileGo").disabled = Boolean(doc.pageLoading);
+  $("largeFileStatus").textContent = doc.pageLoading ? "正在读取并建立行索引…" : `${page.startLine}–${Math.max(page.startLine, page.nextLine - 1)} 行${page.eof ? " · 文件末尾" : ""} · 查找仅限当前页${page.truncated ? " · 超长行仅显示前 64 KiB" : ""}`;
+}
+
+async function loadLargePage(doc: OpenDocument, line: number, remember = true) {
+  if (!doc.path || !doc.largePage || !Number.isSafeInteger(line) || line < 1) return false;
+  const request = (doc.pageRequest ?? 0) + 1;
+  doc.pageRequest = request;
+  doc.pageLoading = true;
+  if (doc.id === state.activeId) renderLargeFileControls();
+  try {
+    const page = await invoke<LargePage>("read_large_file_page", { path: doc.path, line, encoding: doc.encoding, reload: false });
+    if (doc.pageRequest !== request || !state.documents.includes(doc)) return false;
+    if (remember) doc.pageHistory = [...(doc.pageHistory ?? []).slice(-99), doc.largePage.startLine];
+    doc.largePage = page;
+    const model = ensureDocumentModel(doc);
+    model.setValue(page.text);
+    doc.savedAlternativeVersionId = model.getAlternativeVersionId();
+    doc.dirty = false;
+    doc.viewState = undefined;
+    state.searchRevision += 1;
+    if (doc.id === state.activeId) {
+      applyEditorPerformanceProfile(doc);
+      editor.setPosition({ lineNumber: 1, column: 1 });
+      renderAll();
+    }
+    return true;
+  } catch (error) {
+    if (doc.id === state.activeId) { log(`读取大文件失败：${String(error)}`); $("largeFileStatus").textContent = String(error); }
+    return false;
+  } finally {
+    if (doc.pageRequest === request) {
+      doc.pageLoading = false;
+      if (doc.id === state.activeId) {
+        $<HTMLButtonElement>("largeFileGo").disabled = false;
+        $<HTMLButtonElement>("largeFilePrevious").disabled = doc.largePage!.startLine <= 1;
+        $<HTMLButtonElement>("largeFileNext").disabled = doc.largePage!.eof;
+        if ($("largeFileStatus").textContent === "正在读取并建立行索引…") renderLargeFileControls();
+      }
+    }
+  }
+}
+
+async function navigateSourceLine(doc: OpenDocument, line: number, column: number) {
+  if (!Number.isSafeInteger(line) || line < 1) return;
+  if (doc.largePage && (line < doc.largePage.startLine || line >= doc.largePage.nextLine)) {
+    if (!await loadLargePage(doc, line)) return;
+  }
+  if (state.activeId !== doc.id) return;
+  const localLine = Math.max(1, line - (doc.largePage?.startLine ?? 1) + 1);
+  editor.revealPositionInCenter({ lineNumber: localLine, column });
+  editor.setPosition({ lineNumber: localLine, column });
+  editor.focus();
+}
+
+function bindLargeFileControls() {
+  $("largeFileNext").addEventListener("click", () => { const doc = activeDocument(); if (doc.largePage) void loadLargePage(doc, doc.largePage.nextLine); });
+  $("largeFilePrevious").addEventListener("click", () => {
+    const doc = activeDocument();
+    if (doc.largePage) void loadLargePage(doc, doc.pageHistory?.pop() ?? Math.max(1, doc.largePage.startLine - 2000), false);
+  });
+  const go = () => void navigateSourceLine(activeDocument(), Number($<HTMLInputElement>("largeFileLine").value), 1);
+  $("largeFileGo").addEventListener("click", go);
+  $("largeFileLine").addEventListener("keydown", event => { if (event.key === "Enter") go(); });
+  $("largeFileReload").addEventListener("click", async () => {
+    const doc = activeDocument();
+    if (!doc.path || doc.pageLoading) return;
+    try {
+      const dto = await invoke<DocumentDto>("open_path", { path: doc.path });
+      if (!state.documents.includes(doc)) return;
+      applyDocumentDto(doc, dto, "编码已识别");
+      doc.pageHistory = [];
+      if (doc.id === state.activeId) { attachEditorModel(doc); renderAll(); }
+    } catch (error) { $("largeFileStatus").textContent = String(error); }
+  });
 }
 
 function activateDocument(id: number) {
@@ -4015,6 +4135,8 @@ function applyDocumentDto(
   dto: DocumentDto,
   encodingStatus: OpenDocument["encodingStatus"],
 ) {
+  doc.fileRevision = (doc.fileRevision ?? 1) + 1;
+  doc.largePage = dto.largePage;
   if (doc.model) doc.model.setValue(dto.text);
   cancelAutoSave(doc.id);
   cancelDocumentSizeUpdate(doc.id);
@@ -4437,6 +4559,7 @@ function rememberClosedDocument(doc: OpenDocument) {
     language: doc.language,
     languageOverride: doc.languageOverride,
     largeFile: doc.largeFile,
+    largePage: doc.largePage,
     draftId: doc.draftId,
     dirty: doc.dirty,
     savedText: doc.savedText,
@@ -5321,6 +5444,12 @@ function setSearchResults(
   activeIndex = report.total > 0 ? 0 : -1,
   showPanel = false,
 ) {
+  if (state.workspaceSearchStatus === "searching") {
+    void cancelWorkspaceSearch();
+    state.workspaceSearchRequestId += 1;
+    state.workspaceSearchStatus = "idle";
+  }
+  resetResultAnalysis();
   const query = ($("findInput") as HTMLInputElement).value;
   state.results = report;
   state.searchScope = scope;
@@ -5572,12 +5701,18 @@ function scrollActiveResultIntoView() {
 }
 
 function clearSearchResults() {
+  resetResultAnalysis();
   state.searchResultHistory = [];
   resetSearchResults();
   log("已清除查找结果");
 }
 
 function resetSearchResults(preserveMarkdownSelection = false) {
+  if (state.workspaceSearchStatus === "searching") {
+    void cancelWorkspaceSearch();
+    state.workspaceSearchRequestId += 1;
+    state.workspaceSearchStatus = "idle";
+  }
   state.results = null;
   state.searchScope = null;
   state.searchQuery = "";
@@ -5778,25 +5913,155 @@ function replaceOpenDocuments() {
   log(`打开文档替换 ${total} 处${skipped ? `，跳过 ${skipped} 个只读文档` : ""}`);
 }
 
+
+function resetResultAnalysis() {
+  analysisGeneration += 1;
+  analysisWorker?.terminate();
+  analysisWorker = null;
+  analysedRows = null;
+  analysisUndo = [];
+  $("resultAnalysisStatus").textContent = "";
+  renderSearchSidebarResults();
+}
+
+function resultAnalysisRows() {
+  if (analysedRows) return analysedRows;
+  const source = $<HTMLSelectElement>("resultAnalysisSource").value;
+  const report = source === "current" ? state.results : state.searchResultHistory.find(entry => String(entry.id) === source)?.report;
+  return report ? flattenSearchReport(report).map(item => ({ path: item.path, line: item.match.line, column: item.match.column, text: item.match.lineText })) : [];
+}
+
+async function runResultAnalysis(action: AnalysisStep["action"]) {
+  if (analysisWorker || workspaceSearchIsBusy()) return;
+  const rows = resultAnalysisRows();
+  if (!rows.length) { $("resultAnalysisStatus").textContent = "没有可分析的结果"; return; }
+  const generation = ++analysisGeneration;
+  const worker = new Worker(new URL("./resultAnalysisWorker.ts", import.meta.url), { type: "module" });
+  analysisWorker = worker;
+  $("resultAnalysisStatus").textContent = "正在分析…";
+  const timer = window.setTimeout(() => finish("分析超时，请简化正则表达式"), 3000);
+  const finish = (error?: string, next?: ResultRow[]) => {
+    window.clearTimeout(timer);
+    worker.terminate();
+    if (generation !== analysisGeneration) return;
+    analysisWorker = null;
+    if (next) {
+      analysisUndo = [...analysisUndo.slice(-4), rows];
+      analysedRows = next;
+      analysisVisibleRows = 400;
+      renderSearchSidebarResults();
+    }
+    $("resultAnalysisStatus").textContent = error || `本步 ${rows.length} → ${next?.length ?? 0} 条；可继续筛选`;
+  };
+  worker.onmessage = event => finish(event.data.error, event.data.rows);
+  worker.onerror = event => finish(event.message);
+  worker.postMessage({ rows, step: { action, query: $<HTMLInputElement>("resultAnalysisQuery").value, regex: $<HTMLInputElement>("resultAnalysisRegex").checked, matchCase: $<HTMLInputElement>("resultAnalysisCase").checked } });
+}
+
+async function exportResultAnalysis(format: "csv" | "json") {
+  try {
+    const rows = resultAnalysisRows();
+    const path = await invoke<string | null>("pick_save_path", { request: { defaultDir: preferredDialogDirectory(), fileName: `分析结果.${format}` } });
+    if (!path) return;
+    await invoke("save_document", { request: { path, text: exportResultRows(rows, format), encoding: "UTF-8", lineEnding: "LF" } });
+    $("resultAnalysisStatus").textContent = `已导出 ${rows.length} 条结果`;
+  } catch (error) { $("resultAnalysisStatus").textContent = `导出失败：${String(error)}`; }
+}
+
+function bindResultAnalysis() {
+  $("resultAnalysisToolbar").querySelectorAll<HTMLButtonElement>("[data-result-action]").forEach(button => {
+    button.addEventListener("click", () => void runResultAnalysis(button.dataset.resultAction as AnalysisStep["action"]));
+  });
+  $("resultAnalysisSource").addEventListener("change", resetResultAnalysis);
+  $("resultAnalysisReset").addEventListener("click", resetResultAnalysis);
+  $("resultAnalysisUndo").addEventListener("click", () => {
+    if (analysisWorker) return;
+    const previous = analysisUndo.pop();
+    if (previous) { analysedRows = previous; $("resultAnalysisStatus").textContent = `已撤销，恢复 ${previous.length} 条`; renderSearchSidebarResults(); }
+  });
+  $("resultAnalysisCsv").addEventListener("click", () => void exportResultAnalysis("csv"));
+  $("resultAnalysisJson").addEventListener("click", () => void exportResultAnalysis("json"));
+}
+
+function renderResultAnalysis(body: HTMLElement, summary: HTMLElement) {
+  const rows = analysedRows!;
+  summary.textContent = `二次分析 · ${rows.length} 条 · 保留原始文件位置`;
+  body.innerHTML = `<div class="find-result-list">${rows.slice(0, analysisVisibleRows).map((row, index) => `<button class="find-result-row" data-analysis-row="${index}"><span class="find-result-line">${row.line}:${row.column}</span><span class="find-result-preview">${escapeHtml(row.text)}</span><small>${escapeHtml(row.path)}</small></button>`).join("")}</div>${rows.length > analysisVisibleRows ? '<button class="tool-button" id="moreAnalysisRows">继续显示</button>' : ""}`;
+  body.querySelectorAll<HTMLElement>("[data-analysis-row]").forEach(button => button.addEventListener("click", () => {
+    const row = rows[Number(button.dataset.analysisRow)];
+    void openResult(row.path, row.line, row.column);
+  }));
+  $("moreAnalysisRows")?.addEventListener("click", () => { analysisVisibleRows += 400; renderSearchSidebarResults(); });
+}
+
+
+async function cancelWorkspaceSearch() {
+  workspaceSearchCancelRequested = true;
+  if (workspaceSearchRunId !== null) {
+    try { await invoke("cancel_workspace_search", { runId: workspaceSearchRunId }); }
+    catch (error) { log(`取消搜索失败：${String(error)}`); }
+  }
+}
+
 async function searchWorkspace() {
   const root = ($("directoryInput") as HTMLInputElement).value || state.workspace?.root;
   const query = ($("findInput") as HTMLInputElement).value;
-  if (!query) {
-    log("查找内容不能为空");
-    return;
-  }
-  if (!root) {
-    log("目录查找需要先进入文件夹模式并选择目录");
-    return;
-  }
+  if (!query || !root) { log("请输入查找内容并选择目录"); return; }
+  if (workspaceSearchIsBusy()) return;
   commitSearchHistory();
+  resetResultAnalysis();
   const requestId = beginWorkspaceSearch("search", "searching");
+  workspaceSearchCancelRequested = false;
+  workspaceSearchRunId = null;
+  const report: SearchReportDto = { hits: [], skipped: [], total: 0, filesScanned: 0, elapsedMs: 0 };
+  state.results = report;
+  state.activeResultIndex = -1;
+  state.searchScope = "workspace";
+  state.searchQuery = query;
+  state.panel = "results";
+  state.workspaceSearchVisibleResults = 400;
+  const hitsByPath = new globalThis.Map<string, FileHitDto>();
+  let renderTimer: number | undefined;
+  let done = false;
+  const channel = new Channel<SearchEvent>();
+  channel.onmessage = (event) => {
+    if (requestId !== state.workspaceSearchRequestId || done) return;
+    for (const hit of event.report.hits) {
+      const existing = hitsByPath.get(hit.path);
+      if (existing) existing.matches.push(...hit.matches);
+      else { hitsByPath.set(hit.path, hit); report.hits.push(hit); }
+    }
+    report.total += event.report.total;
+    report.skipped.push(...event.report.skipped);
+    report.filesScanned = Math.max(report.filesScanned ?? 0, event.report.filesScanned ?? 0);
+    report.elapsedMs = event.report.elapsedMs;
+    if (event.done) {
+      done = true;
+      window.clearTimeout(renderTimer);
+      workspaceSearchRunId = null;
+      report.cancelled = event.cancelled;
+      report.truncated = event.truncated;
+      report.error = event.error;
+      finishWorkspaceSearch(requestId);
+      // Keep the submitted query even if the user edited the search field during scanning.
+      state.searchResultHistory = addSearchResultHistory(state.searchResultHistory, query, "workspace", report);
+      renderSearchSidebarResults();
+      renderCurrentFindCount();
+      if (event.error) log(`搜索失败：${event.error}`);
+      else log(`${event.cancelled ? "搜索已取消，保留" : "目录查找"} ${report.total} 个命中`);
+      return;
+    }
+    if (renderTimer === undefined) renderTimer = window.setTimeout(() => {
+      renderTimer = undefined;
+      if (requestId === state.workspaceSearchRequestId) renderSearchSidebarResults();
+    }, 100);
+  };
+  renderSearchSidebarResults();
   try {
-    const report = await invoke<SearchReportDto>("search_workspace", {
+    const runId = await invoke<number>("start_workspace_search", {
+      onEvent: channel,
       request: {
-        root,
-        query,
-        mode: getSearchMode(),
+        root, query, mode: getSearchMode(),
         matchCase: ($("matchCaseInput") as HTMLInputElement).checked,
         wholeWord: ($("wholeWordInput") as HTMLInputElement).checked,
         includeHidden: ($("includeHiddenInput") as HTMLInputElement).checked,
@@ -5806,12 +6071,13 @@ async function searchWorkspace() {
         maxFileSize: 20 * 1024 * 1024,
       },
     });
-    if (!finishWorkspaceSearch(requestId)) return;
-    setSearchResults(report, "workspace", -1, true);
-    log(`目录查找 ${report.total} 个命中，扫描 ${report.filesScanned ?? 0} 个文件`);
-  } catch (error) {
-    failWorkspaceSearch(requestId, error);
-  }
+    if (requestId !== state.workspaceSearchRequestId) {
+      await invoke("cancel_workspace_search", { runId });
+    } else if (!done) {
+      workspaceSearchRunId = runId;
+      if (workspaceSearchCancelRequested) await cancelWorkspaceSearch();
+    }
+  } catch (error) { window.clearTimeout(renderTimer); failWorkspaceSearch(requestId, error); }
 }
 
 async function previewWorkspaceReplace() {
@@ -5965,7 +6231,7 @@ function modelMatches(doc: OpenDocument, allowSelection = true): TextMatchDto[] 
     return {
       start: model.getOffsetAt({ lineNumber: match.range.startLineNumber, column: match.range.startColumn }),
       end: model.getOffsetAt({ lineNumber: match.range.endLineNumber, column: match.range.endColumn }),
-      line: match.range.startLineNumber,
+      line: match.range.startLineNumber + (doc.largePage?.startLine ?? 1) - 1,
       column: match.range.startColumn,
       lineText: line,
       matchedText: model.getValueInRange(match.range),
@@ -6282,6 +6548,7 @@ function applyEditorPerformanceProfile(doc: OpenDocument) {
   document.documentElement.style.setProperty("--editor-font-size", `${state.fontSize}px`);
   editor.updateOptions({
     readOnly: doc.readOnly,
+    lineNumbers: doc.largePage ? (line: number) => String(line + doc.largePage!.startLine - 1) : "on",
     readOnlyMessage: { value: doc.readOnlyReason || "当前文档只读" },
     minimap: { enabled: !large && state.minimap },
     wordWrap: !large && state.wordWrap ? "on" : "off",
@@ -6315,6 +6582,7 @@ function markdownSearchOptions(): MarkdownSearchOptions {
 }
 
 function renderAll() {
+  renderLargeFileControls();
   renderMenus();
   renderWorkspace();
   renderChrome();
@@ -6622,8 +6890,8 @@ function renderDocumentStatus(doc = activeDocument()) {
     .filter(Boolean)
     .join(" · ");
   $("statusRight").innerHTML = [
-    `第 ${editor.getPosition()?.lineNumber ?? 1} 行，第 ${editor.getPosition()?.column ?? 1} 列`,
-    `${documentLineCount(doc)} 行`,
+    `第 ${(editor.getPosition()?.lineNumber ?? 1) + (doc.largePage?.startLine ?? 1) - 1} 行，第 ${editor.getPosition()?.column ?? 1} 列`,
+    doc.largePage ? `当前页 ${doc.largePage.startLine}–${Math.max(doc.largePage.startLine, doc.largePage.nextLine - 1)} 行` : `${documentLineCount(doc)} 行`,
     `${documentValueLength(doc)} 字符`,
     `${formatBytes(doc.fileSize)}`,
   ].map((item) => `<span>${item}</span>`).join(`<span class="dot"></span>`);
@@ -7459,16 +7727,34 @@ function renderSearchSidebarResults() {
   const renderVersion = ++searchResultRenderVersion;
   renderWorkspaceSearchControls();
   syncBottomResults();
+  const source = $<HTMLSelectElement>("resultAnalysisSource");
+  const options = `<option value="current">当前搜索结果</option>` + state.searchResultHistory.map(entry => `<option value="${entry.id}">${escapeHtml(entry.query)}</option>`).join("");
+  if (source.innerHTML !== options) { const selected = source.value; source.innerHTML = options; if ([...source.options].some(option => option.value === selected)) source.value = selected; }
+  $("resultAnalysisToolbar").classList.toggle("hidden", !state.results || workspaceSearchIsBusy() || state.panel === "preview");
+  if (analysedRows && !workspaceSearchIsBusy() && state.panel !== "preview") { renderResultAnalysis(body, summary); return; }
 
   const busy = workspaceSearchIsBusy();
   body.closest(".find-results-pane")?.setAttribute("aria-busy", String(busy));
+  if (state.workspaceSearchStatus === "searching") {
+    title.textContent = "搜索结果";
+    summary.textContent = state.results ? searchReportSummary(state.results) : "准备搜索";
+    body.innerHTML = `<div class="find-result-actions" role="status"><span>正在扫描文件…</span><button class="tool-button" id="cancelWorkspaceSearchButton">取消搜索</button></div><div class="find-result-list" id="streamSearchResults"></div>`;
+    $("cancelWorkspaceSearchButton").addEventListener("click", () => void cancelWorkspaceSearch());
+    const list = $("streamSearchResults");
+    list.addEventListener("click", (event) => {
+      const row = (event.target as HTMLElement).closest<HTMLElement>("[data-result-index]");
+      if (row) void openSearchResult(Number(row.dataset.resultIndex));
+    });
+    if (state.results) renderProgressiveSearchResults(state.results, list, renderVersion);
+    return;
+  }
   if (busy) {
     const label = state.workspaceSearchStatus === "applying"
       ? "正在写入替换"
       : state.workspaceSearchStatus === "previewing"
         ? "正在生成替换预览"
         : "正在搜索文件";
-    title.textContent = state.workspaceSearchStatus === "searching" ? "搜索结果" : "替换预览";
+    title.textContent = "替换预览";
     summary.textContent = label;
     body.innerHTML = `<div class="workspace-search-progress" role="status">${iconSvg("LoaderCircle")}<strong>${label}</strong><span>水獭正在扫描目录，请稍候…</span></div><div class="search-skeleton" aria-hidden="true">${Array.from({ length: 5 }, () => `<span></span>`).join("")}</div>`;
     return;
@@ -7570,7 +7856,7 @@ function renderSearchResultHistory(body: HTMLElement, summary: HTMLElement, rend
     section.className = "find-result-history-entry";
     const resultsId = `search-result-history-${entry.id}`;
     const details = `${searchScopeLabel(entry.scope)} · ${searchReportSummary(entry.report)}`;
-    section.innerHTML = `<button class="find-result-history-toggle" type="button" data-search-history-toggle data-search-batch-id="${entry.id}" aria-expanded="${String(entry.expanded)}" aria-controls="${resultsId}">${iconSvg(entry.expanded ? "ChevronDown" : "ChevronRight")}<strong title="${escapeAttr(entry.query)}">“${escapeHtml(entry.query)}”</strong><span>${escapeHtml(details)}</span></button><div class="find-result-list ${entry.expanded ? "" : "hidden"}" id="${resultsId}"></div>`;
+    section.innerHTML = `<button class="find-result-history-toggle" type="button" data-search-history-toggle data-search-batch-id="${entry.id}" aria-expanded="${String(entry.expanded)}" aria-controls="${resultsId}">${iconSvg(entry.expanded ? "ChevronDown" : "ChevronRight")}<strong title="${escapeAttr(entry.query)}">“${escapeHtml(entry.query)}”</strong><span>${escapeHtml(details)}</span></button>${entry.expanded ? skippedSearchDetails(entry.report) : ""}<div class="find-result-list ${entry.expanded ? "" : "hidden"}" id="${resultsId}"></div>`;
     historyList.appendChild(section);
     if (!entry.expanded) continue;
     const list = section.lastElementChild as HTMLElement;
@@ -7630,8 +7916,17 @@ function retryWorkspaceSearch() {
   else void applyWorkspaceReplace();
 }
 
+function skippedSearchDetails(report: SearchReportDto) {
+  if (!report.skipped.length) return "";
+  return `<details class="search-skipped"><summary>跳过 ${report.skipped.length} 项（点击查看原因）</summary><pre>${escapeHtml(report.skipped.slice(0, 100).join("\n"))}${report.skipped.length > 100 ? "\n仅展示前 100 项" : ""}</pre></details>`;
+}
+
 function searchReportSummary(report: SearchReportDto) {
   const parts = [`捞出 ${report.total} 处`, `${report.hits.length} 个文件`];
+  if (report.error) parts.push(`搜索失败：${report.error}`);
+  if (report.cancelled) parts.push("已取消 · 部分结果");
+  if (report.truncated) parts.push("达到结果上限（50,000 条 / 32 MiB）· 部分结果");
+  if (report.skipped.length) parts.push(`跳过 ${report.skipped.length} 项`);
   if (report.filesScanned !== undefined) parts.push(`扫描 ${report.filesScanned}`);
   if (report.elapsedMs !== undefined) parts.push(formatSearchDuration(report.elapsedMs));
   return parts.join(" · ");
@@ -7807,8 +8102,7 @@ async function openResult(path: string, line: number, column: number) {
     (await ensureMarkdownEditor(current))?.focus();
     return current;
   }
-  editor.revealPositionInCenter({ lineNumber: line, column });
-  editor.setPosition({ lineNumber: line, column });
+  await navigateSourceLine(current, line, column);
   editor.focus();
   return current;
 }
@@ -7828,6 +8122,7 @@ function renderSearchDecorations() {
   for (const hit of state.results.hits) {
     for (const match of hit.matches) {
       if (hit.path === activePath) {
+        if (doc.largePage && (match.line < doc.largePage.startLine || match.line >= doc.largePage.nextLine)) { index += 1; continue; }
         const range = rangeFromMatch(match);
         const decoration = {
           range,
@@ -7863,6 +8158,7 @@ function renderSearchDecorations() {
 }
 
 function rangeFromMatch(match: TextMatchDto) {
+  match = { ...match, line: match.line - (activeDocument().largePage?.startLine ?? 1) + 1 };
   const parts = match.matchedText.split(/\r\n|\n|\r/);
   if (parts.length === 1) {
     return new monaco.Range(match.line, match.column, match.line, match.column + Math.max(1, match.matchedText.length));
@@ -8410,8 +8706,9 @@ function attachEditorModel(doc: OpenDocument) {
 
 function toggleBookmark() {
   const doc = activeDocument();
-  const line = editor.getPosition()?.lineNumber;
-  if (!doc || !line) return;
+  const localLine = editor.getPosition()?.lineNumber;
+  if (!doc || !localLine) return;
+  const line = localLine + (doc.largePage?.startLine ?? 1) - 1;
   const key = documentSessionKey(doc);
   const lines = new Set(state.bookmarks[key] ?? []);
   if (lines.has(line)) lines.delete(line);
@@ -8430,9 +8727,10 @@ function navigateBookmark(delta: number) {
     log("当前文档没有书签");
     return;
   }
-  const current = editor.getPosition()?.lineNumber ?? 1;
+  const current = (editor.getPosition()?.lineNumber ?? 1) + (doc.largePage?.startLine ?? 1) - 1;
   const ordered = delta > 0 ? lines : [...lines].reverse();
   const target = ordered.find((line) => delta > 0 ? line > current : line < current) ?? ordered[0];
+  if (doc.largePage) { void navigateSourceLine(doc, target, 1); return; }
   editor.setPosition({ lineNumber: target, column: 1 });
   editor.revealLineInCenterIfOutsideViewport(target);
   editor.focus();
@@ -8442,7 +8740,7 @@ function renderBookmarkDecorations() {
   if (!bookmarkDecorations || !editor?.getModel()) return;
   const doc = activeDocument();
   const lineCount = documentLineCount(doc);
-  const lines = (state.bookmarks[documentSessionKey(doc)] ?? []).filter((line) => line >= 1 && line <= lineCount);
+  const lines = (state.bookmarks[documentSessionKey(doc)] ?? []).map(line => line - (doc.largePage?.startLine ?? 1) + 1).filter((line) => line >= 1 && line <= lineCount);
   bookmarkDecorations.set(lines.map((line) => ({
     range: new monaco.Range(line, 1, line, 1),
     options: {
@@ -8461,6 +8759,7 @@ function renderAnalyseBookmarkDecorations() {
   const doc = activeDocument();
   const lineCount = documentLineCount(doc);
   const lines = (analyseBookmarkLines.get(doc.id) ?? [])
+    .map(line => line - (doc.largePage?.startLine ?? 1) + 1)
     .filter((line) => line >= 1 && line <= lineCount);
   analyseBookmarkDecorations.set(lines.map((line) => ({
     range: new monaco.Range(line, 1, line, 1),
@@ -8476,6 +8775,7 @@ function renderAnalyseBookmarkDecorations() {
 }
 
 function syncActiveBookmarkLines(doc = activeDocument()) {
+  if (doc.largePage) return;
   if (!bookmarkDecorations || editor.getModel() !== doc.model) return;
   const lines: number[] = [];
   for (let index = 0; index < bookmarkDecorations.length; index += 1) {
@@ -8517,6 +8817,7 @@ function markdownEditModeLabel(mode: MarkdownEditMode) {
 }
 
 function isMarkdownLikeDocument(doc = activeDocument()) {
+  if (doc.largePage) return false;
   if (isMarkdownLikeLanguage(doc.language)) return true;
   const name = (doc.path || doc.title).toLowerCase();
   return /\.(md|markdown|mdx|rmd)$/.test(name);
@@ -9223,6 +9524,11 @@ function transformToLowercase() {
 }
 
 async function goToLine() {
+  if (activeDocument().largePage) {
+    const value = await askTextInput({ title: "跳转到行", subtitle: "大文件将按需建立行索引，首次远距离跳转可能需要等待", label: "原文件行号", value: "1", inputMode: "numeric" });
+    if (value !== null && Number.isSafeInteger(Number(value)) && Number(value) > 0) await navigateSourceLine(activeDocument(), Number(value), 1);
+    return;
+  }
   const model = editor.getModel();
   if (!model) return;
   const lineCount = model.getLineCount();

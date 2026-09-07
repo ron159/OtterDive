@@ -55,3 +55,10 @@ async function loadTypeScriptModule(relativePath) {
   }).outputText;
   return import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
 }
+
+test("keeps only the five most recent result snapshots", () => {
+  let entries = [];
+  for (let i = 0; i < 20; i++) entries = history.addSearchResultHistory(entries, String(i), "workspace", { total: 1 });
+  assert.deepEqual(entries.map(entry => entry.query), ["15", "16", "17", "18", "19"]);
+  assert.equal(new Set(entries.map(entry => entry.id)).size, 5);
+});

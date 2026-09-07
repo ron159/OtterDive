@@ -24,15 +24,18 @@ Large logs, cross-file searches, and complex rule analysis often force you to ju
 ## ✨ Feature Highlights
 
 - 📂 **Files and workspaces**: Open content in single-file or workspace mode by selecting or dragging files and folders.
-- ✍️ **Monaco editing experience**: Detect dozens of languages by file name and extension, with syntax highlighting, completion, folding, bracket matching, and multiple cursors; files above the editable-size threshold open in protected read-only mode.
+- ✍️ **Monaco editing experience**: Detect dozens of languages by file name and extension, with syntax highlighting, completion, folding, bracket matching, and multiple cursors; files above 20 MiB use a dedicated read-only viewer with on-demand pages and navigation by original line number.
 - 🧹 **Local code formatting**: Format JavaScript, TypeScript, JSX, TSX, JSON, JSONC, Markdown, TOML, Python, and Dockerfile content with bundled dprint WASM plugins, plus dedicated SQL formatting, without runtime network access.
 - ⌨️ **Familiar keybindings**: Choose the built-in VS Code or Notepad++ profile, browse commands by group, and customize bindings.
 - 📝 **Complete Markdown workflow**: Use instant editing, source and split-preview modes, outlines, tables, task lists, math, remote images, Mermaid, PlantUML, and Vega diagrams.
-- 🔎 **Multi-scope search**: Search the current file, all open documents, or an entire workspace with normal, extended, and regular-expression modes, result navigation, and replacement previews.
+- 🔎 **Multi-scope search**: Search the current file, all open documents, or an entire workspace with normal, extended, and regular-expression modes, result navigation, and replacement previews. Workspace searches deliver batches and can be cancelled while keeping partial results.
+- 🧮 **Analyze search results**: Chain inclusion/exclusion filters, capture-group extraction and deduplication over current or historical results, with undo, CSV/JSON export and preserved source locations.
 - 🧩 **Analyse rule processing**: Import compatible XML profiles, run Normal, Escaped, Regex, and multiline Regex rules, and generate merged results, styles, bookmarks, HTML, and RTF output.
 - 🔤 **Encoding and line endings**: Detect and convert UTF-8, UTF-8 BOM, UTF-16, and ANSI encodings, with LF, CRLF, and CR support.
 - 💾 **Session restoration**: Restore drafts, open tabs, window placement, workspaces, search history, Analyse settings, and editor preferences.
 - 🎨 **Consistent desktop experience**: Use custom window chrome, light and dark themes, file-type icons, and configurable editor appearance.
+
+In large-file mode, editor search covers the current page; use Analyse for full-file rule processing. The first jump to a distant line builds a sparse index on demand. Very long lines preview their first 64 KiB. Workspace search skips files above 20 MiB and retains up to 50,000 matches or 32 MiB of result text per run, explicitly reporting cancellation, limits and skipped files. Result history keeps the five most recent searches.
 
 ## Project Status
 

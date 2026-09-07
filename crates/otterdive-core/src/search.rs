@@ -94,6 +94,20 @@ impl SearchMatcher {
             .collect()
     }
 
+    pub(crate) fn visit_matches(&self, text: &str, mut visit: impl FnMut(TextMatch) -> bool) {
+        let index = LineIndex::new(text);
+        for mat in self.pattern.find_iter(text) {
+            if mat.start() == mat.end()
+                || (self.whole_word && !is_whole_word(text, mat.start(), mat.end()))
+            {
+                continue;
+            }
+            if !visit(index.match_from_range(text, mat.start(), mat.end())) {
+                break;
+            }
+        }
+    }
+
     fn matching_ranges(&self, text: &str) -> Vec<(usize, usize)> {
         self.pattern
             .find_iter(text)

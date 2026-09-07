@@ -14,7 +14,7 @@ export function addSearchResultHistory<TReport, TScope extends string>(
 ) {
   const id = entries.reduce((highest, entry) => Math.max(highest, entry.id), 0) + 1;
   return [
-    ...entries.map((entry) => ({ ...entry, expanded: false })),
+    ...entries.slice(-4).map((entry) => ({ ...entry, expanded: false })),
     { id, query, scope, report, expanded: true },
   ];
 }

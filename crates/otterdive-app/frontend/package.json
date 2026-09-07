@@ -1,7 +1,7 @@
 {
   "name": "otterdive-frontend",
   "private": true,
-  "version": "0.5.3",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
@@ -10,7 +10,7 @@
     "test:analyse": "node scripts/verify-analyse-state.mjs",
     "test:auto-save": "node scripts/verify-auto-save.mjs",
     "test:keybindings": "node scripts/verify-keybindings.mjs",
-    "test:search-results": "node --test tests/searchResultHistory.test.mjs",
+    "test:search-results": "node --test tests/searchResultHistory.test.mjs tests/resultAnalysis.test.mjs",
     "test:formatters": "node --test tests/dprintFormatter.test.mjs",
     "test:languages": "node --test tests/languageFormattingSupport.test.mjs",
     "test:performance": "node --test tests/openBatch.test.mjs tests/openPerformance.test.mjs",

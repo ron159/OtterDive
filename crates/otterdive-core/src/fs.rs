@@ -5,7 +5,7 @@ use crate::search::{
 };
 use encoding_rs::{GBK, UTF_8};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use walkdir::{DirEntry, WalkDir};
@@ -195,6 +195,147 @@ pub fn search_directory(
     }
     report.elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
     Ok(report)
+}
+
+/// Batches contain only new hits/skips; counters are cumulative. Returning false stops delivery.
+#[derive(Debug, Default)]
+pub struct StreamSearchSummary {
+    pub cancelled: bool,
+    pub truncated: bool,
+    pub files_scanned: usize,
+    pub elapsed_ms: u64,
+}
+
+pub fn search_directory_stream(
+    root: impl AsRef<Path>,
+    query: &str,
+    options: &SearchOptions,
+    cancel: &crate::analyse::CancellationToken,
+    max_results: usize,
+    mut emit: impl FnMut(DirectorySearchReport) -> bool,
+) -> Result<StreamSearchSummary, SearchError> {
+    let started = Instant::now();
+    let matcher = SearchMatcher::new(query, options)?;
+    let file_glob = FileGlobMatcher::new(&options.file_glob);
+    let skip_dirs = parse_list(&options.skip_dirs);
+    let mut walker = WalkDir::new(root);
+    if !options.recursive {
+        walker = walker.max_depth(1);
+    }
+    let mut summary = StreamSearchSummary::default();
+    let mut total = 0;
+    let mut result_bytes = 0usize;
+    for entry in walker
+        .into_iter()
+        .filter_entry(|entry| should_visit(entry, options, &skip_dirs))
+    {
+        if cancel.is_cancelled() || summary.truncated {
+            break;
+        }
+        let mut batch = DirectorySearchReport::default();
+        let path = match entry {
+            Ok(entry) if entry.file_type().is_file() && file_glob.matches(entry.path()) => {
+                entry.into_path()
+            }
+            Ok(_) => continue,
+            Err(error) => {
+                batch.skipped.push(error.to_string());
+                if !emit(batch) {
+                    cancel.cancel();
+                }
+                continue;
+            }
+        };
+        let decoded = fs::metadata(&path).and_then(|meta| {
+            if meta.len() > options.max_file_size {
+                Err(io::Error::other("文件超过搜索大小限制"))
+            } else {
+                read_search_text(&path, options.max_file_size, cancel)
+            }
+        });
+        if cancel.is_cancelled() {
+            break;
+        }
+        summary.files_scanned += 1;
+        match decoded {
+            Err(error) => batch.skipped.push(format!("{}: {error}", path.display())),
+            Ok(decoded) => {
+                let mut matches = Vec::new();
+                matcher.visit_matches(&decoded.text, |hit| {
+                    if cancel.is_cancelled() {
+                        return false;
+                    }
+                    result_bytes = result_bytes
+                        .saturating_add(hit.line_text.len())
+                        .saturating_add(hit.matched_text.len());
+                    if total >= max_results || result_bytes > 32 * 1024 * 1024 {
+                        summary.truncated = true;
+                        return false;
+                    }
+                    matches.push(hit);
+                    total += 1;
+                    if matches.len() == 128 {
+                        let report = DirectorySearchReport {
+                            hits: vec![FileHit {
+                                path: path.clone(),
+                                encoding: decoded.encoding,
+                                matches: std::mem::take(&mut matches),
+                            }],
+                            files_scanned: summary.files_scanned,
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            ..Default::default()
+                        };
+                        if !emit(report) {
+                            cancel.cancel();
+                        }
+                    }
+                    !cancel.is_cancelled()
+                });
+                if !matches.is_empty() {
+                    batch.hits.push(FileHit {
+                        path,
+                        encoding: decoded.encoding,
+                        matches,
+                    });
+                }
+            }
+        }
+        batch.files_scanned = summary.files_scanned;
+        batch.elapsed_ms = started.elapsed().as_millis() as u64;
+        if !emit(batch) {
+            cancel.cancel();
+        }
+    }
+    summary.cancelled = cancel.is_cancelled();
+    summary.elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(summary)
+}
+
+fn read_search_text(
+    path: &Path,
+    limit: u64,
+    cancel: &crate::analyse::CancellationToken,
+) -> io::Result<DecodedText> {
+    let mut file = fs::File::open(path)?.take(limit.saturating_add(1));
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "搜索已取消"));
+        }
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.len() as u64 > limit {
+            return Err(io::Error::other("文件超过搜索大小限制"));
+        }
+    }
+    if is_probably_binary(&bytes) {
+        return Err(io::Error::other("跳过二进制文件"));
+    }
+    Ok(decode_bytes(&bytes))
 }
 
 pub fn preview_directory_replace(

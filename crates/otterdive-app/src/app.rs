@@ -118,6 +118,7 @@ pub struct DocumentDto {
     pub read_only_reason: Option<String>,
     pub language: String,
     pub large_file: bool,
+    pub large_page: Option<crate::large_file::PageDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -550,6 +551,8 @@ pub fn run() {
             app.manage(store);
             app.manage(OpenRequestQueue::default());
             app.manage(AnalyseService::default());
+            app.manage(crate::large_file::LargeFileService::default());
+            app.manage(crate::stream_search::SearchService::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -558,6 +561,7 @@ pub fn run() {
             open_file_dialog,
             pick_file_path,
             open_path,
+            crate::large_file::read_large_file_page,
             reopen_path_with_encoding,
             pick_save_path,
             pick_pdf_save_path,
@@ -572,6 +576,8 @@ pub fn run() {
             delete_workspace_entry,
             reveal_workspace_entry,
             search_workspace,
+            crate::stream_search::start_workspace_search,
+            crate::stream_search::cancel_workspace_search,
             preview_workspace_replace,
             apply_workspace_replace,
             startup_args,
@@ -609,7 +615,7 @@ fn save_session(snapshot: String, store: tauri::State<'_, SessionStore>) -> Resu
 }
 
 #[tauri::command]
-async fn open_file_dialog() -> Result<Option<DocumentDto>, String> {
+async fn open_file_dialog(service: tauri::State<'_, crate::large_file::LargeFileService>) -> Result<Option<DocumentDto>, String> {
     let Some(path) = pick_file_path(DialogPathRequest {
         default_dir: None,
         file_name: None,
@@ -617,7 +623,7 @@ async fn open_file_dialog() -> Result<Option<DocumentDto>, String> {
     else {
         return Ok(None);
     };
-    open_path(path).await.map(Some)
+    open_path(path, service).await.map(Some)
 }
 
 #[tauri::command]
@@ -628,9 +634,13 @@ fn pick_file_path(request: DialogPathRequest) -> Result<Option<String>, String> 
 }
 
 #[tauri::command]
-async fn open_path(path: String) -> Result<DocumentDto, String> {
+async fn open_path(path: String, service: tauri::State<'_, crate::large_file::LargeFileService>) -> Result<DocumentDto, String> {
+    let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(path);
+        if fs::metadata(&path).map_err(|e| e.to_string())?.len() > EDITABLE_FILE_LIMIT_BYTES {
+            return service.open_document(&path.to_string_lossy(), None);
+        }
         let doc = LoadedDocument::open(&path)
             .map_err(|err| format!("打开失败：{}：{err}", path.display()))?;
         Ok(loaded_document_to_dto(doc))
@@ -640,11 +650,15 @@ async fn open_path(path: String) -> Result<DocumentDto, String> {
 }
 
 #[tauri::command]
-async fn reopen_path_with_encoding(request: ReopenRequest) -> Result<DocumentDto, String> {
+async fn reopen_path_with_encoding(request: ReopenRequest, service: tauri::State<'_, crate::large_file::LargeFileService>) -> Result<DocumentDto, String> {
+    let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(request.path);
         let metadata = fs::metadata(&path)
             .map_err(|err| format!("读取文件信息失败：{}：{err}", path.display()))?;
+        if metadata.len() > EDITABLE_FILE_LIMIT_BYTES {
+            return service.open_document(&path.to_string_lossy(), Some(parse_encoding(&request.encoding)));
+        }
         let bytes =
             fs::read(&path).map_err(|err| format!("读取文件失败：{}：{err}", path.display()))?;
         let encoding = parse_encoding(&request.encoding);
@@ -660,6 +674,7 @@ async fn reopen_path_with_encoding(request: ReopenRequest) -> Result<DocumentDto
             path: Some(path.display().to_string()),
             language: language_from_path(Some(&path)),
             large_file: metadata.len() > EDITABLE_FILE_LIMIT_BYTES,
+            large_page: None,
             text: decoded.text,
             encoding: encoding_label(decoded.encoding).to_owned(),
             line_ending: line_ending_label(line_ending).to_owned(),
@@ -1010,6 +1025,7 @@ fn document_to_dto(doc: Document) -> DocumentDto {
         path: path.map(|path| path.display().to_string()),
         language: language_from_path(path),
         large_file: doc.meta.read_only && doc.meta.file_size > EDITABLE_FILE_LIMIT_BYTES as usize,
+        large_page: None,
         text: doc.text,
         encoding: encoding_label(doc.meta.encoding).to_owned(),
         line_ending: line_ending_label(doc.meta.line_ending).to_owned(),
@@ -1026,6 +1042,7 @@ fn loaded_document_to_dto(doc: LoadedDocument) -> DocumentDto {
         path: path.map(|path| path.display().to_string()),
         language: language_from_path(path),
         large_file: doc.meta.read_only && doc.meta.file_size > EDITABLE_FILE_LIMIT_BYTES as usize,
+        large_page: None,
         text: doc.text,
         encoding: encoding_label(doc.meta.encoding).to_owned(),
         line_ending: line_ending_label(doc.meta.line_ending).to_owned(),
@@ -1253,7 +1270,7 @@ mod tests {
     }
 }
 
-fn search_report_to_dto(report: DirectorySearchReport) -> SearchReportDto {
+pub(crate) fn search_report_to_dto(report: DirectorySearchReport) -> SearchReportDto {
     let total = report.hits.iter().map(|hit| hit.matches.len()).sum();
     let files_scanned = report.files_scanned;
     let elapsed_ms = report.elapsed_ms;
@@ -1358,7 +1375,7 @@ fn match_to_dto(value: TextMatch) -> TextMatchDto {
     }
 }
 
-fn search_options_from_request(request: &SearchRequest) -> SearchOptions {
+pub(crate) fn search_options_from_request(request: &SearchRequest) -> SearchOptions {
     SearchOptions {
         mode: parse_search_mode(&request.mode),
         match_case: request.match_case,
@@ -1428,7 +1445,7 @@ fn is_text_like(path: &Path) -> bool {
         .unwrap_or(true)
 }
 
-fn language_from_path(path: Option<&Path>) -> String {
+pub(crate) fn language_from_path(path: Option<&Path>) -> String {
     let Some(path) = path else {
         return "plaintext".to_owned();
     };
@@ -1534,7 +1551,7 @@ fn language_from_extension(ext: &str) -> Option<&'static str> {
     }
 }
 
-fn parse_encoding(label: &str) -> EncodingKind {
+pub(crate) fn parse_encoding(label: &str) -> EncodingKind {
     match label {
         "ANSI" | "GBK" => EncodingKind::Gbk,
         "UTF-8-BOM" | "UTF-8 BOM" => EncodingKind::Utf8Bom,
@@ -1561,7 +1578,7 @@ fn normalize_line_endings(text: &str, line_ending: LineEnding) -> String {
     }
 }
 
-fn encoding_label(encoding: EncodingKind) -> &'static str {
+pub(crate) fn encoding_label(encoding: EncodingKind) -> &'static str {
     match encoding {
         EncodingKind::Utf8 => "UTF-8",
         EncodingKind::Utf8Bom => "UTF-8-BOM",
@@ -1571,7 +1588,7 @@ fn encoding_label(encoding: EncodingKind) -> &'static str {
     }
 }
 
-fn line_ending_label(line_ending: LineEnding) -> &'static str {
+pub(crate) fn line_ending_label(line_ending: LineEnding) -> &'static str {
     match line_ending {
         LineEnding::Lf => "LF",
         LineEnding::Crlf => "CRLF",
