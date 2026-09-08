@@ -1,7 +1,7 @@
 {
   "name": "otterdive-frontend",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.6.1",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
@@ -15,6 +15,7 @@
     "test:languages": "node --test tests/languageFormattingSupport.test.mjs",
     "test:performance": "node --test tests/openBatch.test.mjs tests/openPerformance.test.mjs",
     "test:markdown": "node scripts/verify-mermaid-layout.mjs",
+    "test:outline": "node --test tests/documentOutline.test.mjs",
     "test:print": "node --test tests/markdownPrint.test.mjs",
     "markdown:sync": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../../scripts/sync-marktext-muya.ps1",
     "preview": "vite preview --host 127.0.0.1 --port 1420"

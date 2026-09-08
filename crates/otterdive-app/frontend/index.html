@@ -169,6 +169,7 @@
           <button class="tool-button" id="commandButton" aria-label="命令面板 Ctrl+P" title="命令面板 Ctrl+P" aria-keyshortcuts="Control+P"><span class="icon-slot" data-icon="Command"></span><span data-label>命令面板</span></button>
           <span class="tool-divider"></span>
           <button class="tool-button" id="wordWrapButton" aria-label="自动换行" title="自动换行" aria-pressed="false"><span class="icon-slot" data-icon="WrapText"></span><span data-label>自动换行</span></button>
+          <button class="tool-button hidden" id="outlineButton" aria-label="文档大纲" title="文档大纲" aria-pressed="false"><span class="icon-slot" data-icon="ListTree"></span><span data-label>大纲</span></button>
           <div class="markdown-mode-control hidden" id="markdownModeControl" role="group" aria-label="Markdown 编辑模式">
             <button class="tool-button markdown-mode-button" id="markdownWysiwygButton" data-markdown-mode="wysiwyg" aria-label="Markdown 即时编辑" title="即时编辑"><span class="icon-slot" data-icon="NotebookPen"></span></button>
             <button class="tool-button markdown-mode-button" id="markdownSplitButton" data-markdown-mode="split" aria-label="Markdown 分屏预览" title="分屏预览"><span class="icon-slot" data-icon="Columns2"></span></button>
@@ -177,7 +178,6 @@
         </div>
         <header class="right-tool-tabs" id="rightToolTabs" aria-label="右侧工具">
           <button class="right-tool-tab active" id="rightSearchToolButton" data-right-tool="search"><span class="icon-slot" data-icon="Search"></span><span>文件查找</span></button>
-          <button class="right-tool-tab hidden" id="rightOutlineToolButton" data-right-tool="outline"><span class="icon-slot" data-icon="ListTree"></span><span>大纲</span></button>
           <span class="right-tool-spacer"></span>
           <button class="right-sidebar-toggle" id="rightSidebarToggleButton" aria-label="打开搜索侧栏" title="打开搜索侧栏"><span class="icon-slot" data-icon="PanelRightOpen"></span></button>
         </header>
@@ -283,6 +283,21 @@
 
         <div class="explorer-resize" id="explorerResize" role="separator" aria-orientation="vertical" aria-label="调整目录宽度" aria-valuemin="180" aria-valuemax="640" aria-valuenow="272" tabindex="0"></div>
 
+        <section class="document-view" id="documentView">
+          <aside class="document-outline hidden" id="documentOutline" aria-label="文档大纲">
+            <details class="outline-options" id="outlineOptions">
+              <summary aria-label="大纲显示设置" title="大纲显示设置">···</summary>
+              <div class="outline-options-body">
+                <label for="outlineDisplayMode">显示方式</label>
+                <select id="outlineDisplayMode">
+                  <option value="hover">悬浮显示</option>
+                  <option value="always">始终显示</option>
+                </select>
+                <button id="outlinePositionButton" type="button">移到左侧</button>
+              </div>
+            </details>
+            <nav class="outline-list" id="outlineList" aria-label="章节导航"></nav>
+          </aside>
         <section class="editor-area" id="editorArea">
           <div class="editor-wrap">
             <div class="current-find-dock hidden" id="currentFindDock">
@@ -326,6 +341,7 @@
           </div>
           <div class="markdown-preview-resize hidden" id="markdownPreviewResize" role="separator" aria-label="调整 Markdown 预览宽度" aria-orientation="vertical" aria-valuemin="280" tabindex="0" title="拖动调整预览宽度，双击恢复默认"></div>
           <aside class="markdown-preview hidden" id="markdownPreview"></aside>
+        </section>
         </section>
       </section>
 
@@ -1100,20 +1116,6 @@
             </div>
           </div>
         </div>
-        </div>
-        <button class="outline-hover-trigger hidden" id="outlineHoverTrigger" type="button" aria-label="显示文档大纲" aria-controls="outlineToolPane" title="悬停或聚焦以显示大纲"><span class="icon-slot" data-icon="ListTree"></span><span>大纲</span></button>
-        <div class="right-tool-pane hidden" id="outlineToolPane">
-          <header class="outline-head">
-            <strong>文档大纲</strong><span id="outlineSummary"></span>
-            <div class="outline-controls">
-              <select id="outlineDisplayMode" aria-label="大纲显示方式" title="大纲显示方式">
-                <option value="hover">悬浮显示</option>
-                <option value="always">始终显示</option>
-              </select>
-              <button id="outlinePositionButton" type="button" aria-label="将大纲移到左侧" title="移到左侧">移到左侧</button>
-            </div>
-          </header>
-          <nav class="outline-list" id="outlineList" role="tree" aria-label="Markdown 大纲"></nav>
         </div>
         <div class="right-tool-pane hidden" id="analyseToolPane" aria-label="Analyse"></div>
       </section>

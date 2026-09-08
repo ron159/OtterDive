@@ -1,3 +1,4 @@
+import { documentOutlineLayout, restoreOutlinePreferences } from "./documentOutline";
 import { exportResultRows, type ResultRow, type AnalysisStep } from "./resultAnalysis";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -374,7 +375,8 @@ interface SessionSnapshot {
   contextMenuEnabled?: boolean;
   defaultAppCandidateEnabled?: boolean;
   rightSidebarOpen: boolean;
-  rightTool: RightTool;
+  rightTool: RightTool | "outline";
+  outlineOpen?: boolean;
   outlinePosition?: "left" | "right";
   outlineDisplayMode?: "hover" | "always";
   rightSidebarWidth: number;
@@ -486,7 +488,7 @@ type MarkdownContentWidth = "typora" | "compact" | "wide" | "full";
 type DoubleClickDocumentType = "txt" | "md";
 type DocumentOrigin = "standalone" | "workspace";
 type FindView = "find" | "replace" | "workspace-find" | "workspace-replace";
-type RightTool = "search" | "outline" | "analyse";
+type RightTool = "search" | "analyse";
 type BottomResultTool = "search" | "analyse";
 type SearchScope = "current" | "open" | "workspace";
 type WorkspaceSearchStatus = "idle" | "searching" | "previewing" | "applying" | "error";
@@ -949,6 +951,7 @@ const state = {
   defaultAppCandidateLoaded: false,
   defaultAppCandidateBusy: false,
   rightTool: "search" as RightTool,
+  outlineOpen: true,
   outlinePosition: "right" as "left" | "right",
   outlineDisplayMode: "hover" as "hover" | "always",
   rightSidebarWidth: 420,
@@ -1019,6 +1022,7 @@ let rightSidebarResizeState: HorizontalResizeState | null = null;
 let bottomResultsResizeState: VerticalResizeState | null = null;
 let explorerResizeState: HorizontalResizeState | null = null;
 let markdownPreviewResizeState: HorizontalResizeState | null = null;
+let outlineActiveFrame = 0;
 let editorLayoutFrame = 0;
 let editorLayoutSettleFrame = 0;
 let editorLayoutForceRender = false;
@@ -1488,6 +1492,7 @@ function bootstrap() {
     log,
   });
   editor.onDidScrollChange(() => {
+    scheduleOutlineActiveHeading();
     syncMarkdownPreviewScroll();
     const line = editor.getVisibleRanges()[0]?.startLineNumber;
     if (line) analysePanel?.syncSourceLine(line);
@@ -2039,14 +2044,24 @@ function bindActions() {
     if (target?.closest(".monaco-editor, input, textarea") || target?.isContentEditable) return;
     event.preventDefault();
   });
+  const outlineResizeObserver = new ResizeObserver(layoutDocumentOutline);
+  outlineResizeObserver.observe($("documentView"));
+  $("markdownWysiwyg").addEventListener("scroll", scheduleOutlineActiveHeading, true);
+  $("markdownPreview").addEventListener("scroll", scheduleOutlineActiveHeading);
+  $("documentOutline").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      ($("outlineOptions") as HTMLDetailsElement).open = false;
+      focusActiveEditor();
+    }
+  });
   $("outlineDisplayMode").addEventListener("change", () => {
     state.outlineDisplayMode = $<HTMLSelectElement>("outlineDisplayMode").value === "always" ? "always" : "hover";
-    renderRightSidebar();
+    renderDocumentOutline();
     scheduleSessionSave();
   });
   $("outlinePositionButton").addEventListener("click", () => {
     state.outlinePosition = state.outlinePosition === "left" ? "right" : "left";
-    renderRightSidebar();
+    renderDocumentOutline();
     scheduleSessionSave();
   });
   bindAppMenus();
@@ -2204,7 +2219,11 @@ function bindActions() {
     }
     setRightTool("search");
   });
-  $("rightOutlineToolButton").addEventListener("click", () => setRightTool("outline"));
+  $("outlineButton").addEventListener("click", () => {
+    state.outlineOpen = !state.outlineOpen;
+    renderDocumentOutline();
+    scheduleSessionSave();
+  });
   $("analyseButton").addEventListener("click", openAnalysePanel);
   $("languageButton").addEventListener("click", () => toggleMenu("languageMenu"));
   $("encodingButton").addEventListener("click", () => toggleMenu("encodingMenu"));
@@ -3515,12 +3534,11 @@ function bindRightSidebarResize() {
   const handle = $("rightSidebarResize");
   handle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
-    const left = isOutlineDockedLeft();
     const resize: HorizontalResizeState = {
       pointerId: event.pointerId,
       frameId: 0,
       latestClientX: event.clientX,
-      anchorX: left ? $("findPopover").getBoundingClientRect().left : window.innerWidth,
+      anchorX: window.innerWidth,
       maxWidth: Math.max(320, Math.floor(window.innerWidth * 0.55)),
     };
     rightSidebarResizeState = resize;
@@ -3529,7 +3547,7 @@ function bindRightSidebarResize() {
     event.preventDefault();
 
     const applyResize = (clientX: number) => {
-      setRightSidebarWidth(left ? clientX - resize.anchorX : resize.anchorX - clientX, resize.maxWidth, true);
+      setRightSidebarWidth(resize.anchorX - clientX, resize.maxWidth, true);
     };
     const moveResize = (pointerEvent: PointerEvent) => {
       if (pointerEvent.pointerId !== resize.pointerId) return;
@@ -3558,7 +3576,7 @@ function bindRightSidebarResize() {
   handle.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
-    setRightSidebarWidth(state.rightSidebarWidth + (event.key === "ArrowLeft" ? 20 : -20) * (isOutlineDockedLeft() ? -1 : 1));
+    setRightSidebarWidth(state.rightSidebarWidth + (event.key === "ArrowLeft" ? 20 : -20));
     scheduleSessionSave();
   });
   $("searchToolPane").addEventListener("scroll", positionOpenSearchHistoryMenu, true);
@@ -7641,6 +7659,7 @@ function applyEditorSettings() {
 
 function applyMarkdownContentWidth() {
   document.documentElement.dataset.markdownWidth = state.markdownContentWidth;
+  layoutDocumentOutline();
 }
 
 function isMarkdownContentWidth(value: unknown): value is MarkdownContentWidth {
@@ -8054,9 +8073,7 @@ function appendMoreResultsButton(list: HTMLElement, remaining: number, kind: "se
 
 function renderMarkdownOutline() {
   const list = $("outlineList");
-  const summary = $("outlineSummary");
   if (!isMarkdownLikeDocument()) {
-    summary.textContent = "";
     list.innerHTML = "";
     return;
   }
@@ -8068,13 +8085,13 @@ function renderMarkdownOutline() {
       line: locations[index]?.line ?? 1,
     }))
     : locations;
-  summary.textContent = headings.length > 0 ? `${headings.length} 个标题` : "还没有标题";
   list.innerHTML = headings.length > 0
     ? headings.map((heading, index) => {
-      const indent = (heading.level - 1) * 14;
-      return `<button class="outline-row" role="treeitem" aria-level="${heading.level}" data-outline-line="${heading.line}" data-outline-index="${index}" data-outline-level="${heading.level}" style="--outline-indent:${indent}px"><span>${escapeHtml(heading.text)}</span><small>${heading.line}</small></button>`;
+      const indent = (heading.level - 1) * 10;
+      return `<button class="outline-row" title="${escapeHtml(heading.text)}" aria-label="${escapeHtml(heading.text)}" data-outline-line="${heading.line}" data-outline-index="${index}" data-outline-level="${heading.level}" style="--outline-indent:${indent}px"><i class="outline-mark" aria-hidden="true"></i><span>${escapeHtml(heading.text)}</span></button>`;
     }).join("")
-    : `<div class="empty">这篇 Markdown 还没有标题</div>`;
+    : `<p class="outline-empty">添加标题后在这里导航</p>`;
+  scheduleOutlineActiveHeading();
   list.querySelectorAll<HTMLButtonElement>("[data-outline-line]").forEach((button) => {
     button.addEventListener("click", () => {
       if (isMarkdownWysiwygActive() && markdownEditor) {
@@ -8545,6 +8562,8 @@ async function renderMarkdownPreview() {
   const resize = $("markdownPreviewResize");
   const renderVersion = ++markdownPreviewRenderVersion;
   editorArea?.classList.toggle("preview-open", enabled);
+  layoutDocumentOutline();
+  scheduleOutlineActiveHeading();
   resize.classList.toggle("hidden", !enabled);
   preview.classList.toggle("hidden", !enabled);
   if (!enabled) {
@@ -9073,7 +9092,6 @@ function toggleRightSidebar() {
     return;
   }
   const workspace = state.mode === "workspace" && Boolean(state.workspace);
-  const markdown = isMarkdownLikeDocument();
   const currentResults = hasCurrentSearchResults();
   if (currentResults) {
     state.rightTool = "search";
@@ -9082,8 +9100,7 @@ function toggleRightSidebar() {
     state.rightTool = "search";
     setCurrentFindDockOpen(false);
   } else {
-    if (!markdown) return;
-    state.rightTool = "outline";
+    return;
   }
   $("findPopover").classList.remove("hidden");
   $("app").classList.add("right-sidebar-open");
@@ -9096,7 +9113,7 @@ function toggleRightSidebar() {
 
 function renderRightSidebarToggle() {
   const open = !$("findPopover").classList.contains("hidden");
-  const available = open || isMarkdownLikeDocument() || hasCurrentSearchResults()
+  const available = open || hasCurrentSearchResults()
     || (state.mode === "workspace" && Boolean(state.workspace));
   const analyseOpen = open && state.rightTool === "analyse";
   $("analyseButton").classList.toggle("active", analyseOpen);
@@ -9104,16 +9121,14 @@ function renderRightSidebarToggle() {
   const button = $<HTMLButtonElement>("rightSidebarToggleButton");
   $("rightToolTabs").classList.toggle("hidden", !available);
   button.classList.toggle("hidden", !available);
-  const left = open && isOutlineDockedLeft();
-  const label = open ? (left ? "收起左侧大纲" : "收起右侧栏") : "打开侧边工具栏";
+  const label = open ? "收起右侧栏" : "打开侧边工具栏";
   button.classList.toggle("active", open);
   button.setAttribute("aria-label", label);
   button.title = label;
-  button.innerHTML = iconSvg(left ? "PanelLeftClose" : open ? "PanelRightClose" : "PanelRightOpen");
+  button.innerHTML = iconSvg(open ? "PanelRightClose" : "PanelRightOpen");
 }
 
 function setRightTool(tool: RightTool) {
-  if (tool === "outline" && !isMarkdownLikeDocument()) tool = "search";
   state.rightTool = tool;
   renderRightSidebar();
   scheduleSessionSave();
@@ -9145,62 +9160,88 @@ function addSelectionAsAnalysePattern() {
 
 function openMarkdownOutline() {
   if (!isMarkdownLikeDocument()) return;
-  state.rightTool = "outline";
-  $("findPopover").classList.remove("hidden");
-  $("app").classList.add("right-sidebar-open");
-  setRightSidebarWidth(state.rightSidebarWidth);
-  renderRightSidebar();
-  renderRightSidebarToggle();
+  state.outlineOpen = true;
+  renderDocumentOutline();
+  $("outlineList").querySelector<HTMLButtonElement>("button")?.focus();
   scheduleSessionSave();
 }
 
-function isOutlineDockedLeft() {
-  return state.rightTool === "outline" && state.outlinePosition === "left";
+function renderDocumentOutline() {
+  const markdown = isMarkdownLikeDocument();
+  const visible = markdown && state.outlineOpen;
+  const view = $("documentView");
+  view.classList.toggle("has-outline", visible);
+  view.classList.toggle("outline-left", state.outlinePosition === "left");
+  $("documentOutline").classList.toggle("hidden", !visible);
+  $("documentOutline").classList.toggle("outline-on-hover", state.outlineDisplayMode === "hover");
+  $("outlineButton").classList.toggle("hidden", !markdown);
+  $("outlineButton").classList.toggle("active", visible);
+  $("outlineButton").setAttribute("aria-pressed", String(visible));
+  $<HTMLSelectElement>("outlineDisplayMode").value = state.outlineDisplayMode;
+  const positionLabel = state.outlinePosition === "left" ? "移到右侧" : "移到左侧";
+  $("outlinePositionButton").textContent = positionLabel;
+  if (visible) renderMarkdownOutline();
+  else ($("outlineOptions") as HTMLDetailsElement).open = false;
+  layoutDocumentOutline();
+  requestEditorLayout();
+}
+
+function layoutDocumentOutline() {
+  const view = $("documentView");
+  const width = view.clientWidth;
+  const contentWidth = getComputedStyle($("markdownWysiwyg")).getPropertyValue("--markdown-content-width").trim();
+  const layout = documentOutlineLayout(width, contentWidth, isOutlineVisible(), $("editorArea").classList.contains("preview-open"));
+  view.style.setProperty("--outline-width", `${layout.outlineWidth}px`);
+  view.style.setProperty("--document-inset", `${layout.inset}px`);
+}
+
+function scheduleOutlineActiveHeading() {
+  if (outlineActiveFrame || !isOutlineVisible()) return;
+  outlineActiveFrame = requestAnimationFrame(() => {
+    outlineActiveFrame = 0;
+    const rows = [...$("outlineList").querySelectorAll<HTMLButtonElement>(".outline-row")];
+    let active = 0;
+    if (isMarkdownWysiwygActive()) {
+      const top = $("markdownWysiwyg").getBoundingClientRect().top + 100;
+      $("markdownWysiwyg").querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6").forEach((heading, index) => {
+        if (heading.getBoundingClientRect().top <= top) active = index;
+      });
+    } else {
+      const line = editor.getVisibleRanges()[0]?.startLineNumber ?? 1;
+      rows.forEach((row, index) => {
+        if (Number(row.dataset.outlineLine) <= line) active = index;
+      });
+    }
+    rows.forEach((row, index) => {
+      if (index === active) row.setAttribute("aria-current", "location");
+      else row.removeAttribute("aria-current");
+    });
+  });
 }
 
 function renderRightSidebar() {
-  const markdown = isMarkdownLikeDocument();
   const workspace = state.mode === "workspace" && Boolean(state.workspace);
   const searchAvailable = workspace || hasCurrentSearchResults();
   $("rightSearchToolButton").classList.toggle("hidden", !searchAvailable);
-  $("rightOutlineToolButton").classList.toggle("hidden", !markdown);
   document.querySelectorAll<HTMLElement>(".workspace-find-view").forEach((button) => {
     button.classList.toggle("hidden", !workspace);
   });
-  if (!searchAvailable && state.rightTool === "search" && markdown) state.rightTool = "outline";
-  if (!markdown && state.rightTool === "outline") state.rightTool = "search";
   if (!searchAvailable && state.rightTool === "search") {
     $("findPopover").classList.add("hidden");
     $("app").classList.remove("right-sidebar-open");
   }
-  const outlineActive = state.rightTool === "outline";
-  const outlineHover = outlineActive && state.outlineDisplayMode === "hover";
-  $("app").classList.toggle("outline-active", outlineActive);
-  $("app").classList.toggle("outline-hover", outlineHover);
-  $("outlineHoverTrigger").classList.toggle("hidden", !outlineHover);
-  $<HTMLSelectElement>("outlineDisplayMode").value = state.outlineDisplayMode;
-  $("app").classList.toggle("outline-left", isOutlineDockedLeft());
-  $("findPopover").setAttribute("aria-label", isOutlineDockedLeft() ? "左侧大纲" : "右侧工具栏");
-  const positionButton = $("outlinePositionButton");
-  const positionLabel = state.outlinePosition === "left" ? "移到右侧" : "移到左侧";
-  positionButton.textContent = positionLabel;
-  positionButton.title = positionLabel;
-  positionButton.setAttribute("aria-label", `将大纲${positionLabel}`);
-  requestEditorLayout();
   $("rightSearchToolButton").classList.toggle("active", state.rightTool === "search");
-  $("rightOutlineToolButton").classList.toggle("active", state.rightTool === "outline");
   $("searchToolPane").classList.toggle("hidden", state.rightTool !== "search");
-  $("outlineToolPane").classList.toggle("hidden", state.rightTool !== "outline");
   $("analyseToolPane").classList.toggle("hidden", state.rightTool !== "analyse");
   const sidebarOpen = !$("findPopover").classList.contains("hidden");
   if (sidebarOpen && state.rightTool === "analyse") analysePanel?.syncDocument();
   if (sidebarOpen && state.rightTool === "search") renderSearchSidebarResults();
-  if (sidebarOpen && state.rightTool === "outline") renderMarkdownOutline();
+  renderDocumentOutline();
   renderRightSidebarToggle();
 }
 
 function isOutlineVisible() {
-  return !$("findPopover").classList.contains("hidden") && state.rightTool === "outline";
+  return state.outlineOpen && isMarkdownLikeDocument();
 }
 
 function hasCurrentSearchResults() {
@@ -10080,11 +10121,8 @@ async function restoreSession() {
     state.searchFavorites = (snapshot.searchFavorites ?? []).slice(0, 30);
     state.findView = snapshot.findView ?? "find";
     state.mode = snapshot.workMode ?? (snapshot.workspaceRoot ? "workspace" : "single");
-    state.rightTool = snapshot.rightTool === "outline" || snapshot.rightTool === "analyse"
-      ? snapshot.rightTool
-      : "search";
-    state.outlinePosition = snapshot.outlinePosition === "left" ? "left" : "right";
-    state.outlineDisplayMode = snapshot.outlineDisplayMode === "always" ? "always" : "hover";
+    state.rightTool = snapshot.rightTool === "analyse" ? "analyse" : "search";
+    Object.assign(state, restoreOutlinePreferences(snapshot));
     state.rightSidebarWidth = snapshot.rightSidebarWidth ?? state.rightSidebarWidth;
     state.bottomResultsHeight = Number.isFinite(snapshot.bottomResultsHeight)
       ? snapshot.bottomResultsHeight ?? DEFAULT_BOTTOM_RESULTS_HEIGHT
@@ -10144,7 +10182,7 @@ async function restoreSession() {
     persistThemePreference();
     applyResolvedTheme(resolveThemeDark(state.themePreference));
 
-    const rightSidebarOpen = Boolean(snapshot.rightSidebarOpen);
+    const rightSidebarOpen = Boolean(snapshot.rightSidebarOpen) && snapshot.rightTool !== "outline";
     $("findPopover").classList.toggle("hidden", !rightSidebarOpen);
     $("app").classList.toggle("right-sidebar-open", rightSidebarOpen);
 
@@ -10496,6 +10534,7 @@ async function saveSession() {
     defaultAppCandidateEnabled: state.defaultAppCandidateEnabled,
     rightSidebarOpen: !$("findPopover").classList.contains("hidden"),
     rightTool: state.rightTool,
+    outlineOpen: state.outlineOpen,
     outlinePosition: state.outlinePosition,
     outlineDisplayMode: state.outlineDisplayMode,
     rightSidebarWidth: state.rightSidebarWidth,

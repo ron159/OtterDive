@@ -3218,8 +3218,7 @@ body.dark .markdown-preview .token.variable {
   grid-template-rows: minmax(0, 1fr);
 }
 
-.right-search-dock,
-#outlineToolPane {
+.right-search-dock {
   grid-column: 1;
   grid-row: 1;
 }
@@ -3376,8 +3375,7 @@ body.dark .markdown-preview .token.variable {
   grid-template-rows: 42px minmax(0, 1fr);
 }
 
-.find-results-pane > header,
-.outline-head {
+.find-results-pane > header {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -3387,14 +3385,12 @@ body.dark .markdown-preview .token.variable {
   border-bottom: 1px solid var(--line-soft);
 }
 
-.find-results-pane > header strong,
-.outline-head strong {
+.find-results-pane > header strong {
   color: var(--text);
   font-size: 12px;
 }
 
-.find-results-pane > header span,
-.outline-head span {
+.find-results-pane > header span {
   overflow: hidden;
   color: var(--text-3);
   font-size: 11px;
@@ -3402,8 +3398,7 @@ body.dark .markdown-preview .token.variable {
   white-space: nowrap;
 }
 
-.find-results-body,
-.outline-list {
+.find-results-body {
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -3429,8 +3424,7 @@ body.dark .markdown-preview .token.variable {
   gap: 2px;
 }
 
-.find-result-row,
-.outline-row {
+.find-result-row {
   width: 100%;
   min-width: 0;
   border: 1px solid transparent;
@@ -3444,8 +3438,7 @@ body.dark .markdown-preview .token.variable {
 }
 
 .find-result-row:hover,
-.find-result-row.result-active,
-.outline-row:hover {
+.find-result-row.result-active {
   border-color: var(--line-soft);
   background: var(--surface-2);
 }
@@ -3497,27 +3490,6 @@ body.dark .markdown-preview .token.variable {
   color: var(--text-3);
   font-size: 12px;
   text-align: center;
-}
-
-#outlineToolPane {
-  grid-template-rows: 42px minmax(0, 1fr);
-}
-
-.outline-row {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  padding-left: calc(8px + var(--outline-indent, 0px));
-}
-
-.outline-row span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.outline-row small {
-  color: var(--text-3);
-  font-size: 10px;
 }
 
 .checks label {
@@ -5635,15 +5607,13 @@ tbody tr.result-active {
   grid-template-rows: 38px minmax(0, 1fr);
 }
 
-.find-results-pane > header,
-.outline-head {
+.find-results-pane > header {
   height: 38px;
   padding: 0 14px;
   background: var(--surface);
 }
 
-.find-results-body,
-.outline-list {
+.find-results-body {
   padding: 0;
 }
 
@@ -5845,18 +5815,6 @@ tbody tr.result-active {
   font-size: var(--search-result-font-size);
   text-overflow: clip;
   white-space: pre;
-}
-
-.outline-row {
-  min-height: 30px;
-  padding-block: 4px;
-  border: 0;
-  border-radius: 0;
-}
-
-.outline-row:hover {
-  border: 0;
-  background: var(--surface-2);
 }
 
 .editor-wrap {
@@ -6985,188 +6943,6 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   }
 }
 
-/* The outline shares the tool pane, but can dock on the left independently. */
-#app.right-sidebar-open.outline-left {
-  grid-template-columns: var(--right-sidebar-width) minmax(0, 1fr);
-  grid-template-areas:
-    "titlebar titlebar"
-    "toolbar toolbar"
-    "right tabs"
-    "right workspace"
-    "results results"
-    "status status";
-}
-
-.platform-macos #app.right-sidebar-open.outline-left {
-  grid-template-areas:
-    "toolbar toolbar"
-    "right tabs"
-    "right workspace"
-    "results results"
-    "status status";
-}
-
-#app.outline-left .right-sidebar {
-  border-left: 0;
-  border-right: 1px solid var(--line);
-}
-
-#app.outline-left .right-sidebar-resize {
-  left: auto;
-  right: -4px;
-}
-
-#outlinePositionButton {
-  flex-shrink: 0;
-  padding: 3px 6px;
-  font-size: 11px;
-}
-
-/* Blend the outline into the document instead of framing it as a tool panel. */
-#app.outline-active .right-sidebar,
-#app.outline-active .outline-head {
-  border: 0;
-  background: var(--editor);
-  box-shadow: none;
-}
-
-#app.outline-active #outlineToolPane {
-  grid-template-rows: auto minmax(0, 1fr);
-  padding: 16px 12px;
-  background: var(--editor);
-}
-
-#app.outline-active .outline-head {
-  height: auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  padding: 0 8px 12px;
-}
-
-.outline-controls {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-#outlineDisplayMode,
-#outlinePositionButton {
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-2);
-  font-size: 11px;
-  padding: 4px 6px;
-}
-
-#outlineDisplayMode:hover,
-#outlinePositionButton:hover {
-  background: var(--surface-2);
-}
-
-#app.outline-active .outline-row {
-  border-radius: 6px;
-  transition: background-color 160ms ease, color 160ms ease;
-}
-
-/* The hover outline occupies no column: revealing it never shifts the text. */
-#app.right-sidebar-open.outline-hover {
-  grid-template-columns: minmax(0, 1fr) 0;
-  grid-template-areas:
-    "titlebar titlebar"
-    "toolbar toolbar"
-    "tabs tabs"
-    "workspace workspace"
-    "results results"
-    "status status";
-}
-
-.platform-macos #app.right-sidebar-open.outline-hover {
-  grid-template-areas:
-    "toolbar toolbar"
-    "tabs tabs"
-    "workspace workspace"
-    "results results"
-    "status status";
-}
-
-#app.outline-hover .right-sidebar {
-  grid-area: workspace;
-  justify-self: end;
-  width: min(var(--right-sidebar-width), 320px, 85vw);
-  z-index: 8;
-  background: transparent;
-  pointer-events: none;
-}
-
-#app.outline-hover.outline-left .right-sidebar {
-  justify-self: start;
-}
-
-.outline-hover-trigger {
-  position: absolute;
-  top: 24px;
-  right: 12px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px;
-  border: 0;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--editor) 92%, transparent);
-  color: var(--text-3);
-  font-size: 11px;
-  pointer-events: auto;
-  transition: opacity 180ms ease;
-}
-
-.outline-left .outline-hover-trigger {
-  right: auto;
-  left: 12px;
-}
-
-#app.outline-hover #outlineToolPane {
-  opacity: 0;
-  visibility: hidden;
-  transform: translateX(8px);
-  border-radius: 12px;
-  pointer-events: none;
-  transition: opacity 200ms ease 120ms, transform 200ms ease 120ms, visibility 0s linear 320ms;
-}
-
-#app.outline-hover.outline-left #outlineToolPane {
-  transform: translateX(-8px);
-}
-
-#app.outline-hover .right-sidebar:is(:hover, :focus-within) #outlineToolPane {
-  opacity: 1;
-  visibility: visible;
-  transform: translateX(0);
-  pointer-events: auto;
-  transition-delay: 0s;
-}
-
-#app.outline-hover .right-sidebar:is(:hover, :focus-within) .outline-hover-trigger {
-  opacity: 0;
-  pointer-events: none;
-}
-
-#app.outline-hover .right-sidebar-resize {
-  display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  #app.outline-active .outline-row,
-  #app.outline-hover #outlineToolPane,
-  .outline-hover-trigger {
-    transition: none;
-    transform: none;
-  }
-}
-
 .bottom-results-content .find-results-pane:has(.result-analysis-toolbar:not(.hidden)) { grid-template-rows: 36px auto minmax(0, 1fr); }
 .result-analysis-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); max-height: 110px; overflow: auto; }
 .result-analysis-toolbar input:not([type="checkbox"]) { flex: 1; min-width: 180px; }
@@ -7182,3 +6958,184 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 .search-skipped pre { overflow: auto; max-height: 140px; white-space: pre-wrap; }
 .find-result-row[data-analysis-row] { grid-template-columns: 72px minmax(160px, 1fr) minmax(100px, 30%); }
 .find-result-row[data-analysis-row] small { overflow: hidden; text-overflow: ellipsis; color: var(--text-3); }
+
+/* Page-margin navigation: one canvas with the document, no panel surface. */
+.document-view {
+  --outline-width: 0px;
+  --document-inset: 0px;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  padding-inline: var(--document-inset);
+  background: var(--editor);
+}
+
+.document-view.has-outline {
+  grid-template-columns: minmax(0, 1fr) var(--outline-width);
+  column-gap: 24px;
+}
+
+.document-view.has-outline.outline-left {
+  grid-template-columns: var(--outline-width) minmax(0, 1fr);
+}
+
+.document-view > .editor-area {
+  grid-row: 1;
+  grid-column: 1;
+}
+.document-view.has-outline.outline-left > .editor-area {
+  grid-column: 2;
+}
+
+.document-outline {
+  position: relative;
+  grid-row: 1;
+  grid-column: 2;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  max-height: calc(100% - 80px);
+  color: var(--text-2);
+}
+
+.outline-left .document-outline {
+  grid-column: 1;
+}
+.document-outline .outline-list {
+  overflow: auto;
+  min-height: 0;
+  min-width: 0;
+  padding: 0 12px 0 0;
+  scrollbar-width: thin;
+}
+.outline-left .outline-list {
+  padding: 0 0 0 12px;
+}
+
+.document-outline .outline-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.document-outline .outline-row span {
+  min-width: 0;
+  padding-left: var(--outline-indent, 0px);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  transition: opacity 180ms ease;
+}
+
+.outline-mark {
+  display: block;
+  width: max(8px, calc(24px - var(--outline-indent, 0px) / 2));
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: .35;
+  transition: opacity 180ms ease, background-color 180ms ease;
+}
+
+.document-outline .outline-row:hover,
+.document-outline .outline-row[aria-current] {
+  color: var(--primary);
+  background: transparent;
+}
+.document-outline .outline-row[aria-current] .outline-mark {
+  opacity: 1;
+}
+.document-outline .outline-row[aria-current] span {
+  font-weight: 600;
+}
+.outline-left .outline-row {
+  grid-template-columns: minmax(0, 1fr) 24px;
+}
+.outline-left .outline-mark {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+.outline-left .outline-row span {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.outline-options {
+  position: absolute;
+  top: -32px;
+  right: 12px;
+  z-index: 10;
+}
+.outline-left .outline-options {
+  left: 12px;
+  right: auto;
+}
+.outline-options summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 2px 8px;
+  font-size: 20px;
+  line-height: 24px;
+  color: var(--text-3);
+}
+.outline-options summary::-webkit-details-marker {
+  display: none;
+}
+.outline-options-body {
+  display: grid;
+  gap: 8px;
+  width: 156px;
+  padding: 12px;
+  background: var(--editor);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.outline-options-body button,
+.outline-options-body select {
+  padding: 5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.document-outline.outline-on-hover:not(:hover):not(:focus-within):not(:has(details[open])) .outline-row span,
+.document-outline:not(:hover):not(:focus-within):not(:has(details[open])) .outline-options summary {
+  opacity: 0;
+  transition-delay: 120ms;
+}
+
+.outline-options summary {
+  transition: opacity 180ms ease;
+}
+.outline-empty {
+  margin: 0;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .document-outline .outline-row span,
+  .outline-mark,
+  .outline-options summary {
+  transition: none;
+}
+}
