@@ -1,3 +1,4 @@
+import { revealOutlineHeading } from "./documentOutline";
 import {
   CodeBlockLanguageSelector,
   EmojiSelector,
@@ -1075,8 +1076,7 @@ export class MarkdownEditorBridge {
   }
 
   revealHeading(index: number) {
-    const heading = this.root.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")[index];
-    heading?.scrollIntoView({ block: "center", behavior: "smooth" });
+    return revealOutlineHeading(this.root, index);
   }
 
   private decorateHeadingCopyLinks(node: Node) {

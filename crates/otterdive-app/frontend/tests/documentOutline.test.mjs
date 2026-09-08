@@ -5,7 +5,7 @@ import ts from 'typescript';
 
 const source = fs.readFileSync(new URL('../src/documentOutline.ts', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText;
-const { documentOutlineLayout, restoreOutlinePreferences } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+const { documentOutlineLayout, restoreOutlinePreferences, revealOutlineHeading, retainedOutlineNavigation, outlineHeadingSelector } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
 
 test('wide canvas centers the document and outline together', () => {
   const { outlineWidth, inset } = documentOutlineLayout(1800, '1024px', true, false);
@@ -29,4 +29,37 @@ test('migration preserves outline visibility and placement', () => {
   assert.equal(restoreOutlinePreferences({ outlineOpen: false, rightTool: 'analyse' }).outlineOpen, false);
   assert.deepEqual(restoreOutlinePreferences({ outlinePosition: 'invalid', outlineDisplayMode: 'invalid' }),
     { outlineOpen: true, outlinePosition: 'right', outlineDisplayMode: 'hover' });
+});
+
+
+test('heading jumps align to the pane top from either scroll direction', () => {
+  for (const scrollTop of [0, 800]) {
+    let options;
+    const root = {
+      scrollTop,
+      querySelectorAll(selector) {
+        assert.equal(selector, outlineHeadingSelector);
+        return [{ getBoundingClientRect: () => ({ top: 620 - scrollTop }) }];
+      },
+      getBoundingClientRect: () => ({ top: 120 }),
+      scrollTo(value) { options = value; this.scrollTop = value.top; },
+    };
+    assert.deepEqual(revealOutlineHeading(root, 0), { index: 0, scrollTop: 468 });
+    assert.equal(options.behavior, 'instant');
+    assert.equal(revealOutlineHeading(root, 1), null);
+  }
+});
+
+test('clamped document-end jumps retain the clicked item until scrolling resumes', () => {
+  const root = {
+    scrollTop: 0,
+    querySelectorAll: () => [{ getBoundingClientRect: () => ({ top: 1100 }) }],
+    getBoundingClientRect: () => ({ top: 100 }),
+    scrollTo({ top }) { this.scrollTop = Math.min(600, top); },
+  };
+  const navigation = revealOutlineHeading(root, 0);
+  assert.deepEqual(navigation, { index: 0, scrollTop: 600 });
+  assert.equal(retainedOutlineNavigation(navigation, 600), navigation);
+  assert.equal(retainedOutlineNavigation(navigation, 599.8), navigation);
+  assert.equal(retainedOutlineNavigation(navigation, 590), null);
 });

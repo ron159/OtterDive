@@ -1,4 +1,4 @@
-import { documentOutlineLayout, restoreOutlinePreferences } from "./documentOutline";
+import { documentOutlineLayout, restoreOutlinePreferences, outlineHeadingSelector, outlineHeadingOffset, retainedOutlineNavigation } from "./documentOutline";
 import { exportResultRows, type ResultRow, type AnalysisStep } from "./resultAnalysis";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1023,6 +1023,7 @@ let bottomResultsResizeState: VerticalResizeState | null = null;
 let explorerResizeState: HorizontalResizeState | null = null;
 let markdownPreviewResizeState: HorizontalResizeState | null = null;
 let outlineActiveFrame = 0;
+let outlineNavigation: { index: number; scrollTop: number } | null = null;
 let editorLayoutFrame = 0;
 let editorLayoutSettleFrame = 0;
 let editorLayoutForceRender = false;
@@ -8072,6 +8073,7 @@ function appendMoreResultsButton(list: HTMLElement, remaining: number, kind: "se
 }
 
 function renderMarkdownOutline() {
+  outlineNavigation = null;
   const list = $("outlineList");
   if (!isMarkdownLikeDocument()) {
     list.innerHTML = "";
@@ -8095,14 +8097,16 @@ function renderMarkdownOutline() {
   list.querySelectorAll<HTMLButtonElement>("[data-outline-line]").forEach((button) => {
     button.addEventListener("click", () => {
       if (isMarkdownWysiwygActive() && markdownEditor) {
-        markdownEditor.revealHeading(Number(button.dataset.outlineIndex ?? "0"));
-        markdownEditor.focus();
+        outlineNavigation = markdownEditor.revealHeading(Number(button.dataset.outlineIndex ?? "0"));
+        scheduleOutlineActiveHeading();
         return;
       }
       const lineNumber = Number(button.dataset.outlineLine ?? "1");
       editor.setPosition({ lineNumber, column: 1 });
-      editor.revealLineInCenterIfOutsideViewport(lineNumber);
       editor.focus();
+      editor.revealLineNearTop(lineNumber, monaco.editor.ScrollType.Immediate);
+      outlineNavigation = { index: Number(button.dataset.outlineIndex ?? "0"), scrollTop: editor.getScrollTop() };
+      scheduleOutlineActiveHeading();
     });
   });
 }
@@ -9202,8 +9206,8 @@ function scheduleOutlineActiveHeading() {
     const rows = [...$("outlineList").querySelectorAll<HTMLButtonElement>(".outline-row")];
     let active = 0;
     if (isMarkdownWysiwygActive()) {
-      const top = $("markdownWysiwyg").getBoundingClientRect().top + 100;
-      $("markdownWysiwyg").querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6").forEach((heading, index) => {
+      const top = $("markdownWysiwyg").getBoundingClientRect().top + outlineHeadingOffset + 1;
+      markdownEditor?.root.querySelectorAll<HTMLElement>(outlineHeadingSelector).forEach((heading, index) => {
         if (heading.getBoundingClientRect().top <= top) active = index;
       });
     } else {
@@ -9212,6 +9216,9 @@ function scheduleOutlineActiveHeading() {
         if (Number(row.dataset.outlineLine) <= line) active = index;
       });
     }
+    const scrollTop = isMarkdownWysiwygActive() ? markdownEditor?.root.scrollTop ?? 0 : editor.getScrollTop();
+    outlineNavigation = retainedOutlineNavigation(outlineNavigation, scrollTop);
+    if (outlineNavigation) active = outlineNavigation.index;
     rows.forEach((row, index) => {
       if (index === active) row.setAttribute("aria-current", "location");
       else row.removeAttribute("aria-current");
