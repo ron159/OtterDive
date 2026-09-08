@@ -7018,12 +7018,13 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 
 .document-outline .outline-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 32px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   width: 100%;
+  height: 28px;
   min-height: 28px;
-  padding: 5px 0;
+  padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -7031,44 +7032,63 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   font-size: 12px;
   line-height: 1.5;
   text-align: left;
+  transition: color 180ms ease;
 }
 
 .document-outline .outline-row span {
   min-width: 0;
   padding-left: var(--outline-indent, 0px);
-  white-space: normal;
-  overflow-wrap: anywhere;
-  transition: opacity 180ms ease;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transition: opacity 180ms ease, transform 220ms ease;
 }
 
 .outline-mark {
   display: block;
-  width: max(8px, calc(24px - var(--outline-indent, 0px) / 2));
+  width: 32px;
   height: 2px;
   border-radius: 1px;
   background: currentColor;
   opacity: .35;
-  transition: opacity 180ms ease, background-color 180ms ease;
+  transform: scaleX(.5);
+  transform-origin: left center;
+  transition: transform 260ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, background-color 180ms ease;
 }
 
-.document-outline .outline-row:hover,
+.document-outline .outline-row:is(:hover, :focus-visible),
 .document-outline .outline-row[aria-current] {
   color: var(--primary);
   background: transparent;
 }
+.document-outline .outline-row:is(:hover, :focus-visible) .outline-mark {
+  opacity: .8;
+  transform: scaleX(.8125) scaleY(1.5);
+}
 .document-outline .outline-row[aria-current] .outline-mark {
   opacity: 1;
+  transform: scaleX(1) scaleY(1.5);
+}
+.document-outline .outline-row:is(:hover, :focus-visible) span {
+  transform: translateX(2px);
+}
+.document-outline .outline-row:active .outline-mark {
+  transform: scaleX(.9) scaleY(1.5);
 }
 .document-outline .outline-row[aria-current] span {
   font-weight: 600;
 }
 .outline-left .outline-row {
-  grid-template-columns: minmax(0, 1fr) 24px;
+  grid-template-columns: minmax(0, 1fr) 32px;
 }
 .outline-left .outline-mark {
   grid-column: 2;
   grid-row: 1;
   justify-self: end;
+  transform-origin: right center;
+}
+.outline-left .outline-row:is(:hover, :focus-visible) span {
+  transform: translateX(-2px);
 }
 .outline-left .outline-row span {
   grid-column: 1;
@@ -7133,9 +7153,10 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .document-outline .outline-row,
   .document-outline .outline-row span,
   .outline-mark,
   .outline-options summary {
-  transition: none;
-}
+    transition: none;
+  }
 }
