@@ -5,6 +5,7 @@ compile_error!("OtterDive release builds must enable the custom-protocol feature
 
 mod analyse;
 mod app;
+mod file_revision;
 mod large_file;
 mod stream_search;
 mod pdf_export;

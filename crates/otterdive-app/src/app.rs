@@ -108,6 +108,7 @@ const SUPPORTED_LANGUAGES: &[&str] = &[
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentDto {
+    pub disk_revision: Option<String>,
     pub title: String,
     pub path: Option<String>,
     pub text: String,
@@ -385,6 +386,7 @@ pub struct TextMatchDto {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveRequest {
+    pub expected_revision: Option<String>,
     pub path: Option<String>,
     pub text: String,
     pub encoding: String,
@@ -561,6 +563,7 @@ pub fn run() {
             open_file_dialog,
             pick_file_path,
             open_path,
+            crate::file_revision::file_revisions,
             crate::large_file::read_large_file_page,
             reopen_path_with_encoding,
             pick_save_path,
@@ -638,12 +641,16 @@ async fn open_path(path: String, service: tauri::State<'_, crate::large_file::La
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(path);
+        let revision = crate::file_revision::revision(&path)?;
         if fs::metadata(&path).map_err(|e| e.to_string())?.len() > EDITABLE_FILE_LIMIT_BYTES {
             return service.open_document(&path.to_string_lossy(), None);
         }
         let doc = LoadedDocument::open(&path)
             .map_err(|err| format!("打开失败：{}：{err}", path.display()))?;
-        Ok(loaded_document_to_dto(doc))
+        crate::file_revision::ensure_revision(&path, &revision)?;
+        let mut dto = loaded_document_to_dto(doc);
+        dto.disk_revision = Some(revision);
+        Ok(dto)
     })
     .await
     .map_err(|err| format!("打开任务失败：{err}"))?
@@ -654,6 +661,7 @@ async fn reopen_path_with_encoding(request: ReopenRequest, service: tauri::State
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(request.path);
+        let revision = crate::file_revision::revision(&path)?;
         let metadata = fs::metadata(&path)
             .map_err(|err| format!("读取文件信息失败：{}：{err}", path.display()))?;
         if metadata.len() > EDITABLE_FILE_LIMIT_BYTES {
@@ -669,7 +677,9 @@ async fn reopen_path_with_encoding(request: ReopenRequest, service: tauri::State
             .unwrap_or("Untitled")
             .to_owned();
         let line_ending = LineEnding::detect(&decoded.text);
+        crate::file_revision::ensure_revision(&path, &revision)?;
         Ok(DocumentDto {
+            disk_revision: Some(revision),
             title,
             path: Some(path.display().to_string()),
             language: language_from_path(Some(&path)),
@@ -710,6 +720,9 @@ async fn save_document(request: SaveRequest) -> Result<DocumentDto, String> {
         doc.meta.encoding = parse_encoding(&request.encoding);
         doc.meta.line_ending = parse_line_ending(&request.line_ending);
         doc.set_text(normalize_line_endings(&request.text, doc.meta.line_ending));
+        if let Some(expected) = &request.expected_revision {
+            crate::file_revision::ensure_revision(&path, expected)?;
+        }
         doc.save_as(&path)
             .map_err(|err| format!("保存失败：{}：{err}", path.display()))?;
 
@@ -1021,6 +1034,7 @@ where
 fn document_to_dto(doc: Document) -> DocumentDto {
     let path = doc.meta.path.as_deref();
     DocumentDto {
+        disk_revision: path.and_then(|path| crate::file_revision::revision(path).ok()),
         title: doc.title,
         path: path.map(|path| path.display().to_string()),
         language: language_from_path(path),
@@ -1038,6 +1052,7 @@ fn document_to_dto(doc: Document) -> DocumentDto {
 fn loaded_document_to_dto(doc: LoadedDocument) -> DocumentDto {
     let path = doc.meta.path.as_deref();
     DocumentDto {
+        disk_revision: path.and_then(|path| crate::file_revision::revision(path).ok()),
         title: doc.title,
         path: path.map(|path| path.display().to_string()),
         language: language_from_path(path),

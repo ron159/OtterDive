@@ -187,6 +187,7 @@ interface LargePage {
 }
 
 interface DocumentDto {
+  diskRevision?: string | null;
   title: string;
   path?: string | null;
   text: string;
@@ -280,6 +281,8 @@ interface FileReplacePreviewDto {
 }
 
 interface OpenDocument extends DocumentDto {
+  externalRevision?: string;
+  saving?: boolean;
   fileRevision?: number;
   pageLoading?: boolean;
   pageRequest?: number;
@@ -1334,7 +1337,11 @@ let workspaceSearchCancelRequested = false;
 
 bootstrap();
 
+let checkingExternalFiles = false;
+
 function bootstrap() {
+  window.setInterval(() => void checkExternalFiles(), 2000);
+  window.addEventListener("focus", () => void checkExternalFiles());
   bindOpenRequestListener();
   window.addEventListener("unhandledrejection", (event) => {
     log(`操作失败：${event.reason instanceof Error ? event.reason.message : String(event.reason)}`);
@@ -4154,6 +4161,10 @@ function applyDocumentDto(
   dto: DocumentDto,
   encodingStatus: OpenDocument["encodingStatus"],
 ) {
+  doc.externalRevision = undefined;
+  doc.pageRequest = (doc.pageRequest ?? 0) + 1;
+  doc.pageHistory = [];
+  doc.pageLoading = false;
   doc.fileRevision = (doc.fileRevision ?? 1) + 1;
   doc.largePage = dto.largePage;
   if (doc.model) doc.model.setValue(dto.text);
@@ -4338,50 +4349,161 @@ async function printActiveMarkdown() {
   }
 }
 
-async function saveDocument(doc: OpenDocument, forceSaveAs: boolean) {
-  if (!doc) return;
-  syncMarkdownModelFromEditor(doc);
-  cancelAutoSave(doc.id);
-  if (doc.readOnly) {
-    log(`只读文档未保存：${doc.readOnlyReason ?? doc.title}`);
-    return false;
+async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic = false) {
+  if (!doc || doc.saving) return false;
+  doc.saving = true;
+  try {
+    syncMarkdownModelFromEditor(doc);
+    cancelAutoSave(doc.id);
+    if (doc.readOnly) {
+      log(`只读文档未保存：${doc.readOnlyReason ?? doc.title}`);
+      return false;
+    }
+    const path = forceSaveAs || !doc.path ? await pickSavePath(doc) : doc.path;
+    if (!path) {
+      log("已取消保存");
+      return false;
+    }
+    let expectedRevision: string | undefined;
+    if (path === doc.path && doc.diskRevision) {
+      const [current] = await invoke<FileRevision[]>("file_revisions", { paths: [path] });
+      if (!current?.revision) throw new Error(current?.error ?? "无法检查文件状态");
+      expectedRevision = current.revision;
+      if (current.revision !== doc.diskRevision) {
+        if (automatic || confirmResolver || unsavedResolver || textInputResolver) return false;
+        const overwrite = await askConfirm({
+          title: "文件已在外部更改",
+          subtitle: doc.title,
+          body: current.revision === "missing"
+            ? "磁盘文件已被删除或移走。是否将当前内容重新保存到原路径？"
+            : "磁盘文件已被其他程序修改。是否用当前编辑内容覆盖磁盘版本？",
+          okLabel: "保存当前内容",
+          cancelLabel: "取消",
+          danger: true,
+        });
+        if (!overwrite || !state.documents.includes(doc)) return false;
+      }
+    }
+    const model = ensureDocumentModel(doc);
+    const textToSave = model.getValue();
+    const savedAlternativeVersionId = model.getAlternativeVersionId();
+    const saved = await withBusy(`保存 ${doc.title}`, () =>
+      invoke<DocumentDto>("save_document", {
+        request: {
+          path,
+          text: textToSave,
+          expectedRevision,
+          encoding: doc.encoding,
+          lineEnding: doc.lineEnding || "LF",
+        },
+      }),
+      { lockEditor: false },
+    );
+    const currentText = model.getValue();
+    Object.assign(doc, saved, {
+      dirty: model.getAlternativeVersionId() !== savedAlternativeVersionId,
+      metadataDirty: false,
+      savedText: "",
+      text: "",
+      fileSize: new Blob([currentText]).size,
+      encodingStatus: "编码已识别",
+    });
+    doc.externalRevision = undefined;
+    doc.savedAlternativeVersionId = savedAlternativeVersionId;
+    doc.draftId = undefined;
+    cancelDocumentSizeUpdate(doc.id);
+    applyDetectedDocumentLanguage(doc, saved.language);
+    renderAll();
+    scheduleSessionSave();
+    log(`保存 ${doc.title}`);
+    return true;
+  } finally {
+    doc.saving = false;
   }
-  const path = forceSaveAs || !doc.path ? await pickSavePath(doc) : doc.path;
-  if (!path) {
-    log("已取消保存");
-    return false;
+}
+
+interface FileRevision {
+  path: string;
+  revision: string | null;
+  error: string | null;
+}
+
+async function checkExternalFiles() {
+  if (!appReady || checkingExternalFiles || state.restoring || busyDepth > 0 || !state.documents.length
+    || document.visibilityState === "hidden" || confirmResolver || unsavedResolver || textInputResolver) return;
+  checkingExternalFiles = true;
+  try {
+    const documents = state.documents.filter((doc) => doc.path && doc.diskRevision && !doc.saving);
+    if (!documents.length) return;
+    const baselines = new globalThis.Map(documents.map((doc) => [doc.id, doc.diskRevision]));
+    const revisions = await invoke<FileRevision[]>("file_revisions", { paths: documents.map((doc) => doc.path) });
+    for (const result of revisions) {
+      const doc = documents.find((item) => item.path === result.path);
+      if (!doc || !state.documents.includes(doc) || doc.saving || doc.pageLoading
+        || doc.diskRevision !== baselines.get(doc.id) || busyDepth > 0
+        || confirmResolver || unsavedResolver || textInputResolver) continue;
+      if (!result.revision || result.revision === doc.diskRevision || result.revision === doc.externalRevision) continue;
+      syncMarkdownModelFromEditor(doc);
+      cancelAutoSave(doc.id);
+      if (result.revision === "missing") {
+        doc.externalRevision = result.revision;
+        if (!doc.readOnly) {
+          doc.metadataDirty = true;
+          doc.dirty = true;
+          renderChrome();
+          scheduleSessionSave();
+        }
+        await showAlert({ title: "文件已不存在", subtitle: doc.title,
+          body: "文件已被外部删除或移走，当前内容已保留。可复制当前内容；可编辑文档也可通过保存重建文件或另存为。", okLabel: "保留当前内容" });
+        continue;
+      }
+      if (doc.dirty) {
+        doc.externalRevision = result.revision;
+        const reload = await askConfirm({
+          title: "文件已在外部更改", subtitle: doc.title,
+          body: "当前文档也有未保存修改。重新载入会丢弃这些修改；保留当前内容会暂停此文件的自动保存，手动保存时可确认覆盖磁盘版本。",
+          okLabel: "重新载入", cancelLabel: "保留当前内容", danger: true,
+        });
+        if (!reload) continue;
+      }
+      if (!state.documents.includes(doc) || doc.saving) continue;
+      doc.externalRevision = undefined;
+      // A new edit while disk I/O is pending must never be overwritten.
+      const version = documentVersion(doc);
+      const baseline = doc.diskRevision;
+      const path = doc.path;
+      const encoding = doc.encoding;
+      const lineEnding = doc.lineEnding;
+      const dto = await invoke<DocumentDto>("reopen_path_with_encoding", {
+        request: { path: doc.path, encoding: doc.encoding },
+      });
+      syncMarkdownModelFromEditor(doc);
+      if (!state.documents.includes(doc) || doc.saving || doc.diskRevision !== baseline) continue;
+      if (documentVersion(doc) !== version || doc.path !== path
+        || doc.encoding !== encoding || doc.lineEnding !== lineEnding) {
+        doc.externalRevision = undefined; // Retry with a conflict prompt on the next check.
+        cancelAutoSave(doc.id);
+        continue;
+      }
+      const viewState = doc.id === state.activeId ? editor.saveViewState() ?? undefined : doc.viewState;
+      applyDocumentDto(doc, dto, doc.encodingStatus);
+      if (!doc.largePage) doc.viewState = viewState;
+      else doc.viewState = undefined;
+      state.searchRevision += 1;
+      analysePanel?.notifyDocumentChanged(doc.id);
+      if (doc.id === state.activeId) {
+        attachEditorModel(doc);
+        if (doc.viewState) editor.restoreViewState(doc.viewState);
+      }
+      renderAll();
+      scheduleSessionSave();
+      log(`已刷新外部修改：${doc.title}`);
+    }
+  } catch (error) {
+    log(`检查外部文件修改失败：${String(error)}`);
+  } finally {
+    checkingExternalFiles = false;
   }
-  const model = ensureDocumentModel(doc);
-  const textToSave = model.getValue();
-  const savedAlternativeVersionId = model.getAlternativeVersionId();
-  const saved = await withBusy(`保存 ${doc.title}`, () =>
-    invoke<DocumentDto>("save_document", {
-      request: {
-        path,
-        text: textToSave,
-        encoding: doc.encoding,
-        lineEnding: doc.lineEnding || "LF",
-      },
-    }),
-    { lockEditor: false },
-  );
-  const currentText = model.getValue();
-  Object.assign(doc, saved, {
-    dirty: model.getAlternativeVersionId() !== savedAlternativeVersionId,
-    metadataDirty: false,
-    savedText: "",
-    text: "",
-    fileSize: new Blob([currentText]).size,
-    encodingStatus: "编码已识别",
-  });
-  doc.savedAlternativeVersionId = savedAlternativeVersionId;
-  doc.draftId = undefined;
-  cancelDocumentSizeUpdate(doc.id);
-  applyDetectedDocumentLanguage(doc, saved.language);
-  renderAll();
-  scheduleSessionSave();
-  log(`保存 ${doc.title}`);
-  return true;
 }
 
 function cancelAutoSave(documentId: number) {
@@ -4393,12 +4515,12 @@ function cancelAutoSave(documentId: number) {
 
 function scheduleAutoSave(doc: OpenDocument) {
   cancelAutoSave(doc.id);
-  if (state.restoring || !doc.dirty || doc.readOnly || !doc.path) return;
+  if (state.restoring || !doc.dirty || doc.readOnly || !doc.path || doc.externalRevision !== undefined) return;
   const timer = window.setTimeout(() => {
     autoSaveTimers.delete(doc.id);
     const current = state.documents.find((item) => item.id === doc.id);
-    if (!current || !current.dirty || current.readOnly || !current.path) return;
-    void saveDocument(current, false).catch((error) => {
+    if (!current || !current.dirty || current.readOnly || !current.path || current.externalRevision !== undefined) return;
+    void saveDocument(current, false, true).catch((error) => {
       log(`自动保存失败：${current.title}：${String(error)}`);
     });
   }, state.autoSaveDelaySeconds * 1000);

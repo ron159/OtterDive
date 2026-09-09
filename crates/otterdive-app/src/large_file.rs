@@ -52,10 +52,13 @@ impl LargeFileService {
         path: &str,
         encoding: Option<EncodingKind>,
     ) -> Result<DocumentDto, String> {
+        let revision = crate::file_revision::revision(Path::new(path))?;
         let file = self.file(path, encoding, true)?;
         let mut file = file.lock().map_err(|e| e.to_string())?;
         let page = page_dto(file.read_page(1).map_err(|e| e.to_string())?);
+        crate::file_revision::ensure_revision(Path::new(path), &revision)?;
         Ok(DocumentDto {
+            disk_revision: Some(revision),
             title: Path::new(path)
                 .file_name()
                 .unwrap_or_default()
