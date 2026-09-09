@@ -5482,14 +5482,15 @@ function convertEncoding(encoding: EncodingLabel) {
 }
 
 function findSelectedDocuments(showPanel = false, recordHistory = true, navigateToInitial = showPanel) {
+  if (recordHistory) cancelScheduledCurrentFind();
   if (searchAllOpenFilesEnabled()) {
     findOpenDocuments(showPanel, recordHistory, navigateToInitial);
     return;
   }
-  findCurrent(showPanel, recordHistory);
+  findCurrent(showPanel, recordHistory, navigateToInitial);
 }
 
-function findCurrent(showPanel = false, recordHistory = true) {
+function findCurrent(showPanel = false, recordHistory = true, navigateToInitial = true) {
   const query = ($("findInput") as HTMLInputElement).value;
   if (!query) {
     log("查找内容不能为空");
@@ -5539,7 +5540,16 @@ function findCurrent(showPanel = false, recordHistory = true) {
     ],
   }, "current", activeIndex, showPanel);
   if (!activeMarkdownEditor && matches.length > 0) {
-    void openSearchResult(activeIndex);
+    if (navigateToInitial) {
+      void openSearchResult(activeIndex);
+    } else {
+      // Live search may scroll, but must not activate/focus the editor asynchronously.
+      const match = matches[activeIndex];
+      editor.revealPositionInCenter({
+        lineNumber: match.line - (doc.largePage?.startLine ?? 1) + 1,
+        column: match.column,
+      });
+    }
   }
   log(`当前文件查找 ${total} 个命中`);
 }
@@ -5664,6 +5674,7 @@ function currentSearchSignature(scope = state.searchScope ?? "current") {
 }
 
 async function findNextResult() {
+  cancelScheduledCurrentFind();
   const query = ($("findInput") as HTMLInputElement).value;
   if (!query) {
     log("查找内容不能为空");
@@ -5688,6 +5699,7 @@ async function findNextResult() {
 }
 
 async function findPreviousResult() {
+  cancelScheduledCurrentFind();
   const query = ($("findInput") as HTMLInputElement).value;
   if (!query) {
     log("查找内容不能为空");
@@ -9082,7 +9094,7 @@ function scheduleCurrentFind() {
     const keepInputFocus = document.activeElement === input;
     findSelectedDocuments(false, false, false);
     if (keepInputFocus) input.focus();
-  }, 90);
+  }, 400);
 }
 
 function syncSearchControlsToCurrent() {
@@ -9171,6 +9183,7 @@ function setCurrentFindError(message: string) {
 }
 
 function setCurrentFindDockOpen(open: boolean) {
+  if (!open) cancelScheduledCurrentFind();
   $("currentFindDock").classList.toggle("hidden", !open);
   document.body.classList.toggle("current-find-open", open);
   if (open) markdownEditor?.hideFloatTools();
