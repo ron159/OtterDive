@@ -178,14 +178,6 @@ type EncodingLabel =
   | "UTF-16 Big Endian"
   | "UTF-16 Little Endian";
 
-interface LargePage {
-  text: string;
-  startLine: number;
-  nextLine: number;
-  eof: boolean;
-  truncated: boolean;
-}
-
 interface DocumentDto {
   diskRevision?: string | null;
   title: string;
@@ -198,7 +190,6 @@ interface DocumentDto {
   readOnlyReason?: string | null;
   language: string;
   largeFile: boolean;
-  largePage?: LargePage | null;
 }
 
 interface TreeItemDto {
@@ -283,10 +274,6 @@ interface FileReplacePreviewDto {
 interface OpenDocument extends DocumentDto {
   externalRevision?: string;
   saving?: boolean;
-  fileRevision?: number;
-  pageLoading?: boolean;
-  pageRequest?: number;
-  pageHistory?: number[];
   id: number;
   draftId?: string;
   skipSessionRestore?: boolean;
@@ -1426,7 +1413,6 @@ function bootstrap() {
     },
   });
 
-  bindLargeFileControls();
   bindResultAnalysis();
   searchDecorations = editor.createDecorationsCollection();
   activeSearchDecoration = editor.createDecorationsCollection();
@@ -1462,7 +1448,7 @@ function bootstrap() {
       revision: documentVersion(doc),
     })),
     getSelectedText: selectedSourceTextForAnalyse,
-    getSourceLine: () => (editor.getPosition()?.lineNumber ?? 1) + (activeDocument().largePage?.startLine ?? 1) - 1,
+    getSourceLine: () => (editor.getPosition()?.lineNumber ?? 1),
     navigate: (documentId, line) => {
       if (!state.documents.some((doc) => doc.id === documentId)) return;
       activateDocument(documentId);
@@ -3878,12 +3864,11 @@ function createDocument(
 function ensureDocumentModel(doc: OpenDocument) {
   if (doc.model && !doc.model.isDisposed()) return doc.model;
   const uri = monaco.Uri.parse(`otterdive://model/${doc.id}/${encodeURIComponent(doc.title)}`);
-  const model = monaco.editor.createModel(doc.text, doc.largePage ? "plaintext" : doc.language, uri);
+  const model = monaco.editor.createModel(doc.text, doc.language, uri);
   doc.model = model;
   doc.text = "";
   doc.savedAlternativeVersionId = doc.dirty ? 0 : model.getAlternativeVersionId();
   model.onDidChangeContent(() => {
-    if (doc.largePage) return;
     const wasDirty = doc.dirty;
     doc.dirty = doc.metadataDirty || model.getAlternativeVersionId() !== doc.savedAlternativeVersionId;
     state.searchRevision += 1;
@@ -3907,7 +3892,6 @@ function documentText(doc: OpenDocument) {
 }
 
 function documentVersion(doc: OpenDocument) {
-  if (doc.largePage) return doc.fileRevision ?? 1;
   return doc.model?.getVersionId() ?? 1;
 }
 
@@ -3959,89 +3943,11 @@ function nextUntitledTitle(extension = "txt") {
   return `Untitled-${index}.${extension}`;
 }
 
-function renderLargeFileControls() {
-  const doc = activeDocument();
-  const page = doc.largePage;
-  $("largeFileToolbar").classList.toggle("hidden", !page);
-  $("editorArea").classList.toggle("has-large-page", Boolean(page));
-  if (!page) return;
-  $<HTMLButtonElement>("largeFilePrevious").disabled = Boolean(doc.pageLoading) || page.startLine <= 1;
-  $<HTMLButtonElement>("largeFileNext").disabled = Boolean(doc.pageLoading) || page.eof;
-  $<HTMLButtonElement>("largeFileGo").disabled = Boolean(doc.pageLoading);
-  $("largeFileStatus").textContent = doc.pageLoading ? "正在读取并建立行索引…" : `${page.startLine}–${Math.max(page.startLine, page.nextLine - 1)} 行${page.eof ? " · 文件末尾" : ""} · 查找仅限当前页${page.truncated ? " · 超长行仅显示前 64 KiB" : ""}`;
-}
-
-async function loadLargePage(doc: OpenDocument, line: number, remember = true) {
-  if (!doc.path || !doc.largePage || !Number.isSafeInteger(line) || line < 1) return false;
-  const request = (doc.pageRequest ?? 0) + 1;
-  doc.pageRequest = request;
-  doc.pageLoading = true;
-  if (doc.id === state.activeId) renderLargeFileControls();
-  try {
-    const page = await invoke<LargePage>("read_large_file_page", { path: doc.path, line, encoding: doc.encoding, reload: false });
-    if (doc.pageRequest !== request || !state.documents.includes(doc)) return false;
-    if (remember) doc.pageHistory = [...(doc.pageHistory ?? []).slice(-99), doc.largePage.startLine];
-    doc.largePage = page;
-    const model = ensureDocumentModel(doc);
-    model.setValue(page.text);
-    doc.savedAlternativeVersionId = model.getAlternativeVersionId();
-    doc.dirty = false;
-    doc.viewState = undefined;
-    state.searchRevision += 1;
-    if (doc.id === state.activeId) {
-      applyEditorPerformanceProfile(doc);
-      editor.setPosition({ lineNumber: 1, column: 1 });
-      renderAll();
-    }
-    return true;
-  } catch (error) {
-    if (doc.id === state.activeId) { log(`读取大文件失败：${String(error)}`); $("largeFileStatus").textContent = String(error); }
-    return false;
-  } finally {
-    if (doc.pageRequest === request) {
-      doc.pageLoading = false;
-      if (doc.id === state.activeId) {
-        $<HTMLButtonElement>("largeFileGo").disabled = false;
-        $<HTMLButtonElement>("largeFilePrevious").disabled = doc.largePage!.startLine <= 1;
-        $<HTMLButtonElement>("largeFileNext").disabled = doc.largePage!.eof;
-        if ($("largeFileStatus").textContent === "正在读取并建立行索引…") renderLargeFileControls();
-      }
-    }
-  }
-}
-
 async function navigateSourceLine(doc: OpenDocument, line: number, column: number) {
-  if (!Number.isSafeInteger(line) || line < 1) return;
-  if (doc.largePage && (line < doc.largePage.startLine || line >= doc.largePage.nextLine)) {
-    if (!await loadLargePage(doc, line)) return;
-  }
-  if (state.activeId !== doc.id) return;
-  const localLine = Math.max(1, line - (doc.largePage?.startLine ?? 1) + 1);
-  editor.revealPositionInCenter({ lineNumber: localLine, column });
-  editor.setPosition({ lineNumber: localLine, column });
+  if (!Number.isSafeInteger(line) || line < 1 || state.activeId !== doc.id) return;
+  editor.revealPositionInCenter({ lineNumber: line, column });
+  editor.setPosition({ lineNumber: line, column });
   editor.focus();
-}
-
-function bindLargeFileControls() {
-  $("largeFileNext").addEventListener("click", () => { const doc = activeDocument(); if (doc.largePage) void loadLargePage(doc, doc.largePage.nextLine); });
-  $("largeFilePrevious").addEventListener("click", () => {
-    const doc = activeDocument();
-    if (doc.largePage) void loadLargePage(doc, doc.pageHistory?.pop() ?? Math.max(1, doc.largePage.startLine - 2000), false);
-  });
-  const go = () => void navigateSourceLine(activeDocument(), Number($<HTMLInputElement>("largeFileLine").value), 1);
-  $("largeFileGo").addEventListener("click", go);
-  $("largeFileLine").addEventListener("keydown", event => { if (event.key === "Enter") go(); });
-  $("largeFileReload").addEventListener("click", async () => {
-    const doc = activeDocument();
-    if (!doc.path || doc.pageLoading) return;
-    try {
-      const dto = await invoke<DocumentDto>("open_path", { path: doc.path });
-      if (!state.documents.includes(doc)) return;
-      applyDocumentDto(doc, dto, "编码已识别");
-      doc.pageHistory = [];
-      if (doc.id === state.activeId) { attachEditorModel(doc); renderAll(); }
-    } catch (error) { $("largeFileStatus").textContent = String(error); }
-  });
 }
 
 function activateDocument(id: number) {
@@ -4162,11 +4068,6 @@ function applyDocumentDto(
   encodingStatus: OpenDocument["encodingStatus"],
 ) {
   doc.externalRevision = undefined;
-  doc.pageRequest = (doc.pageRequest ?? 0) + 1;
-  doc.pageHistory = [];
-  doc.pageLoading = false;
-  doc.fileRevision = (doc.fileRevision ?? 1) + 1;
-  doc.largePage = dto.largePage;
   if (doc.model) doc.model.setValue(dto.text);
   cancelAutoSave(doc.id);
   cancelDocumentSizeUpdate(doc.id);
@@ -4439,7 +4340,7 @@ async function checkExternalFiles() {
     const revisions = await invoke<FileRevision[]>("file_revisions", { paths: documents.map((doc) => doc.path) });
     for (const result of revisions) {
       const doc = documents.find((item) => item.path === result.path);
-      if (!doc || !state.documents.includes(doc) || doc.saving || doc.pageLoading
+      if (!doc || !state.documents.includes(doc) || doc.saving
         || doc.diskRevision !== baselines.get(doc.id) || busyDepth > 0
         || confirmResolver || unsavedResolver || textInputResolver) continue;
       if (!result.revision || result.revision === doc.diskRevision || result.revision === doc.externalRevision) continue;
@@ -4487,8 +4388,7 @@ async function checkExternalFiles() {
       }
       const viewState = doc.id === state.activeId ? editor.saveViewState() ?? undefined : doc.viewState;
       applyDocumentDto(doc, dto, doc.encodingStatus);
-      if (!doc.largePage) doc.viewState = viewState;
-      else doc.viewState = undefined;
+      doc.viewState = viewState;
       state.searchRevision += 1;
       analysePanel?.notifyDocumentChanged(doc.id);
       if (doc.id === state.activeId) {
@@ -4700,7 +4600,6 @@ function rememberClosedDocument(doc: OpenDocument) {
     language: doc.language,
     languageOverride: doc.languageOverride,
     largeFile: doc.largeFile,
-    largePage: doc.largePage,
     draftId: doc.draftId,
     dirty: doc.dirty,
     savedText: doc.savedText,
@@ -5546,7 +5445,7 @@ function findCurrent(showPanel = false, recordHistory = true, navigateToInitial 
       // Live search may scroll, but must not activate/focus the editor asynchronously.
       const match = matches[activeIndex];
       editor.revealPositionInCenter({
-        lineNumber: match.line - (doc.largePage?.startLine ?? 1) + 1,
+        lineNumber: match.line,
         column: match.column,
       });
     }
@@ -6221,7 +6120,7 @@ async function searchWorkspace() {
         recursive: ($("recursiveInput") as HTMLInputElement).checked,
         fileGlob: ($("fileGlobInput") as HTMLInputElement).value || "*.*",
         skipDirs: ($("skipDirsInput") as HTMLInputElement).value || DEFAULT_SKIP_DIRS,
-        maxFileSize: 20 * 1024 * 1024,
+        maxFileSize: Number.MAX_SAFE_INTEGER,
       },
     });
     if (requestId !== state.workspaceSearchRequestId) {
@@ -6378,13 +6277,14 @@ function modelMatches(doc: OpenDocument, allowSelection = true): TextMatchDto[] 
     ($("matchCaseInput") as HTMLInputElement).checked,
     null,
     true,
+    Number.MAX_SAFE_INTEGER,
   ).filter((match) => matchAllowed(doc, match, allowSelection));
   return matches.map((match) => {
     const line = model.getLineContent(match.range.startLineNumber);
     return {
       start: model.getOffsetAt({ lineNumber: match.range.startLineNumber, column: match.range.startColumn }),
       end: model.getOffsetAt({ lineNumber: match.range.endLineNumber, column: match.range.endColumn }),
-      line: match.range.startLineNumber + (doc.largePage?.startLine ?? 1) - 1,
+      line: match.range.startLineNumber,
       column: match.range.startColumn,
       lineText: line,
       matchedText: model.getValueInRange(match.range),
@@ -6701,7 +6601,7 @@ function applyEditorPerformanceProfile(doc: OpenDocument) {
   document.documentElement.style.setProperty("--editor-font-size", `${state.fontSize}px`);
   editor.updateOptions({
     readOnly: doc.readOnly,
-    lineNumbers: doc.largePage ? (line: number) => String(line + doc.largePage!.startLine - 1) : "on",
+    lineNumbers: "on",
     readOnlyMessage: { value: doc.readOnlyReason || "当前文档只读" },
     minimap: { enabled: !large && state.minimap },
     wordWrap: !large && state.wordWrap ? "on" : "off",
@@ -6735,7 +6635,6 @@ function markdownSearchOptions(): MarkdownSearchOptions {
 }
 
 function renderAll() {
-  renderLargeFileControls();
   renderMenus();
   renderWorkspace();
   renderChrome();
@@ -7043,8 +6942,8 @@ function renderDocumentStatus(doc = activeDocument()) {
     .filter(Boolean)
     .join(" · ");
   $("statusRight").innerHTML = [
-    `第 ${(editor.getPosition()?.lineNumber ?? 1) + (doc.largePage?.startLine ?? 1) - 1} 行，第 ${editor.getPosition()?.column ?? 1} 列`,
-    doc.largePage ? `当前页 ${doc.largePage.startLine}–${Math.max(doc.largePage.startLine, doc.largePage.nextLine - 1)} 行` : `${documentLineCount(doc)} 行`,
+    `第 ${(editor.getPosition()?.lineNumber ?? 1)} 行，第 ${editor.getPosition()?.column ?? 1} 列`,
+    `${documentLineCount(doc)} 行`,
     `${documentValueLength(doc)} 字符`,
     `${formatBytes(doc.fileSize)}`,
   ].map((item) => `<span>${item}</span>`).join(`<span class="dot"></span>`);
@@ -8079,7 +7978,7 @@ function searchReportSummary(report: SearchReportDto) {
   const parts = [`捞出 ${report.total} 处`, `${report.hits.length} 个文件`];
   if (report.error) parts.push(`搜索失败：${report.error}`);
   if (report.cancelled) parts.push("已取消 · 部分结果");
-  if (report.truncated) parts.push("达到结果上限（50,000 条 / 32 MiB）· 部分结果");
+  if (report.truncated) parts.push("达到指定结果上限 · 部分结果");
   if (report.skipped.length) parts.push(`跳过 ${report.skipped.length} 项`);
   if (report.filesScanned !== undefined) parts.push(`扫描 ${report.filesScanned}`);
   if (report.elapsedMs !== undefined) parts.push(formatSearchDuration(report.elapsedMs));
@@ -8277,7 +8176,6 @@ function renderSearchDecorations() {
   for (const hit of state.results.hits) {
     for (const match of hit.matches) {
       if (hit.path === activePath) {
-        if (doc.largePage && (match.line < doc.largePage.startLine || match.line >= doc.largePage.nextLine)) { index += 1; continue; }
         const range = rangeFromMatch(match);
         const decoration = {
           range,
@@ -8313,7 +8211,6 @@ function renderSearchDecorations() {
 }
 
 function rangeFromMatch(match: TextMatchDto) {
-  match = { ...match, line: match.line - (activeDocument().largePage?.startLine ?? 1) + 1 };
   const parts = match.matchedText.split(/\r\n|\n|\r/);
   if (parts.length === 1) {
     return new monaco.Range(match.line, match.column, match.line, match.column + Math.max(1, match.matchedText.length));
@@ -8865,7 +8762,7 @@ function toggleBookmark() {
   const doc = activeDocument();
   const localLine = editor.getPosition()?.lineNumber;
   if (!doc || !localLine) return;
-  const line = localLine + (doc.largePage?.startLine ?? 1) - 1;
+  const line = localLine;
   const key = documentSessionKey(doc);
   const lines = new Set(state.bookmarks[key] ?? []);
   if (lines.has(line)) lines.delete(line);
@@ -8884,10 +8781,9 @@ function navigateBookmark(delta: number) {
     log("当前文档没有书签");
     return;
   }
-  const current = (editor.getPosition()?.lineNumber ?? 1) + (doc.largePage?.startLine ?? 1) - 1;
+  const current = (editor.getPosition()?.lineNumber ?? 1);
   const ordered = delta > 0 ? lines : [...lines].reverse();
   const target = ordered.find((line) => delta > 0 ? line > current : line < current) ?? ordered[0];
-  if (doc.largePage) { void navigateSourceLine(doc, target, 1); return; }
   editor.setPosition({ lineNumber: target, column: 1 });
   editor.revealLineInCenterIfOutsideViewport(target);
   editor.focus();
@@ -8897,7 +8793,7 @@ function renderBookmarkDecorations() {
   if (!bookmarkDecorations || !editor?.getModel()) return;
   const doc = activeDocument();
   const lineCount = documentLineCount(doc);
-  const lines = (state.bookmarks[documentSessionKey(doc)] ?? []).map(line => line - (doc.largePage?.startLine ?? 1) + 1).filter((line) => line >= 1 && line <= lineCount);
+  const lines = (state.bookmarks[documentSessionKey(doc)] ?? []).filter((line) => line >= 1 && line <= lineCount);
   bookmarkDecorations.set(lines.map((line) => ({
     range: new monaco.Range(line, 1, line, 1),
     options: {
@@ -8916,7 +8812,6 @@ function renderAnalyseBookmarkDecorations() {
   const doc = activeDocument();
   const lineCount = documentLineCount(doc);
   const lines = (analyseBookmarkLines.get(doc.id) ?? [])
-    .map(line => line - (doc.largePage?.startLine ?? 1) + 1)
     .filter((line) => line >= 1 && line <= lineCount);
   analyseBookmarkDecorations.set(lines.map((line) => ({
     range: new monaco.Range(line, 1, line, 1),
@@ -8932,7 +8827,6 @@ function renderAnalyseBookmarkDecorations() {
 }
 
 function syncActiveBookmarkLines(doc = activeDocument()) {
-  if (doc.largePage) return;
   if (!bookmarkDecorations || editor.getModel() !== doc.model) return;
   const lines: number[] = [];
   for (let index = 0; index < bookmarkDecorations.length; index += 1) {
@@ -8974,7 +8868,6 @@ function markdownEditModeLabel(mode: MarkdownEditMode) {
 }
 
 function isMarkdownLikeDocument(doc = activeDocument()) {
-  if (doc.largePage) return false;
   if (isMarkdownLikeLanguage(doc.language)) return true;
   const name = (doc.path || doc.title).toLowerCase();
   return /\.(md|markdown|mdx|rmd)$/.test(name);
@@ -9707,11 +9600,6 @@ function transformToLowercase() {
 }
 
 async function goToLine() {
-  if (activeDocument().largePage) {
-    const value = await askTextInput({ title: "跳转到行", subtitle: "大文件将按需建立行索引，首次远距离跳转可能需要等待", label: "原文件行号", value: "1", inputMode: "numeric" });
-    if (value !== null && Number.isSafeInteger(Number(value)) && Number(value) > 0) await navigateSourceLine(activeDocument(), Number(value), 1);
-    return;
-  }
   const model = editor.getModel();
   if (!model) return;
   const lineCount = model.getLineCount();

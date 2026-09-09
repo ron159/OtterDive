@@ -47,7 +47,7 @@ pub fn start_workspace_search(
             &request.query,
             &options,
             &cancel,
-            50_000,
+            usize::MAX,
             |batch| {
                 on_event
                     .send(SearchEvent {

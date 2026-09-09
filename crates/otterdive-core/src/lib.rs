@@ -1,7 +1,6 @@
 pub mod analyse;
 pub mod document;
 pub mod fs;
-pub mod large_file;
 pub mod search;
 
 pub use document::{Document, DocumentMeta, EncodingKind, LineEnding, LoadedDocument};

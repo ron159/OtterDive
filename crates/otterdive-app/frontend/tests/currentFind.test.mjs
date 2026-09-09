@@ -47,7 +47,7 @@ function setup() {
     currentSearchPatternError: () => "",
     setCurrentFindError() {},
     commitSearchHistory() {},
-    activeDocument: () => ({ title: "sample.txt", encoding: "UTF-8", largePage: { startLine: 101 } }),
+    activeDocument: () => ({ title: "sample.txt", encoding: "UTF-8" }),
     isMarkdownWysiwygActive: () => false,
     modelMatches() {
       calls.searches.push(input.value);
@@ -91,7 +91,7 @@ test("English typing waits for a pause, reveals the result and retains input foc
   await Promise.resolve();
   assert.deepEqual(h.calls.searches, ["hello"]);
   assert.deepEqual(h.calls.jumps, []);
-  assert.deepEqual(h.calls.reveals, [{ lineNumber: 5, column: 3 }]);
+  assert.deepEqual(h.calls.reveals, [{ lineNumber: 105, column: 3 }]);
   assert.equal(h.context.document.activeElement, h.input);
   h.type("hello world");
   h.tick(400);

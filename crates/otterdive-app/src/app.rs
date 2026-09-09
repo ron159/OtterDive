@@ -119,7 +119,6 @@ pub struct DocumentDto {
     pub read_only_reason: Option<String>,
     pub language: String,
     pub large_file: bool,
-    pub large_page: Option<crate::large_file::PageDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -553,7 +552,6 @@ pub fn run() {
             app.manage(store);
             app.manage(OpenRequestQueue::default());
             app.manage(AnalyseService::default());
-            app.manage(crate::large_file::LargeFileService::default());
             app.manage(crate::stream_search::SearchService::default());
             Ok(())
         })
@@ -564,7 +562,6 @@ pub fn run() {
             pick_file_path,
             open_path,
             crate::file_revision::file_revisions,
-            crate::large_file::read_large_file_page,
             reopen_path_with_encoding,
             pick_save_path,
             pick_pdf_save_path,
@@ -618,7 +615,7 @@ fn save_session(snapshot: String, store: tauri::State<'_, SessionStore>) -> Resu
 }
 
 #[tauri::command]
-async fn open_file_dialog(service: tauri::State<'_, crate::large_file::LargeFileService>) -> Result<Option<DocumentDto>, String> {
+async fn open_file_dialog() -> Result<Option<DocumentDto>, String> {
     let Some(path) = pick_file_path(DialogPathRequest {
         default_dir: None,
         file_name: None,
@@ -626,7 +623,7 @@ async fn open_file_dialog(service: tauri::State<'_, crate::large_file::LargeFile
     else {
         return Ok(None);
     };
-    open_path(path, service).await.map(Some)
+    open_path(path).await.map(Some)
 }
 
 #[tauri::command]
@@ -637,40 +634,34 @@ fn pick_file_path(request: DialogPathRequest) -> Result<Option<String>, String> 
 }
 
 #[tauri::command]
-async fn open_path(path: String, service: tauri::State<'_, crate::large_file::LargeFileService>) -> Result<DocumentDto, String> {
-    let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(path);
-        let revision = crate::file_revision::revision(&path)?;
-        if fs::metadata(&path).map_err(|e| e.to_string())?.len() > EDITABLE_FILE_LIMIT_BYTES {
-            return service.open_document(&path.to_string_lossy(), None);
-        }
-        let doc = LoadedDocument::open(&path)
-            .map_err(|err| format!("打开失败：{}：{err}", path.display()))?;
-        crate::file_revision::ensure_revision(&path, &revision)?;
-        let mut dto = loaded_document_to_dto(doc);
-        dto.disk_revision = Some(revision);
-        Ok(dto)
-    })
-    .await
-    .map_err(|err| format!("打开任务失败：{err}"))?
+async fn open_path(path: String) -> Result<DocumentDto, String> {
+    tauri::async_runtime::spawn_blocking(move || load_path(PathBuf::from(path)))
+        .await
+        .map_err(|err| format!("打开任务失败：{err}"))?
+}
+
+fn load_path(path: PathBuf) -> Result<DocumentDto, String> {
+    let revision = crate::file_revision::revision(&path)?;
+    let doc = LoadedDocument::open(&path)
+        .map_err(|err| format!("打开失败：{}：{err}", path.display()))?;
+    crate::file_revision::ensure_revision(&path, &revision)?;
+    let mut dto = loaded_document_to_dto(doc);
+    dto.disk_revision = Some(revision);
+    Ok(dto)
 }
 
 #[tauri::command]
-async fn reopen_path_with_encoding(request: ReopenRequest, service: tauri::State<'_, crate::large_file::LargeFileService>) -> Result<DocumentDto, String> {
-    let service = service.inner().clone();
+async fn reopen_path_with_encoding(request: ReopenRequest) -> Result<DocumentDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(request.path);
         let revision = crate::file_revision::revision(&path)?;
         let metadata = fs::metadata(&path)
             .map_err(|err| format!("读取文件信息失败：{}：{err}", path.display()))?;
-        if metadata.len() > EDITABLE_FILE_LIMIT_BYTES {
-            return service.open_document(&path.to_string_lossy(), Some(parse_encoding(&request.encoding)));
-        }
         let bytes =
             fs::read(&path).map_err(|err| format!("读取文件失败：{}：{err}", path.display()))?;
         let encoding = parse_encoding(&request.encoding);
-        let decoded = otterdive_core::fs::decode_bytes_with_encoding(&bytes, encoding);
+        let file_size = bytes.len();
+        let decoded = otterdive_core::fs::decode_owned_bytes_with_encoding(bytes, encoding);
         let title = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -684,11 +675,10 @@ async fn reopen_path_with_encoding(request: ReopenRequest, service: tauri::State
             path: Some(path.display().to_string()),
             language: language_from_path(Some(&path)),
             large_file: metadata.len() > EDITABLE_FILE_LIMIT_BYTES,
-            large_page: None,
             text: decoded.text,
             encoding: encoding_label(decoded.encoding).to_owned(),
             line_ending: line_ending_label(line_ending).to_owned(),
-            file_size: bytes.len(),
+            file_size,
             read_only: metadata.permissions().readonly()
                 || metadata.len() > EDITABLE_FILE_LIMIT_BYTES,
             read_only_reason: if metadata.permissions().readonly() {
@@ -1039,7 +1029,6 @@ fn document_to_dto(doc: Document) -> DocumentDto {
         path: path.map(|path| path.display().to_string()),
         language: language_from_path(path),
         large_file: doc.meta.read_only && doc.meta.file_size > EDITABLE_FILE_LIMIT_BYTES as usize,
-        large_page: None,
         text: doc.text,
         encoding: encoding_label(doc.meta.encoding).to_owned(),
         line_ending: line_ending_label(doc.meta.line_ending).to_owned(),
@@ -1057,7 +1046,6 @@ fn loaded_document_to_dto(doc: LoadedDocument) -> DocumentDto {
         path: path.map(|path| path.display().to_string()),
         language: language_from_path(path),
         large_file: doc.meta.read_only && doc.meta.file_size > EDITABLE_FILE_LIMIT_BYTES as usize,
-        large_page: None,
         text: doc.text,
         encoding: encoding_label(doc.meta.encoding).to_owned(),
         line_ending: line_ending_label(doc.meta.line_ending).to_owned(),
@@ -1608,5 +1596,36 @@ pub(crate) fn line_ending_label(line_ending: LineEnding) -> &'static str {
         LineEnding::Lf => "LF",
         LineEnding::Crlf => "CRLF",
         LineEnding::Cr => "CR",
+    }
+}
+
+#[cfg(test)]
+mod large_document_tests {
+    use super::*;
+    use std::io::{BufWriter, Write};
+
+    #[test]
+    fn opening_large_document_preserves_the_complete_text() {
+        let path = std::env::temp_dir().join(format!("otterdive-large-dto-{}", std::process::id()));
+        let mut temp = BufWriter::new(std::fs::File::create(&path).unwrap());
+        for _ in 0..450_000 {
+            temp.write_all(b"2026-09-07 INFO request completed in 10 milliseconds\n")
+                .unwrap();
+        }
+        temp.flush().unwrap();
+        drop(temp);
+        let dto = load_path(path.clone()).unwrap();
+        assert!(dto.read_only && dto.large_file);
+        assert!(dto.file_size > 20_000_000);
+        assert_eq!(dto.text.len(), dto.file_size);
+        assert_eq!(dto.text.lines().count(), 450_000);
+        let reopened = tauri::async_runtime::block_on(reopen_path_with_encoding(ReopenRequest {
+            path: path.to_string_lossy().into_owned(),
+            encoding: "UTF-8".to_owned(),
+        }))
+        .unwrap();
+        assert_eq!(reopened.text, dto.text);
+        assert_eq!(reopened.disk_revision, dto.disk_revision);
+        std::fs::remove_file(path).unwrap();
     }
 }

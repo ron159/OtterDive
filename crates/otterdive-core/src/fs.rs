@@ -38,6 +38,37 @@ pub struct DirectorySearchReport {
     pub elapsed_ms: u64,
 }
 
+/// Reuse the file buffer for ordinary UTF-8 instead of copying the entire file.
+/// BOMs and legacy encodings keep the same decoding behavior as `decode_bytes`.
+pub fn decode_owned_bytes(bytes: Vec<u8>) -> DecodedText {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+        || bytes.starts_with(&[0xFF, 0xFE])
+        || bytes.starts_with(&[0xFE, 0xFF])
+    {
+        return decode_bytes(&bytes);
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => DecodedText {
+            text,
+            encoding: EncodingKind::Utf8,
+        },
+        Err(error) => decode_bytes(error.as_bytes()),
+    }
+}
+
+pub fn decode_owned_bytes_with_encoding(bytes: Vec<u8>, encoding: EncodingKind) -> DecodedText {
+    if matches!(encoding, EncodingKind::Utf8 | EncodingKind::Utf8Bom)
+        && !bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+    {
+        match String::from_utf8(bytes) {
+            Ok(text) => DecodedText { text, encoding },
+            Err(error) => decode_bytes_with_encoding(error.as_bytes(), encoding),
+        }
+    } else {
+        decode_bytes_with_encoding(&bytes, encoding)
+    }
+}
+
 pub fn decode_bytes(bytes: &[u8]) -> DecodedText {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         let (cow, _, _) = UTF_8.decode(&bytes[3..]);
@@ -224,7 +255,6 @@ pub fn search_directory_stream(
     }
     let mut summary = StreamSearchSummary::default();
     let mut total = 0;
-    let mut result_bytes = 0usize;
     for entry in walker
         .into_iter()
         .filter_entry(|entry| should_visit(entry, options, &skip_dirs))
@@ -265,10 +295,7 @@ pub fn search_directory_stream(
                     if cancel.is_cancelled() {
                         return false;
                     }
-                    result_bytes = result_bytes
-                        .saturating_add(hit.line_text.len())
-                        .saturating_add(hit.matched_text.len());
-                    if total >= max_results || result_bytes > 32 * 1024 * 1024 {
+                    if total >= max_results {
                         summary.truncated = true;
                         return false;
                     }
@@ -335,7 +362,7 @@ fn read_search_text(
     if is_probably_binary(&bytes) {
         return Err(io::Error::other("跳过二进制文件"));
     }
-    Ok(decode_bytes(&bytes))
+    Ok(decode_owned_bytes(bytes))
 }
 
 pub fn preview_directory_replace(
@@ -400,7 +427,7 @@ pub fn read_text(path: impl AsRef<Path>) -> io::Result<DecodedText> {
             "binary file skipped",
         ));
     }
-    Ok(decode_bytes(&bytes))
+    Ok(decode_owned_bytes(bytes))
 }
 
 fn is_probably_binary(bytes: &[u8]) -> bool {

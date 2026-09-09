@@ -94,3 +94,42 @@ fn pre_cancelled_search_does_not_scan_and_oversize_files_are_reported() {
     assert!(skipped[0].contains("log.txt"));
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn full_large_file_search_exceeds_former_count_and_text_limits() {
+    let dir = std::env::temp_dir().join(format!("otterdive-stream-full-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let line = format!("中文 error {}\n", "x".repeat(700));
+    fs::write(dir.join("log.txt"), line.repeat(50_001)).unwrap();
+    let options = SearchOptions {
+        max_file_size: u64::MAX,
+        ..Default::default()
+    };
+    let mut count = 0;
+    let mut last_line = 0;
+    let summary = search_directory_stream(
+        &dir,
+        "error",
+        &options,
+        &CancellationToken::new(),
+        usize::MAX,
+        |batch| {
+            assert!(batch.skipped.is_empty());
+            for file in batch.hits {
+                assert!(file.matches.len() <= 128);
+                for hit in file.matches {
+                    count += 1;
+                    last_line = hit.line;
+                    assert_eq!(hit.column, 4);
+                }
+            }
+            true
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+    assert!(!summary.truncated && !summary.cancelled);
+    assert_eq!(summary.files_scanned, 1);
+    assert_eq!(count, 50_001);
+    assert_eq!(last_line, 50_001);
+}

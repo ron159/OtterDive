@@ -1,4 +1,4 @@
-use crate::fs::{decode_bytes, encode_text};
+use crate::fs::{decode_owned_bytes, encode_text};
 use crate::search::{ReplaceOutcome, SearchOptions, apply_replace_all};
 use std::fs;
 use std::io;
@@ -100,7 +100,8 @@ impl LoadedDocument {
         let path = path.as_ref();
         let metadata = fs::metadata(path)?;
         let bytes = fs::read(path)?;
-        let decoded = decode_bytes(&bytes);
+        let file_size = bytes.len();
+        let decoded = decode_owned_bytes(bytes);
         let title = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -119,7 +120,7 @@ impl LoadedDocument {
                 path: Some(path.to_path_buf()),
                 encoding: decoded.encoding,
                 line_ending,
-                file_size: bytes.len(),
+                file_size,
                 read_only,
                 read_only_reason,
             },
