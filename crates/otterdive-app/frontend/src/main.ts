@@ -902,7 +902,6 @@ const state = {
   workspaceSearchAction: "search" as WorkspaceSearchAction,
   workspaceSearchError: "",
   workspaceSearchRequestId: 0,
-  workspaceSearchVisibleResults: 400,
   workspaceReplaceVisibleResults: 400,
   findView: "find" as FindView,
   wordWrap: false,
@@ -5511,7 +5510,6 @@ function setSearchResults(
     state.searchResultHistory = addSearchResultHistory(state.searchResultHistory, query, scope, report);
   }
   if (scope === "workspace") {
-    state.workspaceSearchVisibleResults = 400;
     state.rightTool = "search";
     $("findPopover").classList.remove("hidden");
     $("app").classList.add("right-sidebar-open");
@@ -6071,7 +6069,6 @@ async function searchWorkspace() {
   state.searchScope = "workspace";
   state.searchQuery = query;
   state.panel = "results";
-  state.workspaceSearchVisibleResults = 400;
   const hitsByPath = new globalThis.Map<string, FileHitDto>();
   let renderTimer: number | undefined;
   let done = false;
@@ -7999,14 +7996,13 @@ function renderProgressiveSearchResults(
   let matchIndex = 0;
   let resultIndex = 0;
   let rows: HTMLElement | null = null;
-  const limit = Math.min(report.total, state.workspaceSearchVisibleResults);
   list.dataset.currentSearchResults = String(report === state.results);
 
   const appendBatch = () => {
     if (renderVersion !== searchResultRenderVersion || !list.isConnected) return;
     const started = performance.now();
     let appended = 0;
-    while (hitIndex < report.hits.length && resultIndex < limit && appended < 120 && performance.now() - started < 8) {
+    while (hitIndex < report.hits.length && appended < 120 && performance.now() - started < 8) {
       const hit = report.hits[hitIndex];
       if (matchIndex === 0) {
         const group = document.createElement("section");
@@ -8032,11 +8028,9 @@ function renderProgressiveSearchResults(
         rows = null;
       }
     }
-    if (resultIndex < limit && hitIndex < report.hits.length) {
+    if (hitIndex < report.hits.length) {
       window.requestAnimationFrame(appendBatch);
-      return;
     }
-    if (limit < report.total) appendMoreResultsButton(list, report.total - limit, "search");
   };
   appendBatch();
 }
@@ -8088,18 +8082,17 @@ function renderProgressiveReplaceResults(
       window.requestAnimationFrame(appendBatch);
       return;
     }
-    if (limit < report.total) appendMoreResultsButton(list, report.total - limit, "replace");
+    if (limit < report.total) appendMoreResultsButton(list, report.total - limit);
   };
   appendBatch();
 }
 
-function appendMoreResultsButton(list: HTMLElement, remaining: number, kind: "search" | "replace") {
+function appendMoreResultsButton(list: HTMLElement, remaining: number) {
   const footer = document.createElement("div");
   footer.className = "find-results-more";
   footer.innerHTML = `<span>还有 ${remaining} 处结果</span><button class="tool-button">${iconSvg("ListPlus")}<span>继续显示</span></button>`;
   footer.querySelector("button")?.addEventListener("click", () => {
-    if (kind === "search") state.workspaceSearchVisibleResults += 600;
-    else state.workspaceReplaceVisibleResults += 600;
+    state.workspaceReplaceVisibleResults += 600;
     renderSearchSidebarResults();
   });
   list.appendChild(footer);
