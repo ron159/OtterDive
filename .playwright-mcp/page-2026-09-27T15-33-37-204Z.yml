@@ -1,0 +1,61 @@
+- generic [active] [ref=f2e1]:
+  - main [ref=f2e2]:
+    - generic [ref=f2e3]:
+      - strong [ref=f2e5]: OtterDive
+      - navigation "应用菜单" [ref=f2e6]:
+        - button "文件" [ref=f2e7] [cursor=pointer]
+        - button "编辑" [ref=f2e8] [cursor=pointer]
+        - button "查找" [ref=f2e9] [cursor=pointer]
+        - button "视图" [ref=f2e10] [cursor=pointer]
+      - generic [ref=f2e12]:
+        - button "当前跟随系统（亮色），点击切换主题" [ref=f2e13] [cursor=pointer]
+        - button "打开设置 Ctrl+," [ref=f2e26] [cursor=pointer]
+        - generic "窗口控制" [ref=f2e31]:
+          - button "最小化" [ref=f2e32] [cursor=pointer]
+          - button "最大化" [ref=f2e35] [cursor=pointer]
+          - button "关闭" [ref=f2e42] [cursor=pointer]
+    - navigation [ref=f2e47]:
+      - generic "常用工具" [ref=f2e48]:
+        - button "新建文件 Ctrl+N" [ref=f2e49] [cursor=pointer]
+        - button "打开文件 Ctrl+O" [ref=f2e54] [cursor=pointer]
+        - button "打开工作区 Ctrl+K Ctrl+O" [ref=f2e58] [cursor=pointer]
+        - button "最近打开" [ref=f2e65] [cursor=pointer]
+        - button "保存 Ctrl+S" [ref=f2e72] [cursor=pointer]
+        - button "保存全部 Ctrl+K S" [disabled] [ref=f2e78]
+        - button "另存为 Ctrl+Shift+S" [ref=f2e85] [cursor=pointer]
+        - button "导出带大纲 PDF" [disabled] [ref=f2e91]
+        - button "撤销 Ctrl+Z" [ref=f2e98] [cursor=pointer]
+        - button "重做 Ctrl+Y" [ref=f2e103] [cursor=pointer]
+        - button "转为大写" [ref=f2e108] [cursor=pointer]
+        - button "转为小写" [ref=f2e113] [cursor=pointer]
+        - button "格式化文档 Shift+Alt+F" [ref=f2e118] [cursor=pointer]
+        - button "查找 Ctrl+F" [ref=f2e124] [cursor=pointer]
+        - button "切换 Analyse 面板" [ref=f2e129] [cursor=pointer]
+        - button "替换 Ctrl+H" [ref=f2e133] [cursor=pointer]
+        - button "跳转到行 Ctrl+G" [ref=f2e143] [cursor=pointer]
+        - button "命令面板 Ctrl+Shift+P" [ref=f2e148] [cursor=pointer]
+        - button "自动换行 已关闭" [ref=f2e153] [cursor=pointer]
+    - tablist "打开的文档" [ref=f2e159]:
+      - tab "Untitled-1.txt 关闭 Untitled-1.txt" [selected] [ref=f2e160]:
+        - generic [ref=f2e161]: TXT
+        - generic [ref=f2e167]: Untitled-1.txt
+        - button "关闭 Untitled-1.txt" [ref=f2e168] [cursor=pointer]
+    - code [ref=f2e177]:
+      - generic [ref=f2e178]:
+        - textbox "Editor content"
+        - textbox [aria-hidden] [ref=f2e179]
+        - generic [ref=f2e182]: "1"
+    - generic [ref=f2e192]:
+      - generic [ref=f2e193]:
+        - button "语言 Plain Text" [ref=f2e194] [cursor=pointer]: Plain Text
+        - button "编码 UTF-8" [ref=f2e195] [cursor=pointer]: UTF-8
+        - button "行尾 LF" [ref=f2e196] [cursor=pointer]: LF
+        - generic [ref=f2e197]: 编码已识别
+      - generic [ref=f2e198]:
+        - generic [ref=f2e199]: 第 1 行，第 1 列
+        - generic [ref=f2e201]: 1 行
+        - generic [ref=f2e203]: 0 字符
+        - generic [ref=f2e205]: 0 bytes
+  - generic [ref=f2e206]:
+    - alert
+    - alert

@@ -1,0 +1,61 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - strong [ref=e5]: OtterDive
+      - navigation "应用菜单" [ref=e6]:
+        - button "文件" [ref=e7] [cursor=pointer]
+        - button "编辑" [ref=e8] [cursor=pointer]
+        - button "查找" [ref=e9] [cursor=pointer]
+        - button "视图" [ref=e10] [cursor=pointer]
+      - generic [ref=e12]:
+        - button "切换到深色" [ref=e13] [cursor=pointer]
+        - button "打开设置 Ctrl+," [ref=e17] [cursor=pointer]
+        - generic "窗口控制" [ref=e22]:
+          - button "最小化" [ref=e23] [cursor=pointer]
+          - button "最大化" [ref=e26] [cursor=pointer]
+          - button "关闭" [ref=e33] [cursor=pointer]
+    - navigation [ref=e38]:
+      - generic "常用工具" [ref=e39]:
+        - button "新建文件 Ctrl+N" [ref=e40] [cursor=pointer]
+        - button "打开文件 Ctrl+O" [ref=e45] [cursor=pointer]
+        - button "打开工作区 Ctrl+K Ctrl+O" [ref=e49] [cursor=pointer]
+        - button "最近打开" [ref=e56] [cursor=pointer]
+        - button "保存 Ctrl+S" [ref=e63] [cursor=pointer]
+        - button "保存全部 Ctrl+K S" [disabled] [ref=e69]
+        - button "另存为 Ctrl+Shift+S" [ref=e76] [cursor=pointer]
+        - button "导出带大纲 PDF" [disabled] [ref=e82]
+        - button "撤销 Ctrl+Z" [ref=e89] [cursor=pointer]
+        - button "重做 Ctrl+Y" [ref=e94] [cursor=pointer]
+        - button "转为大写" [ref=e99] [cursor=pointer]
+        - button "转为小写" [ref=e104] [cursor=pointer]
+        - button "格式化文档 Shift+Alt+F" [ref=e109] [cursor=pointer]
+        - button "查找 Ctrl+F" [ref=e115] [cursor=pointer]
+        - button "切换 Analyse 面板" [ref=e120] [cursor=pointer]
+        - button "替换 Ctrl+H" [ref=e124] [cursor=pointer]
+        - button "跳转到行 Ctrl+G" [ref=e134] [cursor=pointer]
+        - button "命令面板 Ctrl+Shift+P" [ref=e139] [cursor=pointer]
+        - button "自动换行 已关闭" [ref=e144] [cursor=pointer]
+    - tablist "打开的文档" [ref=e150]:
+      - tab "Untitled-1.txt 关闭 Untitled-1.txt" [selected] [ref=e151]:
+        - generic [ref=e152]: TXT
+        - generic [ref=e158]: Untitled-1.txt
+        - button "关闭 Untitled-1.txt" [ref=e159] [cursor=pointer]
+    - code [ref=e168]:
+      - generic [ref=e169]:
+        - textbox "Editor content"
+        - textbox [aria-hidden] [ref=e170]
+        - generic [ref=e173]: "1"
+    - generic [ref=e183]:
+      - generic [ref=e184]:
+        - button "语言 Plain Text" [ref=e185] [cursor=pointer]: Plain Text
+        - button "编码 UTF-8" [ref=e186] [cursor=pointer]: UTF-8
+        - button "行尾 LF" [ref=e187] [cursor=pointer]: LF
+        - generic [ref=e188]: 编码已识别
+      - generic [ref=e189]:
+        - generic [ref=e190]: 第 1 行，第 1 列
+        - generic [ref=e192]: 1 行
+        - generic [ref=e194]: 0 字符
+        - generic [ref=e196]: 0 bytes
+  - generic [ref=e197]:
+    - alert
+    - alert
