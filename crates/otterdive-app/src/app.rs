@@ -507,6 +507,7 @@ fn persisted_window_state_flags() -> tauri_plugin_window_state::StateFlags {
 
 pub fn run() {
     let builder = tauri::Builder::default()
+        .manage(OpenRequestQueue::default())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
@@ -550,7 +551,6 @@ pub fn run() {
             let store = SessionStore::new(database_path);
             store.initialize().map_err(std::io::Error::other)?;
             app.manage(store);
-            app.manage(OpenRequestQueue::default());
             app.manage(AnalyseService::default());
             app.manage(crate::stream_search::SearchService::default());
             Ok(())
@@ -600,8 +600,34 @@ pub fn run() {
             crate::analyse::parse_analyse_profile,
             crate::analyse::write_analyse_profile,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run OtterDive");
+        .build(tauri::generate_context!())
+        .expect("failed to build OtterDive")
+        .run(|app, event| {
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                let files = urls
+                    .into_iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .filter(|path| path.is_file())
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>();
+                if !files.is_empty() {
+                    app.state::<OpenRequestQueue>().push(StartupArgsDto {
+                        files,
+                        directories: Vec::new(),
+                    });
+                    let _ = app.emit("open-request", ());
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+        });
 }
 
 #[tauri::command]
