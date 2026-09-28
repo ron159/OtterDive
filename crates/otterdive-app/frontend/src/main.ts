@@ -1013,6 +1013,7 @@ let explorerResizeState: HorizontalResizeState | null = null;
 let markdownPreviewResizeState: HorizontalResizeState | null = null;
 let outlineActiveFrame = 0;
 let outlineNavigation: { index: number; scrollTop: number } | null = null;
+let searchResultNavigationDepth = 0;
 let editorLayoutFrame = 0;
 let editorLayoutSettleFrame = 0;
 let editorLayoutForceRender = false;
@@ -5684,25 +5685,36 @@ function handleSearchResultHorizontalScroll(event: WheelEvent) {
   resultList.scrollLeft += event.deltaX;
 }
 
-async function openSearchResult(index: number) {
+async function openSearchResult(index: number, revealInResults = true) {
   const items = flattenSearchResults();
   if (items.length === 0) return;
   const normalized = ($("wrapSearchInput") as HTMLInputElement).checked
     ? ((index % items.length) + items.length) % items.length
     : Math.min(items.length - 1, Math.max(0, index));
   const item = items[normalized];
+  const previousIndex = state.activeResultIndex;
   state.activeResultIndex = normalized;
-  renderSearchSidebarResults();
+  const body = $("findResultsBody");
+  body.querySelectorAll<HTMLElement>(`[data-current-search-results="true"] [data-result-index="${previousIndex}"]`)
+    .forEach(row => row.classList.remove("result-active"));
+  body.querySelectorAll<HTMLElement>(`[data-current-search-results="true"] [data-result-index="${normalized}"]`)
+    .forEach(row => row.classList.add("result-active"));
   renderCurrentFindCount();
   if (state.searchScope === "current" && isMarkdownWysiwygActive() && markdownEditor) {
     markdownEditor.search(editorSearchQuery(state.searchQuery), {
       ...markdownSearchOptions(),
       highlightIndex: normalized,
     });
-    scrollActiveResultIntoView();
+    if (revealInResults) scrollActiveResultIntoView();
     return;
   }
-  const targetDocument = await openResult(item.path, item.match.line, item.match.column);
+  searchResultNavigationDepth += 1;
+  let targetDocument: OpenDocument | undefined;
+  try {
+    targetDocument = await openResult(item.path, item.match.line, item.match.column);
+  } finally {
+    searchResultNavigationDepth -= 1;
+  }
   if (targetDocument && isMarkdownWysiwygActive(targetDocument)) {
     const targetEditor = await ensureMarkdownEditor(targetDocument);
     const targetHit = state.results?.hits.find((hit) => hit.path === item.path);
@@ -5721,18 +5733,25 @@ async function openSearchResult(index: number) {
     }
   }
   renderSearchDecorations();
-  scrollActiveResultIntoView();
+  if (revealInResults) scrollActiveResultIntoView();
 }
 
 async function openHistoricalSearchResult(batchId: number, resultIndex: number) {
   const entry = state.searchResultHistory.find((item) => item.id === batchId);
   if (!entry) return;
   if (entry.report === state.results) {
-    await openSearchResult(resultIndex);
+    await openSearchResult(resultIndex, false);
     return;
   }
   const item = flattenSearchReport(entry.report)[resultIndex];
-  if (item) await openResult(item.path, item.match.line, item.match.column);
+  if (item) {
+    searchResultNavigationDepth += 1;
+    try {
+      await openResult(item.path, item.match.line, item.match.column);
+    } finally {
+      searchResultNavigationDepth -= 1;
+    }
+  }
 }
 
 function initialSearchResultIndex(total: number) {
@@ -7793,7 +7812,7 @@ function renderSearchSidebarResults() {
     const list = $("streamSearchResults");
     list.addEventListener("click", (event) => {
       const row = (event.target as HTMLElement).closest<HTMLElement>("[data-result-index]");
-      if (row) void openSearchResult(Number(row.dataset.resultIndex));
+      if (row) void openSearchResult(Number(row.dataset.resultIndex), false);
     });
     if (state.results) renderProgressiveSearchResults(state.results, list, renderVersion);
     return;
@@ -7871,7 +7890,7 @@ function renderSearchSidebarResults() {
   list.addEventListener("click", (event) => {
     const row = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-result-index]");
     if (row && !mouseClickHasTextSelection(event, row)) {
-      void openSearchResult(Number(row.dataset.resultIndex ?? "0"));
+      void openSearchResult(Number(row.dataset.resultIndex ?? "0"), false);
     }
   });
   renderProgressiveSearchResults(state.results, list, renderVersion);
@@ -9263,7 +9282,7 @@ function renderRightSidebar() {
   $("analyseToolPane").classList.toggle("hidden", state.rightTool !== "analyse");
   const sidebarOpen = !$("findPopover").classList.contains("hidden");
   if (sidebarOpen && state.rightTool === "analyse") analysePanel?.syncDocument();
-  if (sidebarOpen && state.rightTool === "search") renderSearchSidebarResults();
+  if (sidebarOpen && state.rightTool === "search" && searchResultNavigationDepth === 0) renderSearchSidebarResults();
   renderDocumentOutline();
   renderRightSidebarToggle();
 }
