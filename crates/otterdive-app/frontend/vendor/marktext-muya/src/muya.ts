@@ -26,7 +26,7 @@ import {
     injectSentinels,
     injectStateSentinels,
     locateSentinelOffsets,
-    resolveSentinelCursor,
+    resolveStateSentinelCursor,
 } from './selection/offsetCursor';
 import { isAnyListState, isAtxHeadingState, isCodeBlockState } from './state/types';
 import { Ui } from './ui/ui';
@@ -1041,7 +1041,7 @@ export class Muya {
         if (anchorBlock == null || !anchorBlock.isContent())
             return;
 
-        if (anchorBlock === focusBlock || focusBlock == null) {
+        if ((anchorBlock === focusBlock && anchor.offset <= focus.offset) || focusBlock == null) {
             const begin = Math.min(anchor.offset, focus.offset);
             const last = Math.max(anchor.offset, focus.offset);
             anchorBlock.setCursor(begin, last, true);
@@ -1091,16 +1091,9 @@ export class Muya {
      * Restore the WYSIWYG caret from a source-mode (CodeMirror) `{ line, ch }`
      * index cursor. The block tree has no source-line mapping, so the offsets
      * are resolved as follows: inject sentinel
-     * strings into the current markdown at the line/ch positions, rebuild the
-     * tree (sentinels embed as literal text), find which content blocks they
-     * landed in, then rebuild the clean document and set the cursor by the
-     * resolved block paths + offsets. The sentinel-bearing tree is transient —
-     * both `setContent` calls run synchronously within this task, so no
-     * intermediate paint happens.
-     *
-     * `Editor.setContent` clears the undo history, so this method snapshots the
-     * history before its internal rebuild and restores it afterwards — the undo
-     * stack is preserved, leaving only the caret changed. No-op (returns
+     * strings into the current markdown at the line/ch positions, parse a
+     * throwaway state tree and resolve its content paths against the existing
+     * clean state. Neither the DOM nor undo history needs rebuilding. No-op (returns
      * `false`) when the cursor is stale / unresolvable, letting the caller fall
      * back to its default.
      */
@@ -1114,14 +1107,10 @@ export class Muya {
         if (sentinelMarkdown == null)
             return false;
 
-        // Preserve the undo history across the internal setContent rebuild
-        // (setContent clears it) so this stays a caret-only operation.
-        const savedHistory = this.getHistory();
-
-        this.editor.setContent(sentinelMarkdown);
-        const cursor = resolveSentinelCursor(this.editor.scrollPage!);
-        this.editor.setContent(cleanMarkdown);
-        this.setHistory(savedHistory);
+        const cursor = resolveStateSentinelCursor(
+            this.editor.jsonState.markdownToState(sentinelMarkdown),
+            this.editor.jsonState.getState(),
+        );
 
         if (!cursor)
             return false;

@@ -30,6 +30,8 @@ export interface IMuyaOptions {
     spellcheckEnabled: boolean;
     spellcheckHideMarks: boolean;
     superSubScript: boolean;
+    highlight?: boolean;
+    mathEquationLabels?: Record<string, string>;
     footnote: boolean;
     math: boolean;
     isGitlabCompatibilityEnabled: boolean;

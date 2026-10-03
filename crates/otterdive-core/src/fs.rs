@@ -1,9 +1,9 @@
 use crate::document::EncodingKind;
 use crate::search::{
     ReplaceOutcome, SearchError, SearchMatcher, SearchOptions, TextMatch,
-    apply_replace_all_with_matcher,
+    bounded_replace_with_matcher,
 };
-use encoding_rs::{GBK, UTF_8};
+use encoding_rs::{BIG5, GBK, SHIFT_JIS, UTF_8, WINDOWS_1252};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use walkdir::{DirEntry, WalkDir};
 
 #[derive(Debug, Clone)]
 pub struct DecodedText {
+    pub had_errors: bool,
     pub text: String,
     pub encoding: EncodingKind,
 }
@@ -25,6 +26,8 @@ pub struct FileHit {
 
 #[derive(Debug, Clone)]
 pub struct FileReplacePreview {
+    pub original_bytes: Vec<u8>,
+    pub original_text: String,
     pub path: PathBuf,
     pub outcome: ReplaceOutcome,
     pub encoding: EncodingKind,
@@ -51,6 +54,7 @@ pub fn decode_owned_bytes(bytes: Vec<u8>) -> DecodedText {
         Ok(text) => DecodedText {
             text,
             encoding: EncodingKind::Utf8,
+            had_errors: false,
         },
         Err(error) => decode_bytes(error.as_bytes()),
     }
@@ -61,7 +65,11 @@ pub fn decode_owned_bytes_with_encoding(bytes: Vec<u8>, encoding: EncodingKind) 
         && !bytes.starts_with(&[0xEF, 0xBB, 0xBF])
     {
         match String::from_utf8(bytes) {
-            Ok(text) => DecodedText { text, encoding },
+            Ok(text) => DecodedText {
+                text,
+                encoding,
+                had_errors: false,
+            },
             Err(error) => decode_bytes_with_encoding(error.as_bytes(), encoding),
         }
     } else {
@@ -70,97 +78,99 @@ pub fn decode_owned_bytes_with_encoding(bytes: Vec<u8>, encoding: EncodingKind) 
 }
 
 pub fn decode_bytes(bytes: &[u8]) -> DecodedText {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        let (cow, _, _) = UTF_8.decode(&bytes[3..]);
-        return DecodedText {
-            text: cow.into_owned(),
-            encoding: EncodingKind::Utf8Bom,
-        };
-    }
-    if bytes.starts_with(&[0xFF, 0xFE]) {
-        return DecodedText {
-            text: decode_utf16(&bytes[2..], true),
-            encoding: EncodingKind::Utf16Le,
-        };
-    }
-    if bytes.starts_with(&[0xFE, 0xFF]) {
-        return DecodedText {
-            text: decode_utf16(&bytes[2..], false),
-            encoding: EncodingKind::Utf16Be,
-        };
-    }
-
-    let (utf8, _, had_errors) = UTF_8.decode(bytes);
-    if !had_errors {
-        DecodedText {
-            text: utf8.into_owned(),
-            encoding: EncodingKind::Utf8,
-        }
+    let encoding = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        EncodingKind::Utf8Bom
+    } else if bytes.starts_with(&[0xFF, 0xFE]) {
+        EncodingKind::Utf16Le
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        EncodingKind::Utf16Be
+    } else if std::str::from_utf8(bytes).is_ok() {
+        EncodingKind::Utf8
     } else {
-        let (gbk, _, _) = GBK.decode(bytes);
-        DecodedText {
-            text: gbk.into_owned(),
-            encoding: EncodingKind::Gbk,
-        }
-    }
+        EncodingKind::Gbk
+    };
+    decode_bytes_with_encoding(bytes, encoding)
 }
 
 pub fn decode_bytes_with_encoding(bytes: &[u8], encoding: EncodingKind) -> DecodedText {
-    let text = match encoding {
-        EncodingKind::Utf8 => {
-            let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
-            let (cow, _, _) = UTF_8.decode(bytes);
-            cow.into_owned()
+    let (text, had_errors) = match encoding {
+        EncodingKind::Utf16Le | EncodingKind::Utf16Be => {
+            let little_endian = encoding == EncodingKind::Utf16Le;
+            let bom: &[u8] = if little_endian {
+                &[0xFF, 0xFE]
+            } else {
+                &[0xFE, 0xFF]
+            };
+            decode_utf16(bytes.strip_prefix(bom).unwrap_or(bytes), little_endian)
         }
-        EncodingKind::Utf8Bom => {
-            let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
-            let (cow, _, _) = UTF_8.decode(bytes);
-            cow.into_owned()
-        }
-        EncodingKind::Utf16Le => {
-            let bytes = bytes.strip_prefix(&[0xFF, 0xFE]).unwrap_or(bytes);
-            decode_utf16(bytes, true)
-        }
-        EncodingKind::Utf16Be => {
-            let bytes = bytes.strip_prefix(&[0xFE, 0xFF]).unwrap_or(bytes);
-            decode_utf16(bytes, false)
-        }
-        EncodingKind::Gbk => {
-            let (cow, _, _) = GBK.decode(bytes);
-            cow.into_owned()
+        _ => {
+            let bytes = if matches!(encoding, EncodingKind::Utf8 | EncodingKind::Utf8Bom) {
+                bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)
+            } else {
+                bytes
+            };
+            // Explicit selection must not be silently overridden by another BOM.
+            let (text, errors) = codec(encoding).decode_without_bom_handling(bytes);
+            (text.into_owned(), errors)
         }
     };
-
-    DecodedText { text, encoding }
+    DecodedText {
+        text,
+        encoding,
+        had_errors,
+    }
 }
 
-pub fn encode_text(text: &str, encoding: EncodingKind) -> Vec<u8> {
+fn codec(encoding: EncodingKind) -> &'static encoding_rs::Encoding {
     match encoding {
+        EncodingKind::Gbk => GBK,
+        EncodingKind::Big5 => BIG5,
+        EncodingKind::ShiftJis => SHIFT_JIS,
+        EncodingKind::Windows1252 => WINDOWS_1252,
+        _ => UTF_8,
+    }
+}
+
+/// Refuse legacy-encoding substitutions rather than silently writing HTML entities.
+pub fn encode_text(text: &str, encoding: EncodingKind) -> io::Result<Vec<u8>> {
+    let bytes = match encoding {
         EncodingKind::Utf8 => text.as_bytes().to_vec(),
         EncodingKind::Utf8Bom => {
             let mut out = vec![0xEF, 0xBB, 0xBF];
             out.extend_from_slice(text.as_bytes());
             out
         }
-        EncodingKind::Utf16Le => {
-            let mut out = vec![0xFF, 0xFE];
+        EncodingKind::Utf16Le | EncodingKind::Utf16Be => {
+            let little_endian = encoding == EncodingKind::Utf16Le;
+            let mut out = if little_endian {
+                vec![0xFF, 0xFE]
+            } else {
+                vec![0xFE, 0xFF]
+            };
             for unit in text.encode_utf16() {
-                out.extend_from_slice(&unit.to_le_bytes());
+                out.extend_from_slice(&if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
             }
             out
         }
-        EncodingKind::Utf16Be => {
-            let mut out = vec![0xFE, 0xFF];
-            for unit in text.encode_utf16() {
-                out.extend_from_slice(&unit.to_be_bytes());
+        _ => {
+            let (bytes, _, had_errors) = codec(encoding).encode(text);
+            if had_errors {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "内容包含 {} 无法表示的字符；请选择 UTF-8 后保存，原文件未修改",
+                        encoding.label()
+                    ),
+                ));
             }
-            out
+            bytes.into_owned()
         }
-        EncodingKind::Gbk => {
-            let (cow, _, _) = GBK.encode(text);
-            cow.into_owned()
-        }
-    }
+    };
+    Ok(bytes)
 }
 
 pub fn search_directory(
@@ -372,50 +382,253 @@ pub fn preview_directory_replace(
     options: &SearchOptions,
 ) -> Result<(Vec<FileReplacePreview>, Vec<String>), SearchError> {
     let matcher = SearchMatcher::new(query, options)?;
-    let report = search_directory(root, query, options)?;
+    let file_glob = FileGlobMatcher::new(&options.file_glob);
+    let skip_dirs = parse_list(&options.skip_dirs);
+    let mut walker = WalkDir::new(root);
+    if !options.recursive {
+        walker = walker.max_depth(1);
+    }
     let mut previews = Vec::new();
-    let mut skipped = report.skipped;
-    for hit in report.hits {
-        match fs::metadata(&hit.path) {
+    let mut skipped = Vec::new();
+    let mut retained_bytes = 0usize;
+    let mut retained_matches = 0usize;
+    for entry in walker
+        .into_iter()
+        .filter_entry(|entry| should_visit(entry, options, &skip_dirs))
+    {
+        let path = match entry {
+            Ok(entry) if entry.file_type().is_file() && file_glob.matches(entry.path()) => {
+                entry.into_path()
+            }
+            Ok(_) => continue,
+            Err(error) => {
+                skipped.push(error.to_string());
+                continue;
+            }
+        };
+        match fs::metadata(&path) {
             Ok(metadata) if metadata.permissions().readonly() => {
-                skipped.push(format!("{}: read-only file", hit.path.display()));
+                skipped.push(format!("{}: read-only file", path.display()));
+                continue;
+            }
+            Ok(metadata) if metadata.len() > options.max_file_size.min(20 * 1024 * 1024) => {
+                skipped.push(format!("{}: file too large", path.display()));
                 continue;
             }
             Ok(_) => {}
             Err(err) => {
-                skipped.push(format!("{}: {err}", hit.path.display()));
+                skipped.push(format!("{}: {err}", path.display()));
                 continue;
             }
         }
-        match read_text(&hit.path) {
-            Ok(decoded) => {
-                let outcome =
-                    apply_replace_all_with_matcher(&decoded.text, replacement, options, &matcher);
+        let limit = options.max_file_size.min(20 * 1024 * 1024);
+        let snapshot = fs::File::open(&path).and_then(|file| {
+            let mut bytes = Vec::new();
+            file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        });
+        match snapshot {
+            Ok(original_bytes) => {
+                if original_bytes.len() as u64 > limit || is_probably_binary(&original_bytes) {
+                    skipped.push(format!(
+                        "{}: 文件大小或类型已变化，请重新预览",
+                        path.display()
+                    ));
+                    continue;
+                }
+                let decoded = decode_bytes(&original_bytes);
+                if decoded.had_errors {
+                    skipped.push(format!(
+                        "{}: 解码含有无效字符，请先选择正确编码",
+                        path.display()
+                    ));
+                    continue;
+                }
+                if encode_text(&decoded.text, decoded.encoding).ok().as_deref()
+                    != Some(original_bytes.as_slice())
+                {
+                    skipped.push(format!(
+                        "{}: 编码不能无损往返，请先转换为 UTF-8",
+                        path.display()
+                    ));
+                    continue;
+                }
+                let remaining_bytes = (64usize * 1024 * 1024)
+                    .saturating_sub(retained_bytes)
+                    .saturating_sub(original_bytes.len())
+                    .saturating_sub(decoded.text.len());
+                let Some(outcome) = bounded_replace_with_matcher(
+                    &decoded.text,
+                    replacement,
+                    options,
+                    &matcher,
+                    remaining_bytes,
+                    100_000usize.saturating_sub(retained_matches),
+                ) else {
+                    skipped
+                        .push("替换预览达到 64 MB 或 100000 项限制，请缩小范围后继续".to_owned());
+                    break;
+                };
                 if outcome.count > 0 {
+                    let size = original_bytes.len()
+                        + decoded.text.len()
+                        + outcome.text.len()
+                        + outcome.replacements.iter().map(String::len).sum::<usize>()
+                        + outcome
+                            .matches
+                            .iter()
+                            .map(|mat| mat.line_text.len() + mat.matched_text.len())
+                            .sum::<usize>();
+                    retained_bytes = retained_bytes.saturating_add(size);
+                    retained_matches = retained_matches.saturating_add(outcome.count);
+                    if retained_bytes > 64 * 1024 * 1024 || retained_matches > 100_000 {
+                        skipped.push(
+                            "替换预览达到 64 MB 或 100000 项限制，请缩小范围后继续".to_owned(),
+                        );
+                        break;
+                    }
                     previews.push(FileReplacePreview {
-                        path: hit.path,
+                        original_bytes,
+                        original_text: decoded.text,
+                        path,
                         outcome,
                         encoding: decoded.encoding,
                     });
                 }
             }
-            Err(err) => skipped.push(format!("{}: {err}", hit.path.display())),
+            Err(err) => skipped.push(format!("{}: {err}", path.display())),
         }
     }
     Ok((previews, skipped))
 }
 
-pub fn apply_directory_replace(previews: &[FileReplacePreview]) -> io::Result<usize> {
-    let mut count = 0;
-    for preview in previews {
-        write_text_atomically(&preview.path, &preview.outcome.text, preview.encoding)?;
-        count += preview.outcome.count;
+#[derive(Debug, Clone)]
+pub struct ReplaceSelection {
+    pub file_id: usize,
+    pub match_ids: Vec<usize>,
+}
+
+#[derive(Debug)]
+pub struct ReplacedFile {
+    pub path: PathBuf,
+    pub original_bytes: Vec<u8>,
+    pub replaced_bytes: Vec<u8>,
+    pub count: usize,
+}
+
+#[derive(Debug, Default)]
+pub struct ReplaceBatch {
+    pub files: Vec<ReplacedFile>,
+    pub failures: Vec<(PathBuf, String)>,
+}
+
+/// Apply only selected matches from an owned preview, never search a second time.
+pub fn apply_selected_directory_replace(
+    previews: &[FileReplacePreview],
+    selections: &[ReplaceSelection],
+) -> io::Result<ReplaceBatch> {
+    let mut selected =
+        std::collections::BTreeMap::<usize, std::collections::BTreeSet<usize>>::new();
+    for selection in selections {
+        let preview = previews
+            .get(selection.file_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "替换文件编号无效"))?;
+        for id in &selection.match_ids {
+            if *id >= preview.outcome.matches.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "替换匹配编号无效",
+                ));
+            }
+            selected.entry(selection.file_id).or_default().insert(*id);
+        }
     }
-    Ok(count)
+    let mut batch = ReplaceBatch::default();
+    for (file_id, matches) in selected {
+        let preview = &previews[file_id];
+        let result = (|| {
+            let mut text = String::new();
+            let mut last = 0;
+            for id in &matches {
+                let mat = &preview.outcome.matches[*id];
+                text.push_str(&preview.original_text[last..mat.range.start]);
+                text.push_str(&preview.outcome.replacements[*id]);
+                last = mat.range.end;
+            }
+            text.push_str(&preview.original_text[last..]);
+            let replaced_bytes = encode_text(&text, preview.encoding)?;
+            replace_bytes_if_unchanged(&preview.path, &preview.original_bytes, &replaced_bytes)?;
+            Ok::<_, io::Error>(ReplacedFile {
+                path: preview.path.clone(),
+                original_bytes: preview.original_bytes.clone(),
+                replaced_bytes,
+                count: matches.len(),
+            })
+        })();
+        match result {
+            Ok(file) => batch.files.push(file),
+            Err(error) => batch
+                .failures
+                .push((preview.path.clone(), error.to_string())),
+        }
+    }
+    Ok(batch)
+}
+
+/// Restore successful files only; conflicted files remain available for another undo attempt.
+pub fn undo_directory_replace(batch: &mut ReplaceBatch) -> (usize, Vec<(PathBuf, String)>) {
+    let mut restored = 0;
+    let mut failures = Vec::new();
+    batch.files.retain(|file| {
+        match replace_bytes_if_unchanged(&file.path, &file.replaced_bytes, &file.original_bytes) {
+            Ok(()) => {
+                restored += 1;
+                false
+            }
+            Err(error) => {
+                failures.push((file.path.clone(), error.to_string()));
+                true
+            }
+        }
+    });
+    (restored, failures)
+}
+
+fn replace_bytes_if_unchanged(path: &Path, expected: &[u8], bytes: &[u8]) -> io::Result<()> {
+    if fs::read(path)? != expected {
+        return Err(io::Error::other(
+            "文件已被外部修改，未执行写入；请重新预览或处理差异",
+        ));
+    }
+    replace_file_atomically(path, bytes)
+}
+
+pub fn apply_directory_replace(previews: &[FileReplacePreview]) -> io::Result<usize> {
+    let selections = previews
+        .iter()
+        .enumerate()
+        .map(|(file_id, preview)| ReplaceSelection {
+            file_id,
+            match_ids: (0..preview.outcome.count).collect(),
+        })
+        .collect::<Vec<_>>();
+    let batch = apply_selected_directory_replace(previews, &selections)?;
+    if !batch.failures.is_empty() {
+        return Err(io::Error::other(format!(
+            "部分替换未完成：{}",
+            batch
+                .failures
+                .iter()
+                .map(|(path, error)| format!("{}: {error}", path.display()))
+                .collect::<Vec<_>>()
+                .join("；")
+        )));
+    }
+    Ok(batch.files.iter().map(|file| file.count).sum())
 }
 
 pub fn write_text_atomically(path: &Path, text: &str, encoding: EncodingKind) -> io::Result<()> {
-    let bytes = encode_text(text, encoding);
+    let bytes = encode_text(text, encoding)?;
     replace_file_atomically(path, &bytes)
 }
 
@@ -445,7 +658,7 @@ fn is_probably_binary(bytes: &[u8]) -> bool {
     control_count * 100 > sample.len() * 30
 }
 
-fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
+fn decode_utf16(bytes: &[u8], little_endian: bool) -> (String, bool) {
     let units = bytes.chunks_exact(2).map(|chunk| {
         if little_endian {
             u16::from_le_bytes([chunk[0], chunk[1]])
@@ -453,7 +666,19 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
             u16::from_be_bytes([chunk[0], chunk[1]])
         }
     });
-    String::from_utf16_lossy(&units.collect::<Vec<_>>())
+    let mut had_errors = bytes.len() % 2 != 0;
+    let mut text: String = char::decode_utf16(units)
+        .map(|unit| {
+            unit.unwrap_or_else(|_| {
+                had_errors = true;
+                char::REPLACEMENT_CHARACTER
+            })
+        })
+        .collect();
+    if bytes.len() % 2 != 0 {
+        text.push(char::REPLACEMENT_CHARACTER);
+    }
+    (text, had_errors)
 }
 
 fn replace_file_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -617,7 +842,7 @@ mod tests {
         let decoded = decode_bytes(&[0xEF, 0xBB, 0xBF, b'a']);
         assert_eq!(decoded.encoding, EncodingKind::Utf8Bom);
         assert_eq!(
-            encode_text(&decoded.text, decoded.encoding)[..3],
+            encode_text(&decoded.text, decoded.encoding).unwrap()[..3],
             [0xEF, 0xBB, 0xBF]
         );
     }

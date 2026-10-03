@@ -31,6 +31,7 @@ export type Rules = Record<string, RegExp>;
 export interface ITokenizerFacOptions {
     superSubScript: boolean;
     footnote: boolean;
+    highlight?: boolean;
 }
 
 export interface ITokenizerOptions {
@@ -53,6 +54,7 @@ export type Token
         | StrongEmToken
         | CodeEmojiMathToken
         | DelToken
+        | MarkToken
         | SuperSubScriptToken
         | FootnoteIdentifierToken
         | ImageToken
@@ -127,6 +129,8 @@ export type DelToken = IBaseToken & {
     children: Token[];
     backlash: string;
 };
+
+export type MarkToken = Omit<DelToken, 'type'> & { type: 'mark' };
 
 export type SuperSubScriptToken = IBaseToken & {
     type: 'super_sub_script';

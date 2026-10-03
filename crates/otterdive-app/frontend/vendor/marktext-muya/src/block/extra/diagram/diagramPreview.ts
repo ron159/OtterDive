@@ -299,6 +299,13 @@ async function renderDiagram({
     }
 
     if (type === 'plantuml') {
+        if (!plantumlServer?.trim()) {
+            target.textContent = 'PlantUML 网络渲染已关闭，请在 Markdown 设置中配置服务器';
+            return;
+        }
+        const endpoint = new URL(plantumlServer);
+        if (!['https:', 'http:'].includes(endpoint.protocol))
+            throw new Error('PlantUML server must use HTTP or HTTPS');
         const diagram = render.parse(code, plantumlServer);
         target.innerHTML = '';
         diagram.insertImgElement(target);

@@ -6,6 +6,9 @@ export interface ILexOption {
     isGitlabCompatibilityEnabled?: boolean;
     frontMatter?: boolean;
     superSubScript?: boolean;
+    highlight?: boolean;
+    toc?: boolean;
+    alerts?: boolean;
 }
 
 export type Heading = Tokens.Heading & {

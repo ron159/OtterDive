@@ -1,6 +1,7 @@
 import type { VNode } from 'snabbdom';
 import type {
     DelToken,
+    MarkToken,
     ISyntaxRenderOptions,
     StrongEmToken,
     Token,
@@ -12,14 +13,14 @@ import { snakeToCamel } from '../../utils';
 // render factory of `del`,`em`,`strong`
 export default function delEmStrongFac(
     this: Renderer,
-    type: 'del' | 'em' | 'strong',
+    type: 'del' | 'em' | 'strong' | 'mark',
     {
         h,
         cursor,
         block,
         token,
         outerClass,
-    }: ISyntaxRenderOptions & { token: StrongEmToken | DelToken },
+    }: ISyntaxRenderOptions & { token: StrongEmToken | DelToken | MarkToken },
 ) {
     const className = this.getClassName(outerClass, block, token, cursor);
     const COMMON_MARKER = `span.${className}.${CLASS_NAMES.MU_REMOVE}`;

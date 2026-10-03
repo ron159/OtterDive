@@ -5,6 +5,7 @@ import { fromEvent } from 'rxjs';
 import { CLASS_NAMES } from '../../../config';
 import { escapeHTML } from '../../../utils';
 import logger from '../../../utils/logger';
+import { prepareEquationTex } from '../../../utils/equationReferences';
 import Parent from '../../base/parent';
 import 'katex/dist/contrib/mhchem.mjs';
 
@@ -66,7 +67,7 @@ class MathPreview extends Parent {
 
         if (math) {
             try {
-                const html = katex.renderToString(math, {
+                const html = katex.renderToString(prepareEquationTex(math, this.muya.options.mathEquationLabels ?? {}, true), {
                     displayMode: true,
                 });
                 this.domNode!.innerHTML = html;

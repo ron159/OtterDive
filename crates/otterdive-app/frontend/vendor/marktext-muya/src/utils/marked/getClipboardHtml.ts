@@ -5,6 +5,7 @@ import { sanitize } from '../index';
 import cjkEmStrongExtension from './extensions/cjkEmStrong';
 import footnoteExtension from './extensions/footnote';
 import mathExtension from './extensions/math';
+import markExtension from './extensions/mark';
 import superSubScriptExtension from './extensions/superSubscript';
 import fm, { frontMatterRender } from './frontMatter';
 import { DEFAULT_OPTIONS } from './options';
@@ -29,6 +30,7 @@ export function getClipBoardHtml(src: string, options: ILexOption = {}) {
     // CJK-as-punctuation emphasis flanking (marktext/marktext#4307); keeps the
     // clipboard HTML consistent with the static / export render path.
     marked.use(cjkEmStrongExtension());
+    if (options.highlight) marked.use(markExtension());
 
     if (math) {
         marked.use(

@@ -29,6 +29,7 @@ import image from './image';
 import inlineCode from './inlineCode';
 import inlineMath from './inlineMath';
 import link from './link';
+import mark from './mark';
 import loadImageAsync from './loadImageAsync';
 import multipleMath from './multipleMath';
 import referenceDefinition from './referenceDefinition';
@@ -46,6 +47,7 @@ const inlineSyntaxRenderer = {
     highlight,
     header,
     link,
+    mark,
     htmlTag,
     hr,
     tailHeader,

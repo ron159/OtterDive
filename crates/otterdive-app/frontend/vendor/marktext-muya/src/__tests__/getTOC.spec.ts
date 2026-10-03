@@ -16,11 +16,8 @@ import { Muya } from '../muya';
 //    the anchor id the HTML export injects from `heading.textContent`.
 //  - Slug is a stable per-block identifier (so `getTOC()` returns the
 //    same slug across multiple invocations on the same document); duplicate
-//    headings keep distinct slugs but share `githubSlug`. The marktext
-//    fix didn't dedupe and we don't either — that is the caller's call.
-//  - `generateGithubSlug` mirrors marktext url.js literally: ASCII `\w`
-//    only, so CJK / emoji collapse to hyphens. Future Unicode-aware
-//    slugging is a separate change.
+//    headings also get distinct githubSlug values matching preview/export.
+//  - Unicode letters are retained so copied Chinese anchors remain usable.
 
 const bootedHosts: HTMLElement[] = [];
 let originalVersion: string | undefined;
@@ -134,25 +131,21 @@ describe('muya.getTOC()', () => {
         expect(toc[0].content).toBe('Tabbed heading');
     });
 
-    it('githubSlug strips non-ASCII letters and emoji and collapses whitespace', () => {
-        // marktext url.js literal behavior: `[^\w\s-]/g` removes CJK and
-        // emoji because JS `\w` is ASCII-only without the `/u` flag.
-        // Future Unicode-aware slugging would be a separate change; this
-        // test locks the marktext-faithful output in place.
+    it('githubSlug preserves non-ASCII letters and removes emoji', () => {
         const md = `# 你好 World 🎉\n\n# API & Usage Examples!`;
         const muya = bootMuya(md);
         const toc = muya.getTOC();
-        expect(toc[0].githubSlug).toBe('-world-');
+        expect(toc[0].githubSlug).toBe('你好-world-');
         expect(toc[1].githubSlug).toBe('api-usage-examples');
     });
 
-    it('duplicate headings share githubSlug but get distinct stable slugs', () => {
+    it('duplicate headings get distinct githubSlug and stable slugs', () => {
         const md = `## Foo\n\n## Foo`;
         const muya = bootMuya(md);
         const toc = muya.getTOC();
         expect(toc).toHaveLength(2);
         expect(toc[0].githubSlug).toBe('foo');
-        expect(toc[1].githubSlug).toBe('foo');
+        expect(toc[1].githubSlug).toBe('foo-1');
         expect(toc[0].slug).not.toBe(toc[1].slug);
     });
 

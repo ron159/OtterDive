@@ -63,6 +63,7 @@ pub struct TextMatch {
 
 #[derive(Debug, Clone)]
 pub struct ReplaceOutcome {
+    pub replacements: Vec<String>,
     pub text: String,
     pub count: usize,
     pub matches: Vec<TextMatch>,
@@ -175,49 +176,61 @@ pub(crate) fn apply_replace_all_with_matcher(
     options: &SearchOptions,
     matcher: &SearchMatcher,
 ) -> ReplaceOutcome {
-    let matches = matcher.find_all(text);
-    if matches.is_empty() {
-        return ReplaceOutcome {
-            text: text.to_owned(),
-            count: 0,
-            matches,
-        };
-    }
+    bounded_replace_with_matcher(text, replacement, options, matcher, usize::MAX, usize::MAX)
+        .expect("unbounded replacement")
+}
 
-    if options.mode == SearchMode::Regex {
-        let mut out = String::with_capacity(text.len());
-        let mut last = 0;
-        for m in &matches {
-            out.push_str(&text[last..m.range.start]);
-            out.push_str(
-                &matcher
-                    .pattern
-                    .replace(&text[m.range.start..m.range.end], replacement),
-            );
-            last = m.range.end;
+pub(crate) fn bounded_replace_with_matcher(
+    text: &str,
+    replacement: &str,
+    options: &SearchOptions,
+    matcher: &SearchMatcher,
+    max_bytes: usize,
+    max_matches: usize,
+) -> Option<ReplaceOutcome> {
+    let index = LineIndex::new(text);
+    let mut matches = Vec::new();
+    let mut replacements = Vec::new();
+    let mut retained = text.len();
+    // Expand captures against the complete source, preserving anchors and word boundaries.
+    for captures in matcher.pattern.captures_iter(text) {
+        let mat = captures.get(0).expect("capture zero exists");
+        if mat.start() == mat.end()
+            || (matcher.whole_word && !is_whole_word(text, mat.start(), mat.end()))
+        {
+            continue;
         }
-        out.push_str(&text[last..]);
-        ReplaceOutcome {
-            text: out,
-            count: matches.len(),
-            matches,
+        let mut expanded = String::new();
+        if options.mode == SearchMode::Regex {
+            captures.expand(replacement, &mut expanded);
+        } else {
+            expanded = normalized_replacement(replacement, options);
         }
-    } else {
-        let replacement = normalized_replacement(replacement, options);
-        let mut out = String::with_capacity(text.len());
-        let mut last = 0;
-        for m in &matches {
-            out.push_str(&text[last..m.range.start]);
-            out.push_str(&replacement);
-            last = m.range.end;
+        let location = index.match_from_range(text, mat.start(), mat.end());
+        retained = retained
+            .saturating_add(location.line_text.len())
+            .saturating_add(location.matched_text.len())
+            .saturating_add(expanded.len().saturating_mul(2));
+        if retained > max_bytes || matches.len() >= max_matches {
+            return None;
         }
-        out.push_str(&text[last..]);
-        ReplaceOutcome {
-            text: out,
-            count: matches.len(),
-            matches,
-        }
+        matches.push(location);
+        replacements.push(expanded);
     }
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (mat, replacement) in matches.iter().zip(&replacements) {
+        out.push_str(&text[last..mat.range.start]);
+        out.push_str(replacement);
+        last = mat.range.end;
+    }
+    out.push_str(&text[last..]);
+    Some(ReplaceOutcome {
+        text: out,
+        count: matches.len(),
+        matches,
+        replacements,
+    })
 }
 
 pub fn replacement_for_match(

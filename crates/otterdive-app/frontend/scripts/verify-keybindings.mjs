@@ -153,13 +153,7 @@ if (!htmlSource.includes('id="toggleKeybindingGroupsButton"')) {
 if (!mainSource.includes('className = `keybinding-group ${collapsed ? "collapsed" : ""}`')) {
   failures.push("快捷键设置没有按命令分类渲染分组");
 }
-if (
-  !mainSource.includes("const savedAlternativeVersionId = model.getAlternativeVersionId()")
-  || !mainSource.includes("dirty: model.getAlternativeVersionId() !== savedAlternativeVersionId")
-  || !mainSource.includes("doc.savedAlternativeVersionId = savedAlternativeVersionId")
-) {
-  failures.push("保存完成后没有使用实际提交的 Monaco 版本快照更新未保存状态");
-}
+// Save concurrency and metadata snapshots are exercised by externalFiles.test.mjs.
 
 for (const [profileName, profile] of profiles) {
   const commandsByBinding = new Map();

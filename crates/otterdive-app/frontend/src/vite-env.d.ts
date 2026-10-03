@@ -13,3 +13,7 @@ declare module "monaco-editor/esm/vs/basic-languages/markdown/markdown" {
   export const conf: import("monaco-editor/esm/vs/editor/editor.api").languages.LanguageConfiguration;
   export const language: import("monaco-editor/esm/vs/editor/editor.api").languages.IMonarchLanguage;
 }
+
+// Imported only to await the bundled language providers after switching modes.
+declare module "monaco-editor/esm/vs/language/html/htmlMode" {}
+declare module "monaco-editor/esm/vs/language/css/cssMode" {}

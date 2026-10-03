@@ -92,6 +92,7 @@ test("clicking a result keeps the results scroll position while navigating to it
     $: id => id === "findResultsBody" ? body : { checked: false },
     renderCurrentFindCount: () => {},
     renderSearchSidebarResults: () => { body.scrollTop = 0; },
+    isReadingDocument: () => false,
     isMarkdownWysiwygActive: () => false,
     renderSearchDecorations: () => {},
     scrollActiveResultIntoView: () => { resultScrolls += 1; },

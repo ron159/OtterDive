@@ -133,7 +133,14 @@ export class MarkdownToHtml {
 
             try {
                 if (functionType === 'plantuml') {
-                    const diagram = render.parse(rawCode, this._muya?.options.plantumlServer);
+                    const server = this._muya?.options.plantumlServer;
+                    if (!server?.trim()) {
+                        diagramContainer.textContent = rawCode;
+                        continue;
+                    }
+                    if (!['https:', 'http:'].includes(new URL(server).protocol))
+                        throw new Error('PlantUML server must use HTTP or HTTPS');
+                    const diagram = render.parse(rawCode, server);
                     diagramContainer.innerHTML = '';
                     diagram.insertImgElement(diagramContainer);
                 }
@@ -190,6 +197,7 @@ export class MarkdownToHtml {
         const footnote = this._muya?.options?.footnote ?? false;
         let html = getHighlightHtml(this.markdown, {
             superSubScript: this._muya?.options?.superSubScript ?? true,
+            highlight: this._muya?.options?.highlight ?? false,
             footnote,
             isGitlabCompatibilityEnabled:
         this._muya?.options?.isGitlabCompatibilityEnabled ?? true,

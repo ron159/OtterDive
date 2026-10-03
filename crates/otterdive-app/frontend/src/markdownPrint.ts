@@ -7,7 +7,38 @@ export type MarkdownPrintOptions = {
   onResourceWarning?: (message: string) => void;
   invokePrint?: () => unknown;
   imageLoadTimeoutMs?: number;
+  layout?: MarkdownPrintLayout;
 };
+
+export type MarkdownPrintLayout = {
+  paperSize?: "A4" | "Letter" | "Legal";
+  landscape?: boolean;
+  marginMm?: number;
+  header?: string;
+  footer?: string;
+  pageNumbers?: boolean;
+  customCss?: string;
+};
+
+export function markdownPrintLayoutCss(layout: MarkdownPrintLayout = {}) {
+  const paper = ["A4", "Letter", "Legal"].includes(layout.paperSize ?? "") ? layout.paperSize : "A4";
+  const margin = Number.isFinite(layout.marginMm) ? Math.min(60, Math.max(0, layout.marginMm!)) : 15;
+  const cssString = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r\n?|\n/g, "\\a ")}"`;
+  const footer = layout.footer ? cssString(layout.footer) : '""';
+  return `@page {
+    size: ${paper} ${layout.landscape ? "landscape" : "portrait"};
+    margin: ${margin}mm;
+    @top-center { content: ${cssString(layout.header ?? "")}; font-size: 9pt; }
+    @bottom-center { content: ${footer}${layout.pageNumbers ? ' "  " counter(page) " / " counter(pages)' : ""}; font-size: 9pt; }
+  }
+  @media print {
+    .markdown-print-root { padding: 0 !important; margin: 0 !important; }
+    .markdown-preview-body h1, .markdown-preview-body h2, .markdown-preview-body h3 { break-after: avoid-page; }
+    .markdown-preview-body pre, .markdown-preview-body figure, .markdown-preview-body tr { break-inside: avoid; }
+    .markdown-preview-body p { orphans: 3; widows: 3; }
+  }
+  ${layout.customCss ?? ""}`;
+}
 
 export type MarkdownPdfExport = {
   html: string;
@@ -100,21 +131,30 @@ export async function printMarkdownDocument(options: MarkdownPrintOptions) {
 export async function createMarkdownPdfExport(
   options: MarkdownPrintOptions,
 ): Promise<MarkdownPdfExport> {
+  return createMarkdownExport(options, true);
+}
+
+export async function createMarkdownHtmlExport(options: MarkdownPrintOptions): Promise<MarkdownPdfExport> {
+  return createMarkdownExport(options, false);
+}
+
+async function createMarkdownExport(options: MarkdownPrintOptions, forPrint: boolean): Promise<MarkdownPdfExport> {
   activePrintCleanup?.();
   const { root, content } = await createMarkdownPrintTree(options, null);
 
   try {
     const failedImages = await inlinePrintImages(content, options.imageLoadTimeoutMs ?? 8_000);
     if (failedImages > 0) {
-      options.onResourceWarning?.(`${failedImages} 张图片无法内嵌到带大纲 PDF`);
+      options.onResourceWarning?.(`${failedImages} 张图片无法内嵌到导出文件，将保留原始地址`);
     }
     sanitizeExportTree(content);
     const styles = await serializeDocumentStyles(options.onResourceWarning);
+    root.querySelector(":scope > style")?.remove();
     root.removeAttribute("aria-hidden");
     root.classList.add("markdown-pdf-export-root");
     await waitForPrintLayout();
     return {
-      html: standalonePdfHtml(markdownPrintTitle(options.title), root.outerHTML, styles),
+      html: standaloneMarkdownHtml(markdownPrintTitle(options.title), root.outerHTML, styles, forPrint, options.layout),
       headingCount: content.querySelectorAll("h1, h2, h3, h4, h5, h6").length,
     };
   } finally {
@@ -136,6 +176,9 @@ async function createMarkdownPrintTree(
   content.className = "markdown-preview-body";
   content.innerHTML = options.renderHtml(options.markdown);
   root.appendChild(content);
+  const printStyle = document.createElement("style");
+  printStyle.textContent = markdownPrintLayoutCss(options.layout);
+  root.appendChild(printStyle);
   document.body.appendChild(root);
 
   try {
@@ -219,7 +262,7 @@ async function serializeDocumentStyles(onWarning?: (message: string) => void) {
       skipped += 1;
     }
   }
-  if (skipped > 0) onWarning?.(`${skipped} 个样式表无法内嵌到带大纲 PDF`);
+  if (skipped > 0) onWarning?.(`${skipped} 个样式表无法内嵌到导出文件`);
   return styles.join("\n");
 }
 
@@ -294,9 +337,9 @@ function sanitizeExportTree(root: HTMLElement) {
   });
 }
 
-function standalonePdfHtml(title: string, rootHtml: string, styles: string) {
+export function standaloneMarkdownHtml(title: string, rootHtml: string, styles: string, forPrint = true, layout: MarkdownPrintLayout = {}) {
   const safeTitle = escapeHtml(title);
-  const safeStyles = styles.replace(/<\/style/gi, "<\\/style");
+  const safeStyles = `${styles}\n${markdownPrintLayoutCss(layout)}`.replace(/<\/style/gi, "<\\/style");
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -306,13 +349,14 @@ function standalonePdfHtml(title: string, rootHtml: string, styles: string) {
   <title>${safeTitle}</title>
   <style>${safeStyles}</style>
   <style>
-    @page { size: A4 portrait; }
     html, body { width: auto !important; height: auto !important; min-width: 0 !important; min-height: 0 !important; overflow: visible !important; background: #fff !important; color-scheme: light; }
     body.markdown-printing { display: block !important; margin: 0 !important; }
     body.markdown-printing > .markdown-print-root { display: block !important; position: static !important; inset: auto !important; width: auto !important; height: auto !important; max-height: none !important; overflow: visible !important; opacity: 1 !important; pointer-events: auto !important; }
+    body.markdown-html-export { display: block !important; margin: 0 !important; padding: 24px; }
+    body.markdown-html-export > .markdown-print-root { display: block !important; position: static !important; inset: auto !important; width: auto !important; height: auto !important; max-width: 960px; max-height: none !important; margin: 0 auto; overflow: visible !important; opacity: 1 !important; pointer-events: auto !important; }
   </style>
 </head>
-<body class="markdown-printing">${rootHtml}</body>
+<body class="${forPrint ? "markdown-printing" : "markdown-html-export"}">${rootHtml}</body>
 </html>`;
 }
 

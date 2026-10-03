@@ -19,6 +19,29 @@ test("uses a clean Markdown title as the suggested PDF name", () => {
   assert.equal(markdownPrint.markdownPdfFileName("Guide.md"), "Guide.pdf");
 });
 
+test("print layout validates numeric inputs and escapes running text", () => {
+  const css = markdownPrint.markdownPrintLayoutCss({
+    paperSize: "Letter", landscape: true, marginMm: 18,
+    header: 'Guide "draft"\n第二行', footer: "OtterDive", pageNumbers: true,
+  });
+  assert.match(css, /size: Letter landscape/);
+  assert.match(css, /margin: 18mm/);
+  assert.match(css, /counter\(page\)/);
+  assert.match(css, /Guide \\"draft\\"\\a 第二行/);
+  assert.doesNotMatch(markdownPrint.markdownPrintLayoutCss({ marginMm: NaN }), /NaN/);
+  assert.match(markdownPrint.markdownPrintLayoutCss({ marginMm: -40 }), /margin: 0mm/);
+  assert.match(markdownPrint.markdownPrintLayoutCss({ paperSize: "A4; color:red" }), /size: A4 portrait/);
+});
+
+test("standalone HTML has a safe title, self contained styles and no executable body", () => {
+  const html = markdownPrint.standaloneMarkdownHtml('Guide <script>', '<article><p>正文</p></article>', 'p { color: red }', false);
+  assert.match(html, /<title>Guide &lt;script&gt;<\/title>/);
+  assert.match(html, /default-src 'none'/);
+  assert.match(html, /<article><p>正文<\/p><\/article>/);
+  assert.match(html, /p \{ color: red \}/);
+  assert.doesNotMatch(html, /<body class="markdown-printing">/);
+});
+
 test("namespaces only valid internal print targets", () => {
   const targets = markdownPrint.createPrintTargetMap(
     ["overview", "章节", "unused"],

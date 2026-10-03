@@ -158,6 +158,43 @@ export function resolveSentinelCursor(scrollPage: ScrollPage): IPathCursor | nul
     };
 }
 
+/** Resolve against a throwaway parsed state, leaving the live DOM/history intact. */
+export function resolveStateSentinelCursor(state: TState[], cleanState: TState[]): IPathCursor | null {
+    type Hit = { path: (string | number)[]; offset: number };
+    let anchorHit: Hit | null = null;
+    let focusHit: Hit | null = null;
+    const visit = (nodes: TState[], cleanNodes: TState[], parentPath: (string | number)[]) => {
+        nodes.forEach((node, index) => {
+            const cleanNode = cleanNodes[index];
+            // A marker inserted into Markdown syntax can change block structure.
+            // Do not restore a caret into an unrelated block in that case.
+            if (!cleanNode || node.name !== cleanNode.name) return;
+            const path = [...parentPath, index];
+            if ('text' in node && 'text' in cleanNode) {
+                const cleanText = node.text.replace(ANCHOR_SENTINEL, '').replace(FOCUS_SENTINEL, '');
+                if (cleanText !== cleanNode.text) return;
+                const anchor = node.text.indexOf(ANCHOR_SENTINEL);
+                const focus = node.text.indexOf(FOCUS_SENTINEL);
+                if (anchor >= 0) anchorHit = { path: [...path, 'text'], offset: anchor };
+                if (focus >= 0) focusHit = { path: [...path, 'text'], offset: focus };
+            }
+            if ('children' in node && 'children' in cleanNode) visit(node.children, cleanNode.children, [...path, 'children']);
+        });
+    };
+    visit(state, cleanState, []);
+    // Both endpoints must resolve: otherwise a range could silently collapse.
+    const anchor = anchorHit as Hit | null;
+    const focus = focusHit as Hit | null;
+    if (!anchor || !focus) return null;
+    const sameBlock = anchor.path.length === focus.path.length && anchor.path.every((part, i) => part === focus.path[i]);
+    return {
+        anchor: { offset: anchor.offset - (sameBlock && focus.offset < anchor.offset ? FOCUS_SENTINEL.length : 0) },
+        anchorPath: anchor.path,
+        focus: { offset: focus.offset - (sameBlock && anchor.offset < focus.offset ? ANCHOR_SENTINEL.length : 0) },
+        focusPath: focus.path,
+    };
+}
+
 // INVERSE direction: WYSIWYG block-key selection -> source `{ line, ch }` index
 // cursor, reusing the same sentinel/serialize path as the forward conversion.
 

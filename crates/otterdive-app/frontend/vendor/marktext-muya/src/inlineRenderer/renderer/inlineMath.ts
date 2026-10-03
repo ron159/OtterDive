@@ -3,6 +3,7 @@ import type Renderer from './index';
 import katex from 'katex';
 import { CLASS_NAMES } from '../../config';
 import { htmlToVNode } from '../../utils/snabbdom';
+import { prepareEquationTex } from '../../utils/equationReferences';
 import 'katex/dist/contrib/mhchem.mjs';
 
 import 'katex/dist/katex.min.css';
@@ -45,7 +46,8 @@ export default function inlineMath(this: Renderer, {
     const { loadMathMap } = this;
 
     const displayMode = false;
-    const key = `${math}_${type}`;
+    const resolvedMath = prepareEquationTex(math, this.muya.options.mathEquationLabels ?? {}, false);
+    const key = `${resolvedMath}_${type}`;
     let mathVnode = null;
     let previewSelector = `span.${CLASS_NAMES.MU_MATH_RENDER}`;
     // Inline math errors stay compact to keep the surrounding text baseline
@@ -56,7 +58,7 @@ export default function inlineMath(this: Renderer, {
     }
     else {
         try {
-            const html = katex.renderToString(math, {
+            const html = katex.renderToString(resolvedMath, {
                 displayMode,
             });
             mathVnode = htmlToVNode(html);

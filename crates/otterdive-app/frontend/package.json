@@ -15,11 +15,12 @@
     "test:formatters": "node --test tests/dprintFormatter.test.mjs",
     "test:languages": "node --test tests/languageFormattingSupport.test.mjs",
     "test:performance": "node --test tests/openBatch.test.mjs tests/openPerformance.test.mjs",
-    "test:markdown": "node scripts/verify-mermaid-layout.mjs",
+    "test:markdown": "node scripts/verify-mermaid-layout.mjs && node --test tests/markdownSyntax.test.mjs",
     "test:outline": "node --test tests/documentOutline.test.mjs",
     "test:print": "node --test tests/markdownPrint.test.mjs",
     "markdown:sync": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../../scripts/sync-marktext-muya.ps1",
-    "preview": "vite preview --host 127.0.0.1 --port 1420"
+    "preview": "vite preview --host 127.0.0.1 --port 1420",
+    "test": "node --test tests/*.test.mjs && npm run test:auto-save && npm run test:keybindings && npm run test:analyse && node scripts/verify-mermaid-layout.mjs"
   },
   "dependencies": {
     "@dprint/dockerfile": "0.5.0",

@@ -2484,10 +2484,14 @@ dependencies = [
 name = "otterdive-app"
 version = "0.6.10"
 dependencies = [
+ "base64 0.22.1",
+ "encoding_rs",
  "otterdive-core",
  "regex",
+ "reqwest",
  "rfd",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "tauri",

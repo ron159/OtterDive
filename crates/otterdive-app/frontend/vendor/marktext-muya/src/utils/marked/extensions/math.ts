@@ -1,4 +1,5 @@
 import katex from 'katex';
+import { prepareEquationTex } from '../../equationReferences';
 import 'katex/dist/contrib/mhchem.mjs';
 
 export interface IMathToken {
@@ -12,6 +13,7 @@ export interface IMathToken {
 interface IOptions {
     throwOnError?: boolean;
     useKatexRender?: boolean;
+    equationLabels?: Record<string, string>;
 }
 
 const inlineStartRule = /(\s|^)\${1,2}(?!\$)/;
@@ -37,11 +39,11 @@ export default function (options: IOptions = {}) {
 
 function createRenderer(options: IOptions, newlineAfter: boolean) {
     return (token: IMathToken) => {
-        const { useKatexRender, ...otherOpts } = options;
+        const { useKatexRender, equationLabels, ...otherOpts } = options;
         const { type, text, displayMode, mathStyle } = token;
         if (useKatexRender) {
             return (
-                katex.renderToString(text, {
+                katex.renderToString(prepareEquationTex(text, equationLabels ?? {}, displayMode), {
                     ...otherOpts,
                     displayMode,
                 }) + (newlineAfter ? '\n' : '')

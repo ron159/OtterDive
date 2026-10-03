@@ -1,10 +1,8 @@
-// The regex uses ASCII `\w`, so CJK and emoji collapse to hyphens. A
-// Unicode-aware variant would be a separate, opt-in change.
+// Match OtterDive's preview/export anchors, including CJK heading text.
 export function generateGithubSlug(text: string): string {
     return text
         .trim()
         .toLowerCase()
-        .replace(/[^\w\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-');
+        .replace(/[^\p{L}\p{N}\s_-]/gu, '')
+        .replace(/\s+/g, '-');
 }

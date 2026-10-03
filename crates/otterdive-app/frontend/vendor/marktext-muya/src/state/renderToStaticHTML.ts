@@ -9,6 +9,9 @@ export interface IRenderToStaticHTMLOptions {
     isGitlabCompatibilityEnabled?: boolean;
     superSubScript?: boolean;
     frontMatter?: boolean;
+    highlight?: boolean;
+    toc?: boolean;
+    alerts?: boolean;
     /**
      * Skip DOMPurify sanitization. **Unsafe with untrusted input** — drops
      * the XSS guarantees of the default export path. Only intended for
@@ -55,6 +58,9 @@ export function renderToStaticHTML(
         isGitlabCompatibilityEnabled: options.isGitlabCompatibilityEnabled ?? true,
         superSubScript: options.superSubScript ?? true,
         frontMatter: options.frontMatter ?? false,
+        highlight: options.highlight ?? false,
+        toc: options.toc ?? false,
+        alerts: options.alerts ?? false,
     });
 
     // Post-process footnotes into the standard GFM / pandoc shape (inline

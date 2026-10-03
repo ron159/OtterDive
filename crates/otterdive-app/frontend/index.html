@@ -174,6 +174,7 @@
             <button class="tool-button markdown-mode-button" id="markdownWysiwygButton" data-markdown-mode="wysiwyg" aria-label="Markdown 即时编辑" title="即时编辑"><span class="icon-slot" data-icon="NotebookPen"></span></button>
             <button class="tool-button markdown-mode-button" id="markdownSplitButton" data-markdown-mode="split" aria-label="Markdown 分屏预览" title="分屏预览"><span class="icon-slot" data-icon="Columns2"></span></button>
             <button class="tool-button markdown-mode-button" id="markdownSourceButton" data-markdown-mode="source" aria-label="Markdown 源码" title="源码"><span class="icon-slot" data-icon="FileCode2"></span></button>
+            <button class="tool-button markdown-mode-button" id="markdownReadingButton" data-markdown-mode="reading" aria-label="Markdown 阅读模式" title="阅读模式"><span class="icon-slot" data-icon="FileText"></span></button>
           </div>
         </div>
         <header class="right-tool-tabs" id="rightToolTabs" aria-label="右侧工具">
@@ -747,6 +748,17 @@
                 </div>
                 <button class="settings-action" id="settingsCommandButton">打开</button>
               </div>
+              <div class="settings-row">
+                <span class="settings-row-icon icon-slot" data-icon="FileText"></span>
+                <div>
+                  <strong id="settingsMissingFileLabel">文件移动或删除后</strong>
+                  <span>原路径不存在时保留内容或关闭标签；未保存修改仍会提示</span>
+                </div>
+                <div class="seg-control wide" id="settingsMissingFileControl" role="group" aria-labelledby="settingsMissingFileLabel">
+                  <button data-value="keep">保持文件显示</button>
+                  <button data-value="close">关闭文件显示</button>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -1209,6 +1221,13 @@
         </div>
       </section>
     </main>
+    <div id="markdownDiagramActions" class="markdown-diagram-actions" role="toolbar" aria-label="图表导出" hidden>
+      <span class="markdown-diagram-actions-label">导出图表</span>
+      <button type="button" data-diagram-format="svg" title="导出 SVG 矢量图">SVG</button>
+      <button type="button" data-diagram-format="png" title="导出 PNG 图片">PNG</button>
+      <button type="button" data-diagram-close aria-label="关闭图表导出工具条">×</button>
+      <span id="markdownDiagramExportStatus" role="status" aria-live="polite"></span>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

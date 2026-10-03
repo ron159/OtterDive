@@ -6,10 +6,12 @@ import cjkEmStrongExtension from './extensions/cjkEmStrong';
 import emojiExtension from './extensions/emoji';
 import footnoteExtension from './extensions/footnote';
 import mathExtension from './extensions/math';
+import markExtension from './extensions/mark';
 import superSubScriptExtension from './extensions/superSubscript';
 import fm, { frontMatterRender } from './frontMatter';
 import { DEFAULT_OPTIONS } from './options';
 import walkTokens from './walkTokens';
+import { collectEquationLabels } from '../equationReferences';
 
 const DIAGRAM_TYPE = [
     'mermaid',
@@ -56,12 +58,32 @@ export function getHighlightHtml(src: string, options: ILexOption = {}) {
     marked.use(cjkEmStrongExtension());
 
     marked.use(emojiExtension({ isRenderEmoji: true }));
+    if (options.highlight) marked.use(markExtension());
+    if (options.toc) {
+        marked.use({ renderer: {
+            paragraph(token) {
+                return /^\[toc\]$/i.test(token.raw.trim())
+                    ? '<p class="otterdive-toc-marker">[TOC]</p>\n'
+                    : false;
+            },
+        } });
+    }
+    if (options.alerts) {
+        marked.use({ renderer: {
+            blockquote(token) {
+                const first = token.tokens[0];
+                if (first?.type !== 'paragraph' || !/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s|$)/i.test(first.raw)) return false;
+                return `<blockquote class="otterdive-alert-marker">\n${this.parser.parse(token.tokens)}</blockquote>\n`;
+            },
+        } });
+    }
 
     if (math) {
         marked.use(
             mathExtension({
                 throwOnError: false,
                 useKatexRender: true,
+                equationLabels: collectEquationLabels(src),
             }),
         );
     }

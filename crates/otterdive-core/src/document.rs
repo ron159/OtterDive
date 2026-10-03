@@ -13,6 +13,9 @@ pub enum EncodingKind {
     Utf16Le,
     Utf16Be,
     Gbk,
+    Big5,
+    ShiftJis,
+    Windows1252,
 }
 
 impl EncodingKind {
@@ -23,6 +26,9 @@ impl EncodingKind {
             Self::Utf16Le => "UTF-16 LE",
             Self::Utf16Be => "UTF-16 BE",
             Self::Gbk => "GBK",
+            Self::Big5 => "Big5",
+            Self::ShiftJis => "Shift-JIS",
+            Self::Windows1252 => "Windows-1252",
         }
     }
 }
@@ -56,6 +62,7 @@ impl LineEnding {
 
 #[derive(Debug, Clone)]
 pub struct DocumentMeta {
+    pub decode_had_errors: bool,
     pub path: Option<PathBuf>,
     pub encoding: EncodingKind,
     pub line_ending: LineEnding,
@@ -67,6 +74,7 @@ pub struct DocumentMeta {
 impl Default for DocumentMeta {
     fn default() -> Self {
         Self {
+            decode_had_errors: false,
             path: None,
             encoding: EncodingKind::Utf8,
             line_ending: LineEnding::Lf,
@@ -108,15 +116,21 @@ impl LoadedDocument {
             .unwrap_or("Untitled")
             .to_owned();
         let line_ending = LineEnding::detect(&decoded.text);
-        let (read_only, read_only_reason) = read_only_state(
+        let (mut read_only, mut read_only_reason) = read_only_state(
             metadata.permissions().readonly(),
             metadata.len(),
             EDITABLE_FILE_LIMIT_BYTES,
         );
+        if decoded.had_errors {
+            read_only = true;
+            read_only_reason =
+                Some("解码含有无效字符，请选择正确编码重新打开；禁止覆盖原文件".to_owned());
+        }
         Ok(Self {
             title,
             text: decoded.text,
             meta: DocumentMeta {
+                decode_had_errors: decoded.had_errors,
                 path: Some(path.to_path_buf()),
                 encoding: decoded.encoding,
                 line_ending,
@@ -173,7 +187,13 @@ impl Document {
 
     pub fn save_as(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
         let path = path.as_ref();
-        let bytes = encode_text(&self.text, self.meta.encoding);
+        if self.meta.decode_had_errors {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "解码含有无效字符，请选择正确编码重新打开；原文件未修改",
+            ));
+        }
+        let bytes = encode_text(&self.text, self.meta.encoding)?;
         if path.exists() {
             crate::fs::write_text_atomically(path, &self.text, self.meta.encoding)?;
         } else {

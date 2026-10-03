@@ -47,7 +47,7 @@ export const commonMarkRules = {
     hard_line_break: /^( {2,})(\n)(?!\n)/,
 
     // patched math marker `$`
-    backlash: /^(\\)([\\`*{}[\]()#+\-.!_>~:|<$])/,
+    backlash: /^(\\)([\\`*{}[\]()#+\-.!_>~:|<$=])/,
 };
 
 export type CommonMarkRules = typeof commonMarkRules;
@@ -67,6 +67,7 @@ export type GfmRules = typeof gfmRules;
 
 // Markdown extensions (not belongs to GFM and Commonmark)
 export const inlineExtensionRules = {
+    mark: /^(==)(?!=)(?=\S)((?:\\.|[^\n])*?\S)(?<!\\)(\\*)\1(?!=)/,
     // eslint-disable-next-line regexp/no-super-linear-backtracking
     inline_math: /^(\$)((?:[^$\\]|\\.)+)(\\*)\1(?!\1)/,
     // This is not the best regexp, because it not support `2^2\\^`.

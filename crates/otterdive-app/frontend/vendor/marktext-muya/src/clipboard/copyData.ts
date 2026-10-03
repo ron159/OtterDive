@@ -38,9 +38,10 @@ function buildHtmlOptions(options: Muya['options']) {
         math,
         isGitlabCompatibilityEnabled,
         superSubScript,
+        highlight,
     } = options;
 
-    return { footnote, frontMatter, math, isGitlabCompatibilityEnabled, superSubScript };
+    return { footnote, frontMatter, math, isGitlabCompatibilityEnabled, superSubScript, highlight };
 }
 
 /**

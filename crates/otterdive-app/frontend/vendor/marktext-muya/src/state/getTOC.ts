@@ -33,6 +33,7 @@ export function getTOC(muya: Muya): ITocItem[] {
         return [];
 
     const items: ITocItem[] = [];
+    const usedSlugs = new Set<string>();
 
     for (const node of scrollPage.children.iterator()) {
         const { blockName } = node;
@@ -52,19 +53,24 @@ export function getTOC(muya: Muya): ITocItem[] {
         // instead of the raw source (#4811). Slugging the same plain text keeps
         // `githubSlug` in step with the anchor id the HTML export injects from
         // `heading.textContent` (state/markdownToHtml.ts).
-        const { superSubScript, footnote } = muya.options;
+        const { superSubScript, footnote, highlight } = muya.options;
         const content = tokensToPlainText(
             tokenizer(source, {
                 hasBeginRules: false,
-                options: { superSubScript, footnote },
+                options: { superSubScript, footnote, highlight },
             }),
         ).trim();
 
+        const base = generateGithubSlug(content) || 'heading';
+        let githubSlug = base;
+        let suffix = 0;
+        while (usedSlugs.has(githubSlug)) githubSlug = `${base}-${++suffix}`;
+        usedSlugs.add(githubSlug);
         items.push({
             content,
             lvl: block.meta.level,
             slug: stableSlug(block),
-            githubSlug: generateGithubSlug(content),
+            githubSlug,
         });
     }
 

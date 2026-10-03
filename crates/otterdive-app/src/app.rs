@@ -1,14 +1,14 @@
 use otterdive_core::{
     DirectorySearchReport, Document, EncodingKind, FileReplacePreview, LineEnding, LoadedDocument,
-    ReplaceOutcome, SearchMode, SearchOptions, TextMatch, apply_directory_replace,
-    document::EDITABLE_FILE_LIMIT_BYTES, preview_directory_replace, search_directory,
+    SearchMode, SearchOptions, TextMatch, document::EDITABLE_FILE_LIMIT_BYTES,
+    preview_directory_replace, search_directory,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 #[cfg(target_os = "macos")]
@@ -108,6 +108,7 @@ const SUPPORTED_LANGUAGES: &[&str] = &[
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentDto {
+    pub decode_had_errors: bool,
     pub disk_revision: Option<String>,
     pub title: String,
     pub path: Option<String>,
@@ -180,6 +181,15 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let save_all = macos_menu_item(app, "file.save_all", "全部保存", Some("CmdOrCtrl+Alt+S"))?;
     let save_as = macos_menu_item(app, "file.save_as", "另存为…", Some("CmdOrCtrl+Shift+S"))?;
     let export_pdf = macos_menu_item(app, "file.export_pdf", "导出带大纲 PDF…", None)?;
+    let export_html = macos_menu_item(app, "file.exportHtml", "导出 HTML…", None)?;
+    let export_docx = macos_menu_item(app, "file.exportDocx", "导出 Word 文档…", None)?;
+    let export_epub = macos_menu_item(app, "file.exportEpub", "导出 EPUB…", None)?;
+    let import_document = macos_menu_item(app, "file.importDocument", "导入文档…", None)?;
+    let recovery = macos_menu_item(app, "file.recovery", "恢复副本…", None)?;
+    let history = macos_menu_item(app, "file.history", "本地历史…", None)?;
+    let compare_disk = macos_menu_item(app, "file.compareDisk", "与磁盘文件比较", None)?;
+    let compare_other = macos_menu_item(app, "file.compareOther", "与其他文件比较…", None)?;
+    let log_viewer = macos_menu_item(app, "file.logViewer", "分块阅读与日志尾随…", None)?;
     let print = macos_menu_item(app, "file.print", "系统打印…", Some("CmdOrCtrl+P"))?;
     let close_document = macos_menu_item(app, "file.close", "关闭当前标签", Some("CmdOrCtrl+W"))?;
     let file_menu = SubmenuBuilder::new(app, "文件")
@@ -192,7 +202,24 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &close_workspace,
         ])
         .separator()
-        .items(&[&save, &save_all, &save_as, &export_pdf, &print])
+        .items(&[&save, &save_all, &save_as])
+        .separator()
+        .items(&[
+            &recovery,
+            &history,
+            &compare_disk,
+            &compare_other,
+            &log_viewer,
+        ])
+        .separator()
+        .items(&[
+            &import_document,
+            &export_pdf,
+            &export_html,
+            &export_docx,
+            &export_epub,
+            &print,
+        ])
         .separator()
         .item(&close_document)
         .build()?;
@@ -238,10 +265,13 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         "命令面板…",
         Some("CmdOrCtrl+Shift+P"),
     )?;
+    let undo_workspace_replace =
+        macos_menu_item(app, "workspace.undoReplace", "撤回最近批量替换", None)?;
     let search_menu = SubmenuBuilder::new(app, "查找")
         .items(&[&find, &replace])
         .separator()
         .items(&[&find_workspace, &replace_workspace])
+        .item(&undo_workspace_replace)
         .separator()
         .items(&[&go_to_line, &command_palette])
         .build()?;
@@ -258,6 +288,20 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         Some("CmdOrCtrl+Shift+O"),
     )?;
     let theme = macos_menu_item(app, "view.theme", "切换主题", None)?;
+    let side_editor = macos_menu_item(app, "view.sideEditor", "并排阅读", None)?;
+    let side_scroll_sync = macos_menu_item(app, "view.sideScrollSync", "并排滚动同步", None)?;
+    let markdown_reading = macos_menu_item(app, "markdown.reading", "Markdown 阅读模式", None)?;
+    let markdown_focus = macos_menu_item(app, "markdown.focus", "Markdown 专注模式", None)?;
+    let markdown_typewriter =
+        macos_menu_item(app, "markdown.typewriter", "Markdown 打字机模式", None)?;
+    let markdown_localize_images = macos_menu_item(
+        app,
+        "markdown.localizeImages",
+        "保存远程图片到附件目录",
+        None,
+    )?;
+    let markdown_insert_toc = macos_menu_item(app, "markdown.insertToc", "插入正文目录", None)?;
+    let markdown_check_links = macos_menu_item(app, "markdown.checkLinks", "检查本地链接…", None)?;
     let view_menu = SubmenuBuilder::new(app, "视图")
         .item(&word_wrap)
         .separator()
@@ -266,7 +310,18 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &markdown_split,
             &markdown_source,
             &markdown_outline,
+            &markdown_reading,
+            &markdown_focus,
+            &markdown_typewriter,
         ])
+        .separator()
+        .items(&[
+            &markdown_insert_toc,
+            &markdown_localize_images,
+            &markdown_check_links,
+        ])
+        .separator()
+        .items(&[&side_editor, &side_scroll_sync])
         .separator()
         .item(&theme)
         .separator()
@@ -347,6 +402,7 @@ pub struct SearchReportDto {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplacePreviewDto {
+    pub preview_id: String,
     pub items: Vec<FileReplacePreviewDto>,
     pub skipped: Vec<String>,
     pub total: usize,
@@ -355,11 +411,12 @@ pub struct ReplacePreviewDto {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileReplacePreviewDto {
+    pub file_id: usize,
     pub path: String,
     pub file_name: String,
     pub encoding: String,
     pub count: usize,
-    pub matches: Vec<TextMatchDto>,
+    pub matches: Vec<ReplacementMatchDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -385,6 +442,8 @@ pub struct TextMatchDto {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveRequest {
+    pub source_path: Option<String>,
+    pub source_encoding: Option<String>,
     pub expected_revision: Option<String>,
     pub path: Option<String>,
     pub text: String,
@@ -448,18 +507,52 @@ pub struct ReplaceRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplyReplaceRequest {
-    pub root: String,
-    pub query: String,
-    pub replacement: String,
-    pub mode: String,
-    pub match_case: bool,
-    pub whole_word: bool,
-    pub include_hidden: bool,
-    pub recursive: bool,
-    pub file_glob: String,
-    pub skip_dirs: String,
-    pub max_file_size: u64,
+    pub preview_id: String,
+    pub selections: Vec<ReplaceSelectionDto>,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceSelectionDto {
+    pub file_id: usize,
+    pub match_ids: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacementMatchDto {
+    #[serde(flatten)]
+    pub location: TextMatchDto,
+    pub match_id: usize,
+    pub replacement_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceFailureDto {
+    pub path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceApplyDto {
+    pub batch_id: String,
+    pub applied_files: usize,
+    pub applied_matches: usize,
+    pub undone_files: usize,
+    pub failures: Vec<ReplaceFailureDto>,
+}
+
+#[derive(Default)]
+struct ReplaceState {
+    next_id: u64,
+    preview: Option<(String, Vec<FileReplacePreview>)>,
+    // Keep one bounded batch. Starting a new preview preserves the latest undo batch.
+    undo: Option<(String, otterdive_core::fs::ReplaceBatch)>,
+}
+#[derive(Default)]
+struct ReplaceService(Arc<Mutex<ReplaceState>>);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -552,10 +645,22 @@ pub fn run() {
             store.initialize().map_err(std::io::Error::other)?;
             app.manage(store);
             app.manage(AnalyseService::default());
+            app.manage(ReplaceService::default());
             app.manage(crate::stream_search::SearchService::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            crate::workbench::save_snapshot,
+            crate::workbench::list_snapshots,
+            crate::workbench::read_snapshot,
+            crate::workbench::delete_snapshot,
+            crate::workbench::store_markdown_asset,
+            crate::workbench::migrate_markdown_assets,
+            crate::workbench::read_file_chunk,
+            crate::workbench::pandoc_status,
+            crate::workbench::convert_document,
+            crate::workbench::export_document_text,
+            crate::workbench::export_document_bytes,
             load_session,
             save_session,
             open_file_dialog,
@@ -580,6 +685,7 @@ pub fn run() {
             crate::stream_search::cancel_workspace_search,
             preview_workspace_replace,
             apply_workspace_replace,
+            undo_workspace_replace,
             startup_args,
             take_open_requests,
             shell_integration_status,
@@ -696,6 +802,7 @@ async fn reopen_path_with_encoding(request: ReopenRequest) -> Result<DocumentDto
         let line_ending = LineEnding::detect(&decoded.text);
         crate::file_revision::ensure_revision(&path, &revision)?;
         Ok(DocumentDto {
+            decode_had_errors: decoded.had_errors,
             disk_revision: Some(revision),
             title,
             path: Some(path.display().to_string()),
@@ -705,9 +812,12 @@ async fn reopen_path_with_encoding(request: ReopenRequest) -> Result<DocumentDto
             encoding: encoding_label(decoded.encoding).to_owned(),
             line_ending: line_ending_label(line_ending).to_owned(),
             file_size,
-            read_only: metadata.permissions().readonly()
+            read_only: decoded.had_errors
+                || metadata.permissions().readonly()
                 || metadata.len() > EDITABLE_FILE_LIMIT_BYTES,
-            read_only_reason: if metadata.permissions().readonly() {
+            read_only_reason: if decoded.had_errors {
+                Some("解码含有无效字符，请选择正确编码重新打开；禁止覆盖原文件".to_owned())
+            } else if metadata.permissions().readonly() {
                 Some("文件系统只读".to_owned())
             } else if metadata.len() > EDITABLE_FILE_LIMIT_BYTES {
                 Some("超过编辑保护阈值".to_owned())
@@ -728,11 +838,29 @@ async fn save_document(request: SaveRequest) -> Result<DocumentDto, String> {
             None => return Err("保存路径不能为空".to_owned()),
         };
 
-        let mut doc = if path.exists() {
-            Document::open(&path).unwrap_or_else(|_| Document::untitled(1))
-        } else {
-            Document::untitled(1)
-        };
+        let overwrites_source = request.source_path.as_deref().is_some_and(|source| {
+            let source = Path::new(source);
+            source == path
+                || fs::canonicalize(source)
+                    .ok()
+                    .zip(fs::canonicalize(&path).ok())
+                    .is_some_and(|(source, destination)| source == destination)
+        });
+        if overwrites_source && path.exists() {
+            let bytes = fs::read(&path).map_err(|error| format!("读取原文件失败：{error}"))?;
+            let decoded = match request.source_encoding.as_deref() {
+                Some(source) => {
+                    otterdive_core::fs::decode_bytes_with_encoding(&bytes, parse_encoding(source))
+                }
+                None => otterdive_core::fs::decode_bytes(&bytes),
+            };
+            if decoded.had_errors {
+                return Err(
+                    "原文件按所选编码解码含有无效字符，请重新选择编码读取；原文件未修改".to_owned(),
+                );
+            }
+        }
+        let mut doc = Document::untitled(1);
         doc.meta.encoding = parse_encoding(&request.encoding);
         doc.meta.line_ending = parse_line_ending(&request.line_ending);
         doc.set_text(normalize_line_endings(&request.text, doc.meta.line_ending));
@@ -935,11 +1063,12 @@ async fn search_workspace(request: SearchRequest) -> Result<SearchReportDto, Str
 }
 
 #[tauri::command]
-async fn preview_workspace_replace(request: ReplaceRequest) -> Result<ReplacePreviewDto, String> {
+async fn preview_workspace_replace(
+    request: ReplaceRequest,
+    service: tauri::State<'_, ReplaceService>,
+) -> Result<ReplacePreviewDto, String> {
+    let service = service.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if request.query.is_empty() {
-            return Err("查询内容不能为空".to_owned());
-        }
         let options = replace_options_from_request(&request);
         let (items, skipped) = preview_directory_replace(
             &request.root,
@@ -948,7 +1077,12 @@ async fn preview_workspace_replace(request: ReplaceRequest) -> Result<ReplacePre
             &options,
         )
         .map_err(|err| err.to_string())?;
-        Ok(replace_preview_to_dto(items, skipped))
+        let mut state = service.lock().map_err(|_| "替换服务不可用")?;
+        state.next_id += 1;
+        let preview_id = format!("preview-{}", state.next_id);
+        let dto = replace_preview_to_dto(preview_id.clone(), &items, skipped);
+        state.preview = Some((preview_id, items));
+        Ok(dto)
     })
     .await
     .map_err(|err| format!("替换预览失败：{err}"))?
@@ -957,25 +1091,81 @@ async fn preview_workspace_replace(request: ReplaceRequest) -> Result<ReplacePre
 #[tauri::command]
 async fn apply_workspace_replace(
     request: ApplyReplaceRequest,
-) -> Result<ReplacePreviewDto, String> {
+    service: tauri::State<'_, ReplaceService>,
+) -> Result<ReplaceApplyDto, String> {
+    let service = service.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if request.query.is_empty() {
-            return Err("查询内容不能为空".to_owned());
+        let mut state = service.lock().map_err(|_| "替换服务不可用")?;
+        let (id, items) = state.preview.as_ref().ok_or("预览已失效，请重新预览")?;
+        if id != &request.preview_id {
+            return Err("预览已失效，请重新预览".to_owned());
         }
-        let options = apply_replace_options_from_request(&request);
-        let (items, skipped) = preview_directory_replace(
-            &request.root,
-            &request.query,
-            &request.replacement,
-            &options,
-        )
-        .map_err(|err| err.to_string())?;
-        let dto = replace_preview_to_dto(items.clone(), skipped);
-        apply_directory_replace(&items).map_err(|err| format!("写入替换失败：{err}"))?;
+        let selections = request
+            .selections
+            .into_iter()
+            .map(|selection| otterdive_core::fs::ReplaceSelection {
+                file_id: selection.file_id,
+                match_ids: selection.match_ids,
+            })
+            .collect::<Vec<_>>();
+        let batch = otterdive_core::fs::apply_selected_directory_replace(items, &selections)
+            .map_err(|error| error.to_string())?;
+        state.next_id += 1;
+        let batch_id = format!("batch-{}", state.next_id);
+        let dto = ReplaceApplyDto {
+            batch_id: batch_id.clone(),
+            applied_files: batch.files.len(),
+            applied_matches: batch.files.iter().map(|file| file.count).sum(),
+            undone_files: 0,
+            failures: replace_failures(&batch.failures),
+        };
+        if !batch.files.is_empty() {
+            state.undo = Some((batch_id, batch));
+        }
+        state.preview = None;
         Ok(dto)
     })
     .await
     .map_err(|err| format!("执行替换失败：{err}"))?
+}
+
+#[tauri::command]
+async fn undo_workspace_replace(
+    batch_id: String,
+    service: tauri::State<'_, ReplaceService>,
+) -> Result<ReplaceApplyDto, String> {
+    let service = service.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut state = service.lock().map_err(|_| "替换服务不可用")?;
+        let (id, batch) = state.undo.as_mut().ok_or("没有可撤销的批量替换")?;
+        if id != &batch_id {
+            return Err("仅能撤销最近一次批量替换".to_owned());
+        }
+        let (undone_files, failures) = otterdive_core::fs::undo_directory_replace(batch);
+        let dto = ReplaceApplyDto {
+            batch_id,
+            applied_files: 0,
+            applied_matches: 0,
+            undone_files,
+            failures: replace_failures(&failures),
+        };
+        if batch.files.is_empty() {
+            state.undo = None;
+        }
+        Ok(dto)
+    })
+    .await
+    .map_err(|err| format!("撤销替换失败：{err}"))?
+}
+
+fn replace_failures(failures: &[(PathBuf, String)]) -> Vec<ReplaceFailureDto> {
+    failures
+        .iter()
+        .map(|(path, error)| ReplaceFailureDto {
+            path: path.display().to_string(),
+            error: error.clone(),
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -986,7 +1176,10 @@ fn supported_languages() -> Vec<&'static str> {
 #[tauri::command]
 fn supported_encodings() -> Vec<&'static str> {
     vec![
-        "ANSI",
+        "GBK",
+        "Big5",
+        "Shift-JIS",
+        "Windows-1252",
         "UTF-8",
         "UTF-8-BOM",
         "UTF-16 Big Endian",
@@ -1050,6 +1243,7 @@ where
 fn document_to_dto(doc: Document) -> DocumentDto {
     let path = doc.meta.path.as_deref();
     DocumentDto {
+        decode_had_errors: doc.meta.decode_had_errors,
         disk_revision: path.and_then(|path| crate::file_revision::revision(path).ok()),
         title: doc.title,
         path: path.map(|path| path.display().to_string()),
@@ -1067,6 +1261,7 @@ fn document_to_dto(doc: Document) -> DocumentDto {
 fn loaded_document_to_dto(doc: LoadedDocument) -> DocumentDto {
     let path = doc.meta.path.as_deref();
     DocumentDto {
+        decode_had_errors: doc.meta.decode_had_errors,
         disk_revision: path.and_then(|path| crate::file_revision::revision(path).ok()),
         title: doc.title,
         path: path.map(|path| path.display().to_string()),
@@ -1361,35 +1556,44 @@ async fn transfer_image_file(request: ImageTransferRequest) -> Result<String, St
 }
 
 fn replace_preview_to_dto(
-    items: Vec<FileReplacePreview>,
+    preview_id: String,
+    items: &[FileReplacePreview],
     skipped: Vec<String>,
 ) -> ReplacePreviewDto {
-    let total = items.iter().map(|item| item.outcome.count).sum();
     ReplacePreviewDto {
-        items: items
-            .into_iter()
-            .map(|item| replace_item_to_dto(item.path, item.encoding, item.outcome))
-            .collect(),
+        preview_id,
+        total: items.iter().map(|item| item.outcome.count).sum(),
         skipped,
-        total,
-    }
-}
-
-fn replace_item_to_dto(
-    path: PathBuf,
-    encoding: EncodingKind,
-    outcome: ReplaceOutcome,
-) -> FileReplacePreviewDto {
-    FileReplacePreviewDto {
-        file_name: path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("文件")
-            .to_owned(),
-        path: path.display().to_string(),
-        encoding: encoding_label(encoding).to_owned(),
-        count: outcome.count,
-        matches: outcome.matches.into_iter().map(match_to_dto).collect(),
+        items: items
+            .iter()
+            .enumerate()
+            .map(|(file_id, item)| FileReplacePreviewDto {
+                file_id,
+                file_name: item
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("文件")
+                    .to_owned(),
+                path: item.path.display().to_string(),
+                encoding: encoding_label(item.encoding).to_owned(),
+                count: item.outcome.count,
+                matches: item
+                    .outcome
+                    .matches
+                    .iter()
+                    .zip(&item.outcome.replacements)
+                    .enumerate()
+                    .map(
+                        |(match_id, (location, replacement_text))| ReplacementMatchDto {
+                            location: match_to_dto(location.clone()),
+                            match_id,
+                            replacement_text: replacement_text.clone(),
+                        },
+                    )
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -1419,20 +1623,6 @@ pub(crate) fn search_options_from_request(request: &SearchRequest) -> SearchOpti
 }
 
 fn replace_options_from_request(request: &ReplaceRequest) -> SearchOptions {
-    SearchOptions {
-        mode: parse_search_mode(&request.mode),
-        match_case: request.match_case,
-        whole_word: request.whole_word,
-        wrap: true,
-        include_hidden: request.include_hidden,
-        recursive: request.recursive,
-        file_glob: request.file_glob.clone(),
-        skip_dirs: request.skip_dirs.clone(),
-        max_file_size: request.max_file_size,
-    }
-}
-
-fn apply_replace_options_from_request(request: &ApplyReplaceRequest) -> SearchOptions {
     SearchOptions {
         mode: parse_search_mode(&request.mode),
         match_case: request.match_case,
@@ -1583,6 +1773,9 @@ fn language_from_extension(ext: &str) -> Option<&'static str> {
 pub(crate) fn parse_encoding(label: &str) -> EncodingKind {
     match label {
         "ANSI" | "GBK" => EncodingKind::Gbk,
+        "Big5" => EncodingKind::Big5,
+        "Shift-JIS" | "Shift_JIS" => EncodingKind::ShiftJis,
+        "Windows-1252" => EncodingKind::Windows1252,
         "UTF-8-BOM" | "UTF-8 BOM" => EncodingKind::Utf8Bom,
         "UTF-16 Big Endian" | "UTF-16 BE" => EncodingKind::Utf16Be,
         "UTF-16 Little Endian" | "UTF-16 LE" => EncodingKind::Utf16Le,
@@ -1613,7 +1806,10 @@ pub(crate) fn encoding_label(encoding: EncodingKind) -> &'static str {
         EncodingKind::Utf8Bom => "UTF-8-BOM",
         EncodingKind::Utf16Le => "UTF-16 Little Endian",
         EncodingKind::Utf16Be => "UTF-16 Big Endian",
-        EncodingKind::Gbk => "ANSI",
+        EncodingKind::Gbk => "GBK",
+        EncodingKind::Big5 => "Big5",
+        EncodingKind::ShiftJis => "Shift-JIS",
+        EncodingKind::Windows1252 => "Windows-1252",
     }
 }
 
@@ -1653,5 +1849,81 @@ mod large_document_tests {
         assert_eq!(reopened.text, dto.text);
         assert_eq!(reopened.disk_revision, dto.disk_revision);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod save_encoding_tests {
+    use super::*;
+
+    fn directory() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "otterdive-save-encoding-{}-{}-{sequence}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        directory
+    }
+
+    fn save(
+        path: &Path,
+        source: &Path,
+        source_encoding: &str,
+        text: &str,
+    ) -> Result<DocumentDto, String> {
+        tauri::async_runtime::block_on(save_document(SaveRequest {
+            source_path: Some(source.to_string_lossy().into_owned()),
+            source_encoding: Some(source_encoding.into()),
+            expected_revision: None,
+            path: Some(path.to_string_lossy().into_owned()),
+            text: text.into(),
+            encoding: "UTF-8".into(),
+            line_ending: "LF".into(),
+        }))
+    }
+
+    #[test]
+    fn save_as_does_not_decode_unrelated_destination_with_source_encoding() {
+        let directory = directory();
+        let source = directory.join("source.txt");
+        let target = directory.join("target.txt");
+        let bytes = otterdive_core::fs::encode_text("原文件", EncodingKind::Utf16Le).unwrap();
+        fs::write(&source, &bytes).unwrap();
+        fs::write(&target, "odd").unwrap();
+        save(&target, &source, "UTF-16 LE", "新内容").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "新内容");
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn overwriting_invalid_source_is_rejected_without_changing_original_bytes() {
+        let directory = directory();
+        let path = directory.join("invalid.txt");
+        let bytes = [0xef, 0xbb, 0xbf, 0xff];
+        fs::write(&path, bytes).unwrap();
+        assert!(save(&path, &path, "UTF-8", "replacement").is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn source_and_target_encoding_are_independent_during_conversion() {
+        let directory = directory();
+        let path = directory.join("gbk.txt");
+        fs::write(
+            &path,
+            otterdive_core::fs::encode_text("中文", EncodingKind::Gbk).unwrap(),
+        )
+        .unwrap();
+        save(&path, &path, "GBK", "中文🙂").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "中文🙂");
+        fs::remove_dir_all(directory).unwrap();
     }
 }

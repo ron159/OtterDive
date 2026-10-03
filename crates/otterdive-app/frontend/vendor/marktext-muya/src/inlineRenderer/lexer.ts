@@ -192,9 +192,10 @@ function tryStrongEm(state: ILexState): boolean {
 
 // emoji | inline_code | del | inline_math
 function tryChunks(state: ILexState): boolean {
-    const chunks = ['inline_code', 'del', 'emoji', 'inline_math'] as const;
+    const chunks = ['inline_code', 'del', 'mark', 'emoji', 'inline_math'] as const;
 
     for (const rule of chunks) {
+        if (rule === 'mark' && !state.options.highlight) continue;
         const to = state.inlineRules[rule].exec(state.src);
         if (to && isLengthEven(to[3])) {
             if (rule === 'emoji') {
@@ -902,6 +903,7 @@ function rebuildWrapperToken(token: Token): string {
         case 'strong':
         case 'em':
         case 'del':
+        case 'mark':
             return token.marker + generator(token.children, true) + token.marker;
 
         case 'html_tag':
@@ -950,6 +952,7 @@ export function tokensToPlainText(tokens: Token[]): string {
             case 'strong':
             case 'em':
             case 'del':
+            case 'mark':
             case 'link':
             case 'reference_link':
                 result += tokensToPlainText(token.children);

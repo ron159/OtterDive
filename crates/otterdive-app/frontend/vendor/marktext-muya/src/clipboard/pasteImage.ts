@@ -96,11 +96,14 @@ async function insertImageSrc(
     const placeholderText = insertImageText(anchorBlock, src, id);
 
     let finalSrc = src;
-    const resolved = await imageAction({ src, alt: '', title: '' });
-    if (resolved)
-        finalSrc = resolved;
-
-    replacePlaceholderImage(anchorBlock, placeholderText, finalSrc);
+    try {
+        const resolved = await imageAction({ src, alt: '', title: '' });
+        if (resolved) finalSrc = resolved;
+    } finally {
+        // A failed copy/upload must not leave a permanent loading marker or
+        // discard a pasted screenshot. Keep the source while surfacing error.
+        replacePlaceholderImage(anchorBlock, placeholderText, finalSrc);
+    }
 }
 
 // Resolve a pasted image to an `src`: a clipboard FILE path (via the
@@ -293,12 +296,13 @@ async function replaceImageAt(
     const placeholderText = spliceImageText(block, range, src, id);
 
     let finalSrc = src;
-    const resolved = await imageAction({ src, alt: '', title: '' });
-    if (resolved)
-        finalSrc = resolved;
-
-    replacePlaceholderImage(block, placeholderText, finalSrc);
-    reselectImageAt(clipboard, block, range.start);
+    try {
+        const resolved = await imageAction({ src, alt: '', title: '' });
+        if (resolved) finalSrc = resolved;
+    } finally {
+        replacePlaceholderImage(block, placeholderText, finalSrc);
+        reselectImageAt(clipboard, block, range.start);
+    }
 }
 
 /**

@@ -1,4 +1,7 @@
 import { revealOutlineHeading } from "./documentOutline";
+import { markdownAlertNames, markdownAlertType, markdownTocHtml } from "./markdownDecorations";
+import { captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, type MarkdownScrollAnchor } from "./markdownNavigation";
+import { collectEquationLabels } from "../vendor/marktext-muya/src/utils/equationReferences";
 import {
   CodeBlockLanguageSelector,
   EmojiSelector,
@@ -65,6 +68,37 @@ export type MarkdownOutlineItem = {
 
 export type MarkdownPreviewOptions = {
   darkMode: boolean;
+  /** Empty disables PlantUML network requests. Set an explicit trusted server to enable. */
+  plantumlServer?: string;
+  extensions?: MarkdownExtensionOptions;
+};
+
+export type MarkdownExtensionOptions = {
+  footnote?: boolean;
+  math?: boolean;
+  superSubScript?: boolean;
+  frontMatter?: boolean;
+  highlight?: boolean;
+  alerts?: boolean;
+  toc?: boolean;
+};
+
+export type MarkdownWritingOptions = {
+  focusMode?: boolean;
+  typewriterMode?: boolean;
+  lineHeight?: number;
+  paragraphSpacing?: number;
+  spellcheckEnabled?: boolean;
+  spellcheckLanguage?: string;
+  plantumlServer?: string;
+  extensions?: MarkdownExtensionOptions;
+};
+
+export type MarkdownEditorSessionState = {
+  markdown: string;
+  history: ReturnType<Muya["getHistory"]>;
+  cursor: ReturnType<Muya["getCursorOffset"]>;
+  scrollTop: number;
 };
 
 let mermaidRenderQueue = Promise.resolve();
@@ -134,6 +168,9 @@ type MarkdownEditorOptions = {
   openLink: (href: string) => void;
   onHeadingAnchorCopied: (anchor: string) => void;
   onChange: (markdown: string) => void;
+  writingOptions?: MarkdownWritingOptions;
+  imageAction?: (image: { src: string; alt: string; title: string }) => Promise<string>;
+  clipboardFilePath?: () => Promise<string>;
 };
 
 type MarkdownEngineMatch = {
@@ -182,14 +219,42 @@ function registerPlugins(options: Pick<MarkdownEditorOptions, "pickImagePath" | 
 }
 
 export function renderMarkdownPreviewHtml(markdown: string, options: MarkdownPreviewOptions) {
+  const extensions = options.extensions ?? {};
   const body = renderToStaticHTML(normalizeMarkdownForEngine(markdown), {
-    footnote: true,
-    math: true,
-    superSubScript: true,
-    frontMatter: true,
+    footnote: extensions.footnote ?? true,
+    math: extensions.math ?? true,
+    superSubScript: extensions.superSubScript ?? true,
+    frontMatter: extensions.frontMatter ?? true,
+    highlight: extensions.highlight ?? true,
+    toc: extensions.toc ?? true,
+    alerts: extensions.alerts ?? true,
     isGitlabCompatibilityEnabled: true,
   });
-  const imageSafeBody = body
+  const container = document.createElement("div");
+  container.innerHTML = body;
+  assignHeadingIds(container);
+  if (extensions.toc !== false) {
+    const headings = [...container.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")];
+    const toc = markdownTocHtml(headings.map((heading) => ({ level: Number(heading.tagName[1]), text: heading.textContent ?? "", id: heading.id })));
+    container.querySelectorAll("p.otterdive-toc-marker").forEach((paragraph) => {
+      paragraph.outerHTML = toc;
+    });
+  }
+  if (extensions.alerts !== false) {
+    container.querySelectorAll("blockquote.otterdive-alert-marker").forEach((quote) => {
+      const paragraph = quote.querySelector(":scope > p");
+      const type = markdownAlertType(paragraph?.textContent ?? "");
+      if (!type || !paragraph) return;
+      quote.classList.add("markdown-alert", `markdown-alert-${type.toLowerCase()}`);
+      const first = paragraph.firstChild;
+      if (first?.nodeType === Node.TEXT_NODE) first.textContent = first.textContent?.replace(/^\s*\[![A-Z]+\]\s*/i, "") ?? "";
+      const title = document.createElement("p");
+      title.className = "markdown-alert-title";
+      title.textContent = markdownAlertNames[type];
+      quote.prepend(title);
+    });
+  }
+  const imageSafeBody = container.innerHTML
     .replace(/<img\b(?![^>]*\bloading=)/gi, '<img loading="lazy"')
     .replace(/<img\b(?![^>]*\bdecoding=)/gi, '<img decoding="async"')
     .replace(/<img\b(?![^>]*\breferrerpolicy=)/gi, '<img referrerpolicy="no-referrer"');
@@ -264,7 +329,7 @@ async function renderDiagram(code: HTMLElement, options: MarkdownPreviewOptions)
     } else if (code.classList.contains("language-vega-lite")) {
       await renderVegaDiagram(pre, source, options.darkMode);
     } else if (code.classList.contains("language-plantuml")) {
-      await renderPlantUmlDiagram(pre, source);
+      await renderPlantUmlDiagram(pre, source, options.plantumlServer);
     } else {
       await renderLegacyDiagram(
         pre,
@@ -317,14 +382,20 @@ async function renderVegaDiagram(pre: HTMLPreElement, source: string, darkMode: 
   finalizePreviewDiagramSvg(container);
 }
 
-async function renderPlantUmlDiagram(pre: HTMLPreElement, source: string) {
+async function renderPlantUmlDiagram(pre: HTMLPreElement, source: string, server?: string) {
+  if (!server?.trim()) {
+    pre.dataset.diagramError = "PlantUML 网络渲染已关闭，请在 Markdown 设置中配置服务器";
+    return;
+  }
+  const endpoint = new URL(server);
+  if (!["https:", "http:"].includes(endpoint.protocol)) throw new Error("PlantUML 服务器必须使用 HTTP 或 HTTPS");
   const { encode } = await import("plantuml-encoder");
   const container = diagramContainer("plantuml");
   const image = document.createElement("img");
   image.alt = "PlantUML 图表";
   image.loading = "lazy";
   image.referrerPolicy = "no-referrer";
-  image.src = `https://www.plantuml.com/plantuml/svg/${encode(source)}`;
+  image.src = `${endpoint.href.replace(/\/+$/, "")}/svg/${encode(source)}`;
   container.appendChild(image);
   pre.replaceWith(container);
 }
@@ -408,6 +479,23 @@ export class MarkdownEditorBridge {
     imageInfo: IImageInfo;
   } | null = null;
   private appearanceSignature: string;
+  private writingOptions: MarkdownWritingOptions = {};
+  private decorationFrame = 0;
+  private equationLabelSignature = "";
+  private readOnly = false;
+  private typewriterFrame = 0;
+  private readonly typewriterListener = () => {
+    if (!this.writingOptions.typewriterMode || this.typewriterFrame) return;
+    this.typewriterFrame = window.requestAnimationFrame(() => {
+      this.typewriterFrame = 0;
+      const selection = document.getSelection();
+      if (!selection?.rangeCount || !selection.isCollapsed || !this.root.contains(selection.anchorNode)) return;
+      const rect = selection.getRangeAt(0).getBoundingClientRect();
+      const scroller = this.scrollContainer();
+      const viewport = scroller.getBoundingClientRect();
+      if (rect.height > 0) scroller.scrollTop += rect.top - viewport.top - viewport.height * 0.45;
+    });
+  };
 
   constructor(options: MarkdownEditorOptions) {
     registerPlugins(options);
@@ -420,13 +508,17 @@ export class MarkdownEditorBridge {
     );
     const initialMarkdown = normalizeMarkdownForEngine(options.markdown);
     this.markdown = initialMarkdown;
+    this.equationLabelSignature = JSON.stringify(collectEquationLabels(initialMarkdown));
+    const initialExtensions = options.writingOptions?.extensions ?? {};
     this.muya = new Muya(options.element, {
       markdown: initialMarkdown,
       locale: zhCN,
-      frontMatter: true,
-      footnote: true,
-      math: true,
-      superSubScript: true,
+      frontMatter: initialExtensions.frontMatter ?? true,
+      highlight: options.writingOptions?.extensions?.highlight ?? true,
+      mathEquationLabels: collectEquationLabels(initialMarkdown),
+      footnote: initialExtensions.footnote ?? true,
+      math: initialExtensions.math ?? true,
+      superSubScript: initialExtensions.superSubScript ?? true,
       isGitlabCompatibilityEnabled: true,
       codeBlockLineNumbers: true,
       autoPairBracket: true,
@@ -452,6 +544,9 @@ export class MarkdownEditorBridge {
       listIndentation: 1,
       wrapCodeBlocks: true,
       resolveImageSrc: options.resolveImageSrc,
+      imageAction: options.imageAction,
+      clipboardFilePath: options.clipboardFilePath,
+      plantumlServer: options.writingOptions?.plantumlServer ?? "",
     });
     this.changeListener = () => {
       const markdown = normalizeMarkdownForEngine(this.muya.getMarkdown());
@@ -459,6 +554,9 @@ export class MarkdownEditorBridge {
       if (this.applyingMarkdown) return;
       this.changeRevision += 1;
       this.onChange(markdown);
+      this.refreshEquationLabels(markdown);
+      this.scheduleDecorations();
+      if (this.readOnly) this.setReadOnly(true);
     };
     this.headingCopyListener = ({ key }) => {
       if (key) {
@@ -482,10 +580,15 @@ export class MarkdownEditorBridge {
       records.forEach((record) => {
         record.addedNodes.forEach((node) => this.decorateHeadingCopyLinks(node));
       });
+      this.scheduleDecorations();
+      if (this.readOnly) this.setReadOnly(true);
     });
     this.headingCopyLinkObserver.observe(this.root, { childList: true, subtree: true });
     this.updateAppearance(options.darkMode, options.fontSize, options.fontFamily);
     this.setReadOnly(options.readOnly);
+    this.setWritingOptions(options.writingOptions ?? {});
+    this.scheduleDecorations();
+    document.addEventListener("selectionchange", this.typewriterListener);
   }
 
   get root() {
@@ -538,6 +641,8 @@ export class MarkdownEditorBridge {
       this.applyingMarkdown = false;
       this.synchronizedRevision = this.changeRevision;
     }
+    this.refreshEquationLabels(normalizedMarkdown);
+    this.scheduleDecorations();
   }
 
   updateAppearance(darkMode: boolean, fontSize: number, fontFamily: string) {
@@ -553,11 +658,160 @@ export class MarkdownEditorBridge {
   }
 
   setReadOnly(readOnly: boolean) {
+    this.readOnly = readOnly;
     const contentEditable = readOnly ? "false" : "true";
     if (this.root.contentEditable !== contentEditable) this.root.contentEditable = contentEditable;
     if (this.root.getAttribute("aria-readonly") !== String(readOnly)) {
       this.root.setAttribute("aria-readonly", String(readOnly));
     }
+    // Muya content leaves explicitly opt into editing, overriding the root.
+    // Preserve their original state so switching back only restores those leaves.
+    if (readOnly) {
+      this.root.querySelectorAll<HTMLElement>('[contenteditable="true"]').forEach((element) => {
+        element.dataset.markdownEditable = "true";
+        element.contentEditable = "false";
+      });
+    } else {
+      this.root.querySelectorAll<HTMLElement>('[data-markdown-editable="true"]').forEach((element) => {
+        element.contentEditable = "true";
+        delete element.dataset.markdownEditable;
+      });
+    }
+  }
+
+  setWritingOptions(options: MarkdownWritingOptions) {
+    const previousServer = this.writingOptions.plantumlServer ?? "";
+    const previousExtensions = JSON.stringify(this.writingOptions.extensions ?? {});
+    this.writingOptions = { ...this.writingOptions, ...options };
+    const value = this.writingOptions;
+    const lineHeight = Math.min(3, Math.max(1.2, value.lineHeight ?? 1.7));
+    const paragraphSpacing = Math.min(3, Math.max(0, value.paragraphSpacing ?? 1));
+    this.muya.setFocusMode(value.focusMode ?? false);
+    this.muya.setOptions({
+      lineHeight,
+      spellcheckEnabled: value.spellcheckEnabled ?? true,
+      plantumlServer: value.plantumlServer ?? "",
+      highlight: value.extensions?.highlight ?? true,
+      footnote: value.extensions?.footnote ?? true,
+      math: value.extensions?.math ?? true,
+      superSubScript: value.extensions?.superSubScript ?? true,
+      frontMatter: value.extensions?.frontMatter ?? true,
+    }, previousServer !== (value.plantumlServer ?? "") || previousExtensions !== JSON.stringify(value.extensions ?? {}));
+    this.root.lang = value.spellcheckLanguage || navigator.languages[0] || navigator.language || "";
+    this.root.style.setProperty("--markdown-paragraph-spacing", `${paragraphSpacing}em`);
+    this.root.classList.toggle("markdown-typewriter-mode", value.typewriterMode ?? false);
+    this.scheduleDecorations();
+  }
+
+  /** Save only JSON state, never DOM or image caches, before disposing an inactive tab. */
+  captureSessionState(): MarkdownEditorSessionState {
+    const markdown = this.getMarkdown();
+    this.muya.editor.history.cutoff();
+    return {
+      markdown,
+      history: this.muya.getHistory(),
+      cursor: this.muya.getCursorOffset(),
+      scrollTop: this.scrollContainer().scrollTop,
+    };
+  }
+
+  /** The caller's latest text always wins; source edits become an undoable boundary. */
+  restoreSessionState(state: MarkdownEditorSessionState, currentMarkdown = this.markdown, focus = false) {
+    this.setMarkdown(state.markdown);
+    this.muya.setHistory(state.history);
+    if (state.cursor) this.muya.setCursorByOffset(state.cursor);
+    this.setMarkdown(currentMarkdown, false, true);
+    this.scrollContainer().scrollTop = state.scrollTop;
+    if (focus) this.focus();
+  }
+
+  getSelectionText() {
+    const selection = document.getSelection();
+    return selection?.anchorNode && this.root.contains(selection.anchorNode) ? selection.toString() : "";
+  }
+
+  getCursorOffset() {
+    return this.muya.getCursorOffset();
+  }
+
+  setCursorOffset(cursor: NonNullable<ReturnType<Muya["getCursorOffset"]>>) {
+    return this.muya.setCursorByOffset(cursor);
+  }
+
+  getScrollAnchor() {
+    const scroller = this.scrollContainer();
+    const top = scroller.getBoundingClientRect().top;
+    const headings = [...this.root.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")];
+    return captureMarkdownScrollAnchor(scroller.scrollTop, scroller.scrollHeight - scroller.clientHeight,
+      headings.map((heading) => heading.getBoundingClientRect().top - top + scroller.scrollTop));
+  }
+
+  revealScrollAnchor(anchor: MarkdownScrollAnchor) {
+    const scroller = this.scrollContainer();
+    const top = scroller.getBoundingClientRect().top;
+    const headings = [...this.root.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")];
+    scroller.scrollTop = restoreMarkdownScrollAnchor(anchor, scroller.scrollHeight - scroller.clientHeight,
+      headings.map((heading) => heading.getBoundingClientRect().top - top + scroller.scrollTop));
+  }
+
+  async pasteImage(src: string) {
+    await this.muya.pasteImage(src);
+  }
+
+  private scrollContainer() {
+    let element = this.root.parentElement;
+    while (element) {
+      if (/(?:auto|scroll)/.test(getComputedStyle(element).overflowY)) return element;
+      element = element.parentElement;
+    }
+    return this.root;
+  }
+
+  private refreshEquationLabels(markdown: string) {
+    const labels = collectEquationLabels(markdown);
+    const signature = JSON.stringify(labels);
+    if (signature === this.equationLabelSignature) return;
+    this.equationLabelSignature = signature;
+    this.muya.editor.inlineRenderer.renderer.loadMathMap.clear();
+    this.muya.setOptions({ mathEquationLabels: labels }, true);
+  }
+
+  private scheduleDecorations() {
+    if (this.decorationFrame) return;
+    this.decorationFrame = window.requestAnimationFrame(() => {
+      this.decorationFrame = 0;
+      const extensions = this.writingOptions.extensions ?? {};
+      const headings = this.muya.getTOC();
+      const tocHtml = markdownTocHtml(headings.map((heading) => ({ level: heading.lvl, text: heading.content, id: heading.githubSlug })));
+      this.root.querySelectorAll<HTMLElement>(".mu-paragraph").forEach((paragraph) => {
+        const content = paragraph.querySelector<HTMLElement>(":scope > .mu-content");
+        const block = content ? (content as unknown as Record<string, { text?: string }>)[BLOCK_DOM_PROPERTY] : null;
+        const isToc = extensions.toc !== false && /^\[toc\]$/i.test(block?.text?.trim() ?? "");
+        const existing = paragraph.querySelector<HTMLElement>(":scope > .markdown-live-toc");
+        if (!isToc) { existing?.remove(); return; }
+        if (existing?.dataset.tocHtml === tocHtml) return;
+        const decoration = existing ?? document.createElement("span");
+        decoration.className = "markdown-live-toc";
+        decoration.contentEditable = "false";
+        decoration.dataset.tocHtml = tocHtml;
+        decoration.innerHTML = tocHtml;
+        decoration.onclick = (event) => {
+          const target = (event.target as Element).closest<HTMLAnchorElement>("a[data-heading-index]");
+          if (!target) return;
+          event.preventDefault();
+          event.stopPropagation();
+          this.revealHeading(Number(target.dataset.headingIndex));
+        };
+        if (!existing) paragraph.appendChild(decoration);
+      });
+      this.root.querySelectorAll<HTMLElement>(".mu-block-quote").forEach((quote) => {
+        const content = quote.querySelector(":scope > .mu-paragraph > .mu-content");
+        const block = content ? (content as unknown as Record<string, { text?: string }>)[BLOCK_DOM_PROPERTY] : null;
+        const type = extensions.alerts === false ? null : markdownAlertType(block?.text ?? "");
+        quote.classList.toggle("markdown-alert", Boolean(type));
+        for (const candidate of Object.keys(markdownAlertNames)) quote.classList.toggle(`markdown-alert-${candidate.toLowerCase()}`, candidate === type);
+      });
+    });
   }
 
   focus() {
@@ -1109,6 +1363,9 @@ export class MarkdownEditorBridge {
   }
 
   destroy() {
+    document.removeEventListener("selectionchange", this.typewriterListener);
+    window.cancelAnimationFrame(this.typewriterFrame);
+    window.cancelAnimationFrame(this.decorationFrame);
     this.headingCopyLinkObserver.disconnect();
     cancelPendingDiagramRenders(this.root);
     this.muya.off("json-change", this.changeListener);

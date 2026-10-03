@@ -15,7 +15,7 @@ fn owned_decoding_matches_existing_encoding_and_invalid_byte_behavior() {
     ];
     let mut samples: Vec<Vec<u8>> = encodings
         .iter()
-        .map(|encoding| encode_text("中文 hello\r\n尾行", *encoding))
+        .map(|encoding| encode_text("中文 hello\r\n尾行", *encoding).unwrap())
         .collect();
     samples.extend([
         vec![],
