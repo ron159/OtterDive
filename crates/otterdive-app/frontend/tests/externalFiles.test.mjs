@@ -18,7 +18,7 @@ const js = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptT
 function harness(options = {}) {
   const doc = { id: 1, path: '/file.txt', title: 'file.txt', diskRevision: 'old', text: 'local',
     encoding: 'UTF-8', dirty: false, version: 1, ...options.doc };
-  const calls = { prompts: [], alerts: [], reads: 0, saves: [], refreshed: 0, recovery: [], locks: [], closed: 0, reloads: [] };
+  const calls = { prompts: [], alerts: [], reads: 0, saves: [], refreshed: 0, recovery: [], locks: [], closed: 0, reloads: [], persistenceErrors: new Map() };
   const app = { inert: false };
   let modelText = doc.text;
   const model = { getValue: () => modelText, getAlternativeVersionId: () => doc.version, isDisposed: () => !!options.disposed, pushStackElement() {} };
@@ -75,6 +75,8 @@ function harness(options = {}) {
     applyDocumentDto(doc, dto) { Object.assign(doc, dto, { dirty: false, externalRevision: undefined }); calls.refreshed++; },
     analysePanel: { notifyDocumentChanged() {} }, attachEditorModel() {}, renderAll() {}, renderChrome() {},
     scheduleSessionSave() {}, log() {},
+    reportPersistenceError: (key, label, error) => calls.persistenceErrors.set(key, `${label}: ${String(error)}`),
+    clearPersistenceError: key => calls.persistenceErrors.delete(key),
     ensureDocumentModel: () => model,
     withBusy: async (_, task) => task(), Blob,
     cancelDocumentSizeUpdate() {}, applyDetectedDocumentLanguage() {},
@@ -87,6 +89,24 @@ function harness(options = {}) {
   vm.runInContext(js, context);
   return { doc, calls, context, model, check: () => context.checkExternalFiles(), save: automatic => context.saveDocument(doc, false, automatic) };
 }
+
+test('a failed save remains visible and leaves unsaved content intact', async () => {
+  const h = harness({ saveFailure: true, revision: 'old', doc: { dirty: true } });
+  await assert.rejects(h.save(true), /disk full/);
+  assert.equal(h.doc.dirty, true);
+  assert.equal(h.model.getValue(), 'local');
+  assert.match(h.calls.persistenceErrors.get('save:1') ?? '', /file.txt.*disk full/);
+  assert.equal(h.doc.saving, false);
+});
+
+test('a successful save clears its own error without hiding a failed recovery', async () => {
+  const h = harness({ revision: 'old', doc: { dirty: true } });
+  h.calls.persistenceErrors.set('save:1', 'previous save failure');
+  h.calls.persistenceErrors.set('recovery:1', 'recovery failure');
+  assert.equal(await h.save(false), true);
+  assert.equal(h.calls.persistenceErrors.has('save:1'), false);
+  assert.equal(h.calls.persistenceErrors.get('recovery:1'), 'recovery failure');
+});
 
 test('clean file reloads with view position; unchanged file does not reload', async () => {
   const h = harness();

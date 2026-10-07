@@ -326,6 +326,12 @@
                   <button id="closeCurrentFindButton" aria-label="关闭当前文件查找" title="关闭当前文件查找"><span class="icon-slot" data-icon="X"></span></button>
                 </div>
               </div>
+              <div class="current-find-advanced">
+                <label title="识别查找和替换文本中的换行、制表符等转义"><input type="checkbox" id="currentExtendedInput" />扩展（\n、\t）</label>
+                <label><input type="checkbox" id="currentSelectionInput" />仅选区</label>
+                <label><input type="checkbox" id="currentWrapInput" checked />循环查找</label>
+                <label><input type="checkbox" id="currentReverseInput" />反向查找</label>
+              </div>
               <div class="current-find-history-menu hidden" id="currentFindHistoryMenu" role="listbox" aria-label="搜索历史"></div>
             </div>
             <div id="editor"></div>
@@ -1163,6 +1169,9 @@
       </section>
 
       <footer class="statusbar">
+        <div class="persistence-notice hidden" id="persistenceNotice" role="alert">
+          <button id="persistenceErrorButton" title="查看保存错误详情"></button>
+        </div>
         <div class="status-left">
           <span id="statusBusy" aria-live="polite"></span>
           <button class="status-action" id="languageButton" data-menu-trigger aria-label="语言 Plain Text" title="语言 Plain Text"><span data-label>Plain Text</span></button>

@@ -49,6 +49,7 @@ function setup() {
     commitSearchHistory() {},
     activeDocument: () => ({ title: "sample.txt", encoding: "UTF-8" }),
     isMarkdownWysiwygActive: () => false,
+    isSideEditorActive: () => false,
     modelMatches() {
       calls.searches.push(input.value);
       return [{ line: 105, column: 3 }];

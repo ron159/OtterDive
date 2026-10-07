@@ -61,6 +61,13 @@
 .workbench-dialog button:focus-visible, .workbench-dialog select:focus-visible, .workbench-setting input:focus-visible, .workbench-setting select:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .workbench-error { color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }
 .workbench-error:empty { display: none; }
+.persistence-notice { min-width: 0; max-width: 38%; }
+.persistence-notice button {
+  display: block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  border: 0; border-radius: 4px; padding: 3px 6px; color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface)); font: inherit; cursor: pointer;
+}
+.persistence-notice button:focus-visible { outline: 2px solid var(--danger); outline-offset: 1px; }
 .workbench-comparison-legend, .workbench-log-status, .workbench-log-notice { color: var(--text-2); font-size: 12px; }
 .workbench-snapshot-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
 .workbench-snapshot-list li { display: flex; gap: 8px; }
@@ -5968,6 +5975,18 @@ tbody tr.result-active {
 .current-find-bar::-webkit-scrollbar {
   display: none;
 }
+
+.current-find-advanced {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 0 10px 6px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.current-find-advanced label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.current-find-advanced label:has(input:disabled) { opacity: 0.48; cursor: not-allowed; }
 
 .current-find-query {
   width: 320px;

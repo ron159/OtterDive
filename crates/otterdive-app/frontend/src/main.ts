@@ -1,3 +1,4 @@
+import { regexReplacementAt } from "./searchReplacement";
 import { revealReadingMatch } from "./readingSearch";
 import { registerMarkdownLinkCompletions, checkMarkdownLinks } from "./markdownLinkTools";
 import { normalizeWorkbenchPreferences, markdownExtensionPreferences, type WorkbenchPreferences } from "./workbenchPreferences";
@@ -1091,10 +1092,15 @@ const markdownEditorCache = new globalThis.Map<number, MarkdownEditorCacheEntry>
 const markdownEditorPromises = new globalThis.Map<number, Promise<MarkdownEditorCacheEntry | null>>();
 const recoveryTimers = new globalThis.Map<number, number>();
 const recoveryIds = new globalThis.Map<string, number>();
+const persistenceErrors = new globalThis.Map<string, string>();
 let recoveryQueue: Promise<void> = Promise.resolve();
 let restoringRecovery = false;
 let sideEditor: ReturnType<typeof import("./workbenchPanels")["createSideEditor"]> | null = null;
 let sideDocumentId = 0;
+let sideEditorFocused = false;
+let sideBookmarkDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
+let currentSearchSelection: monaco.editor.IEditorDecorationsCollection | null = null;
+let currentSearchSelectionDocumentId = 0;
 let sideScrollSync = false;
 let markdownScrollSyncing = false;
 const markdownNavigation: Array<{ id: number; path?: string | null; line: number; column: number; mode: MarkdownEditMode }> = [];
@@ -1843,8 +1849,8 @@ async function openDroppedFiles(paths: string[]) {
 
 function registerAppCommands() {
   appCommands.clear();
-  const editorOnly = () => isEditorSurfaceFocused() && !isMarkdownWysiwygActive();
-  const markdownOnly = () => isEditorSurfaceFocused() && isMarkdownLikeDocument();
+  const editorOnly = () => isEditorSurfaceFocused() && (isSideEditorActive() || !isMarkdownWysiwygActive());
+  const markdownOnly = () => isEditorSurfaceFocused() && !isSideEditorActive() && isMarkdownLikeDocument();
   const commands: AppCommand[] = [
     command("file.new", "新建文件", "文件", newDocument, { allowInInput: true }),
     command("file.newMarkdown", "新建 Markdown", "文件", newMarkdownDocument, { allowInInput: true }),
@@ -1865,7 +1871,7 @@ function registerAppCommands() {
       allowInInput: true,
       when: () => isMarkdownLikeDocument(),
     }),
-    command("file.close", "关闭当前标签", "文件", async () => { await closeDocument(activeDocument().id); }, { allowInInput: true }),
+    command("file.close", "关闭当前标签", "文件", async () => { await closeDocument(commandDocument().id); }, { allowInInput: true }),
     command("file.reopenClosed", "重新打开已关闭标签", "文件", reopenClosedDocument, {
       allowInInput: true,
       enabled: () => closedDocuments.length > 0,
@@ -2000,6 +2006,13 @@ function markdownCommand(id: string, title: string, action: string, when: () => 
 
 function bindKeybindings() {
   document.addEventListener("keydown", handleGlobalFindKeybinding, true);
+  document.addEventListener("focusin", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("#workbenchSidePane")) sideEditorFocused = true;
+    else if (target?.closest("#editor, #markdownWysiwyg, #markdownPreview, #currentFindDock, #findPopover")) sideEditorFocused = false;
+    else return;
+    renderChrome();
+  });
   $("editor").addEventListener("keydown", handleEditorKeybinding, true);
   $("markdownWysiwyg").addEventListener("keydown", handleEditorKeybinding, true);
 }
@@ -2078,13 +2091,14 @@ function hasMatchingChordPrefix(binding: string, targetIsInput: boolean) {
 
 function commandIsAvailable(item: AppCommand, targetIsInput = false) {
   if (targetIsInput && !item.allowInInput) return false;
-  if (isReadingDocument() && /^(?:edit\.(?:undo|redo|cut|paste|uppercase|lowercase)|editor\.format|markdown\.(?:insert|table|image))/.test(item.id)) return false;
+  if (isReadingDocument(commandDocument()) && /^(?:edit\.(?:undo|redo|cut|paste|uppercase|lowercase)|editor\.format|markdown\.(?:insert|table|image))/.test(item.id)) return false;
   return (item.when?.() ?? true) && (item.enabled?.() ?? true);
 }
 
 async function executeAppCommand(item: AppCommand) {
   closeMenus();
-  await item.run();
+  try { await item.run(); }
+  catch (error) { await showWorkbenchError(error); }
 }
 
 function activeCommandBindings(commandId: string) {
@@ -2108,10 +2122,26 @@ function clearPendingKeybindingChord() {
 
 function isEditorSurfaceFocused() {
   const active = document.activeElement;
-  return active instanceof HTMLElement && Boolean(active.closest("#editor, #markdownWysiwyg"));
+  return active instanceof HTMLElement && Boolean(active.closest("#editor, #markdownWysiwyg, .workbench-side-editor-host"));
+}
+
+function isSideEditorActive() {
+  return sideEditorFocused && Boolean(sideEditor && state.documents.some((doc) => doc.id === sideDocumentId));
+}
+
+function commandDocument() {
+  return (isSideEditorActive() ? state.documents.find((doc) => doc.id === sideDocumentId) : null) ?? activeDocument();
+}
+
+function commandEditor() {
+  return isSideEditorActive() ? sideEditor!.editor : editor;
 }
 
 function bindActions() {
+  $("persistenceErrorButton").addEventListener("click", () => void showAlert({
+    title: "保存或恢复副本未完成", subtitle: "请检查磁盘空间和文件权限，然后重试保存。",
+    body: [...persistenceErrors.values()].join("\n\n"), okLabel: "返回编辑",
+  }));
   bindMarkdownDiagramActions({ isNative: () => isTauriRuntime, documentTitle: () => activeDocument()?.title ?? "Markdown", defaultDirectory: () => preferredDialogDirectory(), notify: log });
   document.addEventListener("contextmenu", (event) => {
     const target = event.target instanceof HTMLElement ? event.target : null;
@@ -2176,12 +2206,10 @@ function bindActions() {
     else newDocument();
   });
   $("findButton").addEventListener("click", () => {
-    setFindView("find");
-    toggleFindOpen({ prefillFromSelection: true });
+    openCurrentFind("find");
   });
   $("replaceButton").addEventListener("click", () => {
-    setFindView("replace");
-    toggleFindOpen({ prefillFromSelection: true });
+    openCurrentFind("replace");
   });
   $("commandButton").addEventListener("click", () => openCommandPalette("commands"));
   $("goToLineButton").addEventListener("click", goToLine);
@@ -2238,8 +2266,23 @@ function bindActions() {
   $("currentFindInput").addEventListener("compositionstart", cancelScheduledCurrentFind);
   $("currentFindInput").addEventListener("compositionend", scheduleCurrentFind);
   $("currentReplaceInput").addEventListener("input", syncCurrentFindControls);
-  ["currentMatchCaseInput", "currentWholeWordInput", "currentRegexInput"].forEach((id) => {
+  ["currentMatchCaseInput", "currentWholeWordInput", "currentWrapInput", "currentReverseInput"].forEach((id) => {
     $(id).addEventListener("change", scheduleCurrentFind);
+  });
+  ["currentRegexInput", "currentExtendedInput"].forEach((id) => {
+    $(id).addEventListener("change", () => {
+      if ($<HTMLInputElement>(id).checked) {
+        $<HTMLInputElement>(id === "currentRegexInput" ? "currentExtendedInput" : "currentRegexInput").checked = false;
+      }
+      scheduleCurrentFind();
+    });
+  });
+  $("currentSelectionInput").addEventListener("change", () => {
+    if ($<HTMLInputElement>("currentSelectionInput").checked) captureCurrentSearchSelection();
+    scheduleCurrentFind();
+  });
+  $("searchSelectionInput").addEventListener("change", () => {
+    if ($<HTMLInputElement>("searchSelectionInput").checked) captureCurrentSearchSelection();
   });
   $("currentAllOpenFilesInput").addEventListener("change", () => {
     syncCurrentFindControls();
@@ -2424,7 +2467,7 @@ function bindActions() {
   });
 
   ["findInput", "replaceInput", "directoryInput", "fileGlobInput", "skipDirsInput", "searchModeInput"].forEach((id) => {
-    $(id).addEventListener("change", scheduleSessionSave);
+    $(id).addEventListener("change", () => { syncSearchControlsToCurrent(); scheduleSessionSave(); });
   });
   $("findInput").addEventListener("keydown", (event) => {
     const keyboardEvent = event as KeyboardEvent;
@@ -2464,7 +2507,7 @@ function bindActions() {
     "recursiveInput",
     "includeHiddenInput",
   ].forEach((id) => {
-    $(id).addEventListener("change", scheduleSessionSave);
+    $(id).addEventListener("change", () => { syncSearchControlsToCurrent(); scheduleSessionSave(); });
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-find-view]").forEach((button) => {
@@ -2565,7 +2608,7 @@ function bindAppMenus() {
   bindMenuAction("menuSaveAsButton", () => void saveAsActive());
   bindMenuAction("menuExportPdfButton", () => void exportActiveMarkdownPdf());
   bindMenuAction("menuPrintButton", () => void printActiveMarkdown());
-  bindMenuAction("menuCloseButton", () => void closeDocument(activeDocument().id));
+  bindMenuAction("menuCloseButton", () => void closeDocument(commandDocument().id));
   bindMenuAction("menuUndoButton", undoEditor);
   bindMenuAction("menuRedoButton", redoEditor);
   bindMenuAction("menuUppercaseButton", transformToUppercase);
@@ -2573,12 +2616,10 @@ function bindAppMenus() {
   bindMenuAction("menuFormatDocumentButton", () => void formatActiveDocument());
   bindMenuAction("menuSelectAllButton", selectAllEditor);
   bindMenuAction("menuFindButton", () => {
-    setFindView("find");
-    toggleFindOpen({ prefillFromSelection: true });
+    openCurrentFind("find");
   });
   bindMenuAction("menuReplaceButton", () => {
-    setFindView("replace");
-    toggleFindOpen({ prefillFromSelection: true });
+    openCurrentFind("replace");
   });
   bindMenuAction("menuFindWorkspaceButton", () => void openWorkspaceFind("workspace-find"));
   bindMenuAction("menuReplaceWorkspaceButton", () => void openWorkspaceFind("workspace-replace"));
@@ -2608,17 +2649,15 @@ function bindNativeMenuListener() {
       "file.save_as": () => void saveAsActive(),
       "file.export_pdf": () => void exportActiveMarkdownPdf(),
       "file.print": () => void printActiveMarkdown(),
-      "file.close": () => void closeDocument(activeDocument().id),
+      "file.close": () => void closeDocument(commandDocument().id),
       "edit.uppercase": transformToUppercase,
       "edit.lowercase": transformToLowercase,
       "edit.format_document": () => void formatActiveDocument(),
       "search.find": () => {
-        setFindView("find");
-        toggleFindOpen({ prefillFromSelection: true });
+        openCurrentFind("find");
       },
       "search.replace": () => {
-        setFindView("replace");
-        toggleFindOpen({ prefillFromSelection: true });
+        openCurrentFind("replace");
       },
       "search.find_workspace": () => void openWorkspaceFind("workspace-find"),
       "search.replace_workspace": () => void openWorkspaceFind("workspace-replace"),
@@ -4102,10 +4141,13 @@ function ensureDocumentModel(doc: OpenDocument) {
     scheduleDocumentSizeUpdate(doc);
     if (doc.id === state.activeId) {
       if (wasDirty !== doc.dirty) renderChrome();
-      else renderDocumentStatus(doc);
+      else renderDocumentStatus();
       if (isOutlineVisible()) renderMarkdownOutline();
       scheduleMarkdownPreviewRender();
       scheduleMarkdownEditorSync(doc);
+    } else if (doc.id === sideDocumentId) {
+      if (wasDirty !== doc.dirty) renderChrome();
+      else if (isSideEditorActive()) renderDocumentStatus(doc);
     }
     analysePanel?.notifyDocumentChanged(doc.id);
     scheduleAutoSave(doc);
@@ -4139,7 +4181,7 @@ function scheduleDocumentSizeUpdate(doc: OpenDocument) {
   const timer = window.setTimeout(() => {
     documentSizeTimers.delete(doc.id);
     doc.fileSize = new Blob([documentText(doc)]).size;
-    if (doc.id === state.activeId) renderDocumentStatus(doc);
+    if (doc.id === commandDocument().id) renderDocumentStatus(doc);
   }, 400);
   documentSizeTimers.set(doc.id, timer);
 }
@@ -4181,7 +4223,12 @@ async function navigateSourceLine(doc: OpenDocument, line: number, column: numbe
 function activateDocument(id: number) {
   const doc = state.documents.find((item) => item.id === id);
   if (!doc) return;
+  sideEditorFocused = false;
   const previous = activeDocument();
+  if (previous?.id !== id) {
+    currentSearchSelection?.clear();
+    currentSearchSelectionDocumentId = 0;
+  }
   if (previous && previous.id !== id) syncActiveBookmarkLines(previous);
   if (previous && previous.id !== id) {
     syncMarkdownModelFromEditor(previous);
@@ -4451,13 +4498,15 @@ function uniquePathsForOpen(paths: string[]) {
 }
 
 async function saveActive() {
-  const doc = activeDocument();
-  await saveDocument(doc, false);
+  const doc = commandDocument();
+  try { await saveDocument(doc, false); }
+  catch (error) { await showWorkbenchError(error); }
 }
 
 async function saveAsActive() {
-  const doc = activeDocument();
-  await saveDocument(doc, true);
+  const doc = commandDocument();
+  try { await saveDocument(doc, true); }
+  catch (error) { await showWorkbenchError(error); }
 }
 
 async function exportActiveMarkdownPdf() {
@@ -4532,6 +4581,7 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
   if (!doc || doc.saving) return false;
   doc.saving = true;
   try {
+    renderChrome();
     syncMarkdownModelFromEditor(doc);
     cancelAutoSave(doc.id);
     if (doc.readOnly) {
@@ -4583,6 +4633,7 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
       }),
       { lockEditor: false },
     );
+    clearPersistenceError(`save:${doc.id}`);
     if (!state.documents.includes(doc) || model.isDisposed()) {
       log(`文件已保存，但标签已关闭：${saved.path ?? path}`);
       return true;
@@ -4626,8 +4677,12 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
     scheduleSessionSave();
     log(`保存 ${doc.title}`);
     return true;
+  } catch (error) {
+    reportPersistenceError(`save:${doc.id}`, `${automatic ? "自动保存" : "保存"}失败：${doc.title}`, error);
+    throw error;
   } finally {
     doc.saving = false;
+    renderChrome();
   }
 }
 
@@ -4753,13 +4808,15 @@ function scheduleAutoSave(doc: OpenDocument) {
 }
 
 async function saveAll() {
-  const activeId = state.activeId;
-  for (const doc of state.documents) {
-    if (!doc.dirty || doc.readOnly) continue;
-    const saved = await saveDocument(doc, false);
-    if (!saved) break;
+  try {
+    for (const doc of [...state.documents]) {
+      if (!state.documents.includes(doc) || !doc.dirty || doc.readOnly) continue;
+      const saved = await saveDocument(doc, false);
+      if (!saved) break;
+    }
+  } catch (error) {
+    await showWorkbenchError(error);
   }
-  activateDocument(activeId);
 }
 
 function setWorkMode(mode: WorkMode) {
@@ -5647,7 +5704,7 @@ function removeCollapsedDirsForDeletedPath(path: string) {
 }
 
 function setLanguage(language: string) {
-  const doc = activeDocument();
+  const doc = commandDocument();
   doc.languageOverride = language;
   doc.language = language;
   if (doc.model) monaco.editor.setModelLanguage(doc.model, language);
@@ -5658,7 +5715,7 @@ function setLanguage(language: string) {
 }
 
 async function useEncoding(encoding: EncodingLabel) {
-  const doc = activeDocument();
+  const doc = commandDocument();
   if (doc.path) {
     if (doc.dirty && !(await askConfirm({
       title: "重新解释编码",
@@ -5687,7 +5744,7 @@ async function useEncoding(encoding: EncodingLabel) {
 }
 
 function convertEncoding(encoding: EncodingLabel) {
-  const doc = activeDocument();
+  const doc = commandDocument();
   if (doc.readOnly || isReadingDocument(doc)) return;
   doc.encoding = encoding;
   doc.encodingStatus = "转换待保存";
@@ -5893,6 +5950,7 @@ function currentSearchSignature(scope = state.searchScope ?? "current") {
 }
 
 async function findNextResult() {
+  if (isSideEditorActive()) { commandEditor().trigger("command", "editor.action.nextMatchFindAction", null); return; }
   cancelScheduledCurrentFind();
   const query = ($("findInput") as HTMLInputElement).value;
   if (!query) {
@@ -5918,6 +5976,7 @@ async function findNextResult() {
 }
 
 async function findPreviousResult() {
+  if (isSideEditorActive()) { commandEditor().trigger("command", "editor.action.previousMatchFindAction", null); return; }
   cancelScheduledCurrentFind();
   const query = ($("findInput") as HTMLInputElement).value;
   if (!query) {
@@ -6163,14 +6222,18 @@ function replaceCurrentFile() {
     return;
   }
   const match = matches[currentReplaceMatchIndex(matches)];
+  const replacementText = replacementForMatch(match.matchedText, query, replacement, model.getValue(monaco.editor.EndOfLinePreference.LF),
+    match.start - (model.getEOL() === "\r\n" ? match.line - 1 : 0), match.lineText, match.column);
+  model.pushStackElement();
   model.pushEditOperations(
     [],
     [{
       range: rangeFromMatch(match),
-      text: replacementForMatch(match.matchedText, query, replacement),
+      text: replacementText,
     }],
     () => null,
   );
+  model.pushStackElement();
   log("当前文件替换 1 处");
   findSelectedDocuments(false, false);
 }
@@ -6202,13 +6265,17 @@ function replaceAllCurrentFile() {
     log("当前文件没有可替换内容");
     return;
   }
+  const source = model.getValue(monaco.editor.EndOfLinePreference.LF);
   const edits = matches
     .map((match) => ({
       range: rangeFromMatch(match),
-      text: replacementForMatch(match.matchedText, query, replacement),
+      text: replacementForMatch(match.matchedText, query, replacement, source,
+        match.start - (model.getEOL() === "\r\n" ? match.line - 1 : 0), match.lineText, match.column),
     }))
     .reverse();
+  model.pushStackElement();
   model.pushEditOperations([], edits, () => null);
+  model.pushStackElement();
   log(`当前文件全部替换 ${edits.length} 处`);
   findCurrent(false);
 }
@@ -6230,6 +6297,9 @@ function currentReplaceContext() {
     log(`当前文件只读，已跳过替换：${isReadingDocument(doc) ? "阅读模式" : doc.readOnlyReason ?? "只读"}`);
     return null;
   }
+  const patternError = currentSearchPatternError(query);
+  setCurrentFindError(patternError);
+  if (patternError) return null;
   commitSearchHistory();
   commitReplaceHistory();
   return { doc, model: ensureDocumentModel(doc), query, replacement };
@@ -6295,15 +6365,22 @@ function replaceOpenDocuments() {
       ($("matchCaseInput") as HTMLInputElement).checked,
       null,
       true,
+      Number.MAX_SAFE_INTEGER,
     ).filter((match) => matchAllowed(doc, match, false));
+    const source = model.getValue(monaco.editor.EndOfLinePreference.LF);
     const edits = matches
       .map((match) => ({
         range: match.range,
-        text: replacementForMatch(match.matches?.[0] ?? model.getValueInRange(match.range), query, replacement),
+        text: replacementForMatch(model.getValueInRange(match.range), query, replacement, source,
+          model.getOffsetAt({ lineNumber: match.range.startLineNumber, column: match.range.startColumn })
+            - (model.getEOL() === "\r\n" ? match.range.startLineNumber - 1 : 0),
+          model.getLineContent(match.range.startLineNumber), match.range.startColumn),
       }))
       .reverse();
     if (edits.length > 0) {
+      model.pushStackElement();
       model.pushEditOperations([], edits, () => null);
+      model.pushStackElement();
       total += edits.length;
     }
   }
@@ -6675,15 +6752,24 @@ function matchAllowed(doc: OpenDocument, match: monaco.editor.FindMatch, allowSe
   const start = match.range.startColumn - 1;
   const end = match.range.endColumn - 1;
   const before = start > 0 ? line[start - 1] : "";
-  const after = end < line.length ? line[end] : "";
+  const endLine = model.getLineContent(match.range.endLineNumber);
+  const after = end < endLine.length ? endLine[end] : "";
   return !isWordChar(before) && !isWordChar(after);
 }
 
 function activeSearchSelectionRange(doc: OpenDocument) {
   if (doc.id !== activeDocument().id) return null;
+  if (currentSearchSelectionDocumentId === doc.id) return currentSearchSelection?.getRange(0) ?? null;
   const selection = editor.getSelection();
   if (!selection || selection.isEmpty()) return null;
   return selection;
+}
+
+function captureCurrentSearchSelection() {
+  const selection = editor.getSelection();
+  currentSearchSelection ??= editor.createDecorationsCollection();
+  currentSearchSelectionDocumentId = activeDocument().id;
+  currentSearchSelection.set(selection && !selection.isEmpty() ? [{ range: selection, options: {} }] : []);
 }
 
 function rangeContainsRange(outer: monaco.IRange, inner: monaco.IRange) {
@@ -6701,8 +6787,8 @@ function comparePosition(lineA: number, columnA: number, lineB: number, columnB:
 function selectionSignature() {
   if (!($("searchSelectionInput") as HTMLInputElement).checked) return "all";
   if (isMarkdownWysiwygActive() && markdownEditor) return markdownEditor.searchSelectionSignature();
-  const selection = editor.getSelection();
-  if (!selection || selection.isEmpty()) return "empty-selection";
+  const selection = activeSearchSelectionRange(activeDocument());
+  if (!selection) return "empty-selection";
   return [
     selection.startLineNumber,
     selection.startColumn,
@@ -6732,16 +6818,12 @@ function focusMonacoFind(query: string) {
   editor.trigger("find", "actions.find", null);
 }
 
-function replacementForMatch(matched: string, query: string, replacement: string) {
+function replacementForMatch(matched: string, query: string, replacement: string, source = matched, start = 0, lineText?: string, column = 1) {
   const mode = getSearchMode();
   if (mode === "extended") return translateExtended(replacement);
   if (mode !== "regex") return replacement;
-  const flags = ($("matchCaseInput") as HTMLInputElement).checked ? "g" : "gi";
-  try {
-    return matched.replace(new RegExp(query, flags), replacement);
-  } catch {
-    return replacement;
-  }
+  return regexReplacementAt(source, start, matched.replace(/\r\n/g, "\n"), query, replacement,
+    ($("matchCaseInput") as HTMLInputElement).checked, lineText, column);
 }
 
 function getSearchMode(): SearchMode {
@@ -6966,12 +7048,12 @@ function normalizeFontMode(value: unknown, fallback: FontMode): FontMode {
   return value === "preset" || value === "custom" ? value : fallback;
 }
 
-function applyEditorPerformanceProfile(doc: OpenDocument) {
+function applyEditorPerformanceProfile(doc: OpenDocument, target = editor) {
   const large = doc.largeFile || doc.fileSize > 2 * 1024 * 1024;
   const editorFont = resolveEditorFontStack();
   document.documentElement.style.setProperty("--editor-font", editorFont);
   document.documentElement.style.setProperty("--editor-font-size", `${state.fontSize}px`);
-  editor.updateOptions({
+  target.updateOptions({
     readOnly: doc.readOnly || isReadingDocument(doc),
     lineNumbers: "on",
     readOnlyMessage: { value: doc.readOnlyReason || "当前文档只读" },
@@ -6993,8 +7075,10 @@ function applyEditorPerformanceProfile(doc: OpenDocument) {
     wordBasedSuggestions: large ? "off" : "currentDocument",
     suggestOnTriggerCharacters: !large,
   });
-  markdownEditor?.updateAppearance(state.darkMode, state.fontSize, editorFont);
-  markdownEditor?.setReadOnly(editorBusyDepth > 0 || doc.readOnly || isReadingDocument(doc));
+  if (target === editor) {
+    markdownEditor?.updateAppearance(state.darkMode, state.fontSize, editorFont);
+    markdownEditor?.setReadOnly(editorBusyDepth > 0 || doc.readOnly || isReadingDocument(doc));
+  }
 }
 
 function markdownSearchOptions(): MarkdownSearchOptions {
@@ -7253,7 +7337,7 @@ function reorderDocumentTabs(sourceId: number, targetId: number, placeAfter: boo
 }
 
 function renderChrome() {
-  const doc = activeDocument();
+  const doc = commandDocument();
   const sideDoc = state.documents.find((item) => item.id === sideDocumentId);
   if (sideEditor && sideDoc) sideEditor.updateOptions({ readOnly: sideDoc.readOnly || isReadingDocument(sideDoc) });
   setButtonLabel("wordWrapButton", "自动换行", `自动换行 ${state.wordWrap ? "已开启" : "已关闭"}`);
@@ -7263,7 +7347,7 @@ function renderChrome() {
   setButtonLabel("encodingButton", doc.encoding, `编码 ${doc.encoding}`);
   $("encodingNotice").textContent = `${doc.encodingStatus} ${doc.encoding}`;
   setButtonLabel("lineEndingButton", doc.lineEnding || "LF", `行尾 ${doc.lineEnding || "LF"}`);
-  const markdownDocument = isMarkdownLikeDocument(doc);
+  const markdownDocument = !isSideEditorActive() && isMarkdownLikeDocument(doc);
   $("markdownModeControl").classList.toggle("hidden", !markdownDocument);
   document.querySelectorAll<HTMLButtonElement>("[data-markdown-mode]").forEach((button) => {
     const active = markdownDocument && button.dataset.markdownMode === state.markdownEditMode;
@@ -7283,7 +7367,7 @@ function renderChrome() {
   $<HTMLButtonElement>("menuPrintButton").disabled = !markdownDocument;
   $<HTMLButtonElement>("menuUppercaseButton").disabled = doc.readOnly || isReadingDocument(doc);
   $<HTMLButtonElement>("menuLowercaseButton").disabled = doc.readOnly || isReadingDocument(doc);
-  const formattingDisabled = doc.readOnly || isReadingDocument(doc) || isMarkdownWysiwygActive(doc);
+  const formattingDisabled = doc.readOnly || isReadingDocument(doc) || (!isSideEditorActive() && isMarkdownWysiwygActive(doc));
   $<HTMLButtonElement>("formatDocumentButton").disabled = formattingDisabled;
   $<HTMLButtonElement>("menuFormatDocumentButton").disabled = formattingDisabled;
   ["menuMarkdownWysiwygButton", "menuMarkdownSplitButton", "menuMarkdownSourceButton"].forEach((id) => {
@@ -7306,17 +7390,17 @@ function renderChrome() {
   renderShortcutHints();
 }
 
-function renderDocumentStatus(doc = activeDocument()) {
+function renderDocumentStatus(doc = commandDocument()) {
   $("statusBusy").innerHTML = state.busyMessage
     ? `<span class="busy-pill">${iconSvg("LoaderCircle")}${escapeHtml(state.busyMessage)}</span>`
     : state.keybindingHint
       ? `<span class="keybinding-hint">${escapeHtml(state.keybindingHint)}</span>`
       : "";
-  $("statusDocumentState").textContent = [doc.readOnly ? "只读" : "", doc.encodingStatus]
+  $("statusDocumentState").textContent = [doc.readOnly ? "只读" : doc.saving ? "正在保存" : doc.dirty ? "未保存" : "", doc.encodingStatus]
     .filter(Boolean)
     .join(" · ");
   $("statusRight").innerHTML = [
-    `第 ${(editor.getPosition()?.lineNumber ?? 1)} 行，第 ${editor.getPosition()?.column ?? 1} 列`,
+    `第 ${(commandEditor().getPosition()?.lineNumber ?? 1)} 行，第 ${commandEditor().getPosition()?.column ?? 1} 列`,
     `${documentLineCount(doc)} 行`,
     `${documentValueLength(doc)} 字符`,
     `${formatBytes(doc.fileSize)}`,
@@ -7529,7 +7613,7 @@ function renderMenus() {
 function renderLanguageList(filter = "") {
   const languageList = $("languageList");
   const query = filter.trim().toLowerCase();
-  const current = activeDocument().language;
+  const current = commandDocument().language;
   const options = languageOptions().filter(([id, label, hint]) => {
     if (!query) return true;
     return `${id} ${label} ${hint}`.toLowerCase().includes(query);
@@ -7989,7 +8073,7 @@ function renderEncodingList(id: string, handler: (encoding: EncodingLabel) => vo
   for (const encoding of encodings) {
     const row = document.createElement("button");
     row.className = "menu-row";
-    row.innerHTML = `<span>${activeDocument().encoding === encoding ? "●" : ""}</span><strong>${encoding}</strong><small>${id === "useEncodingList" ? "解释" : "改写"}</small>`;
+    row.innerHTML = `<span>${commandDocument().encoding === encoding ? "●" : ""}</span><strong>${encoding}</strong><small>${id === "useEncodingList" ? "解释" : "改写"}</small>`;
     row.addEventListener("click", () => void handler(encoding));
     list.appendChild(row);
   }
@@ -8001,14 +8085,14 @@ function renderLineEndingList() {
   for (const lineEnding of ["LF", "CRLF", "CR"]) {
     const row = document.createElement("button");
     row.className = "menu-row";
-    row.innerHTML = `<span>${activeDocument().lineEnding === lineEnding ? "●" : ""}</span><strong>${lineEnding}</strong><small>转换</small>`;
+    row.innerHTML = `<span>${commandDocument().lineEnding === lineEnding ? "●" : ""}</span><strong>${lineEnding}</strong><small>转换</small>`;
     row.addEventListener("click", () => setLineEnding(lineEnding));
     list.appendChild(row);
   }
 }
 
 function setLineEnding(lineEnding: string) {
-  const doc = activeDocument();
+  const doc = commandDocument();
   if (doc.readOnly || isReadingDocument(doc)) return;
   syncMarkdownModelFromEditor(doc);
   const model = ensureDocumentModel(doc);
@@ -8077,6 +8161,8 @@ function resetEditorView() {
 function applyEditorSettings() {
   applyWorkbenchAppearance();
   applyEditorPerformanceProfile(activeDocument());
+  const sideDoc = state.documents.find((doc) => doc.id === sideDocumentId);
+  if (sideEditor && sideDoc) applyEditorPerformanceProfile(sideDoc, sideEditor.editor);
 }
 
 function applyMarkdownContentWidth() {
@@ -8604,7 +8690,7 @@ function renderSearchDecorations() {
 function rangeFromMatch(match: TextMatchDto) {
   const parts = match.matchedText.split(/\r\n|\n|\r/);
   if (parts.length === 1) {
-    return new monaco.Range(match.line, match.column, match.line, match.column + Math.max(1, match.matchedText.length));
+    return new monaco.Range(match.line, match.column, match.line, match.column + match.matchedText.length);
   }
   return new monaco.Range(
     match.line,
@@ -8860,7 +8946,7 @@ function syncMarkdownModelFromEditor(doc = activeDocument()) {
 }
 
 function syncMarkdownEditorFromModel(doc = activeDocument(), focus = false) {
-  if (!markdownEditor || !isMarkdownLikeDocument(doc)) return;
+  if (!markdownEditor || doc.id !== state.activeId || !isMarkdownLikeDocument(doc)) return;
   const preserveHistory = markdownEditorDocumentId === doc.id;
   markdownEditorDocumentId = doc.id;
   markdownEditor.setMarkdown(documentText(doc), focus, preserveHistory);
@@ -9156,8 +9242,8 @@ function attachEditorModel(doc: OpenDocument) {
 }
 
 function toggleBookmark() {
-  const doc = activeDocument();
-  const localLine = editor.getPosition()?.lineNumber;
+  const doc = commandDocument();
+  const localLine = commandEditor().getPosition()?.lineNumber;
   if (!doc || !localLine) return;
   const line = localLine;
   const key = documentSessionKey(doc);
@@ -9172,36 +9258,41 @@ function toggleBookmark() {
 }
 
 function navigateBookmark(delta: number) {
-  const doc = activeDocument();
+  const targetEditor = commandEditor();
+  const doc = commandDocument();
   const lines = state.bookmarks[documentSessionKey(doc)] ?? [];
   if (lines.length === 0) {
     log("当前文档没有书签");
     return;
   }
-  const current = (editor.getPosition()?.lineNumber ?? 1);
+  const current = (targetEditor.getPosition()?.lineNumber ?? 1);
   const ordered = delta > 0 ? lines : [...lines].reverse();
   const target = ordered.find((line) => delta > 0 ? line > current : line < current) ?? ordered[0];
-  editor.setPosition({ lineNumber: target, column: 1 });
-  editor.revealLineInCenterIfOutsideViewport(target);
-  editor.focus();
+  targetEditor.setPosition({ lineNumber: target, column: 1 });
+  targetEditor.revealLineInCenterIfOutsideViewport(target);
+  targetEditor.focus();
 }
 
 function renderBookmarkDecorations() {
-  if (!bookmarkDecorations || !editor?.getModel()) return;
-  const doc = activeDocument();
-  const lineCount = documentLineCount(doc);
-  const lines = (state.bookmarks[documentSessionKey(doc)] ?? []).filter((line) => line >= 1 && line <= lineCount);
-  bookmarkDecorations.set(lines.map((line) => ({
-    range: new monaco.Range(line, 1, line, 1),
-    options: {
-      isWholeLine: true,
-      linesDecorationsClassName: "otterdive-bookmark-glyph",
-      overviewRuler: {
-        color: state.darkMode ? "#858bff" : "#4f46e5",
-        position: monaco.editor.OverviewRulerLane.Left,
+  const targets = [{ doc: activeDocument(), decorations: bookmarkDecorations }];
+  const sideDoc = state.documents.find((doc) => doc.id === sideDocumentId);
+  if (sideDoc && sideBookmarkDecorations) targets.push({ doc: sideDoc, decorations: sideBookmarkDecorations });
+  for (const { doc, decorations } of targets) {
+    if (!doc.model || !decorations) continue;
+    const lineCount = documentLineCount(doc);
+    const lines = (state.bookmarks[documentSessionKey(doc)] ?? []).filter((line) => line >= 1 && line <= lineCount);
+    decorations.set(lines.map((line) => ({
+      range: new monaco.Range(line, 1, line, 1),
+      options: {
+        isWholeLine: true,
+        linesDecorationsClassName: "otterdive-bookmark-glyph",
+        overviewRuler: {
+          color: state.darkMode ? "#858bff" : "#4f46e5",
+          position: monaco.editor.OverviewRulerLane.Left,
+        },
       },
-    },
-  })));
+    })));
+  }
 }
 
 function renderAnalyseBookmarkDecorations() {
@@ -9224,10 +9315,12 @@ function renderAnalyseBookmarkDecorations() {
 }
 
 function syncActiveBookmarkLines(doc = activeDocument()) {
-  if (!bookmarkDecorations || editor.getModel() !== doc.model) return;
+  const decorations = editor.getModel() === doc.model ? bookmarkDecorations
+    : sideEditor?.editor.getModel() === doc.model ? sideBookmarkDecorations : null;
+  if (!decorations) return;
   const lines: number[] = [];
-  for (let index = 0; index < bookmarkDecorations.length; index += 1) {
-    const range = bookmarkDecorations.getRange(index);
+  for (let index = 0; index < decorations.length; index += 1) {
+    const range = decorations.getRange(index);
     if (range) lines.push(range.startLineNumber);
   }
   const key = documentSessionKey(doc);
@@ -9346,6 +9439,7 @@ function toggleFindOpen(options: { prefillFromSelection?: boolean } = {}) {
   const workspace = isWorkspaceFindView();
   const input = $(workspace ? "findInput" : "currentFindInput") as HTMLInputElement;
   const currentFindAlreadyOpen = !$("currentFindDock").classList.contains("hidden");
+  if (!workspace && !currentFindAlreadyOpen) captureCurrentSearchSelection();
   if (!workspace && !currentFindAlreadyOpen && isMarkdownWysiwygActive() && markdownEditor) {
     markdownEditor.captureSearchSelection();
   }
@@ -9411,6 +9505,10 @@ function syncSearchControlsToCurrent() {
   ($("currentMatchCaseInput") as HTMLInputElement).checked = ($("matchCaseInput") as HTMLInputElement).checked;
   ($("currentWholeWordInput") as HTMLInputElement).checked = ($("wholeWordInput") as HTMLInputElement).checked;
   ($("currentRegexInput") as HTMLInputElement).checked = getSearchMode() === "regex";
+  ($("currentExtendedInput") as HTMLInputElement).checked = getSearchMode() === "extended";
+  ($("currentSelectionInput") as HTMLInputElement).checked = ($("searchSelectionInput") as HTMLInputElement).checked;
+  ($("currentWrapInput") as HTMLInputElement).checked = ($("wrapSearchInput") as HTMLInputElement).checked;
+  ($("currentReverseInput") as HTMLInputElement).checked = ($("reverseSearchInput") as HTMLInputElement).checked;
   ($("currentAllOpenFilesInput") as HTMLInputElement).checked = searchAllOpenFilesEnabled();
   renderCurrentFindMode();
   renderCurrentFindCount();
@@ -9421,7 +9519,11 @@ function syncCurrentFindControls() {
   ($("replaceInput") as HTMLInputElement).value = ($("currentReplaceInput") as HTMLInputElement).value;
   ($("matchCaseInput") as HTMLInputElement).checked = ($("currentMatchCaseInput") as HTMLInputElement).checked;
   ($("wholeWordInput") as HTMLInputElement).checked = ($("currentWholeWordInput") as HTMLInputElement).checked;
-  setSearchMode(($("currentRegexInput") as HTMLInputElement).checked ? "regex" : "literal");
+  setSearchMode(($("currentRegexInput") as HTMLInputElement).checked ? "regex"
+    : ($("currentExtendedInput") as HTMLInputElement).checked ? "extended" : "literal");
+  ($("searchSelectionInput") as HTMLInputElement).checked = ($("currentSelectionInput") as HTMLInputElement).checked;
+  ($("wrapSearchInput") as HTMLInputElement).checked = ($("currentWrapInput") as HTMLInputElement).checked;
+  ($("reverseSearchInput") as HTMLInputElement).checked = ($("currentReverseInput") as HTMLInputElement).checked;
   ($("allOpenFilesInput") as HTMLInputElement).checked = ($("currentAllOpenFilesInput") as HTMLInputElement).checked;
   scheduleSessionSave();
 }
@@ -9440,6 +9542,7 @@ function renderSearchScopeControls() {
   $("currentFindCount").classList.toggle("multi-file", allOpenFiles);
   const selectionInput = $<HTMLInputElement>("searchSelectionInput");
   selectionInput.disabled = allOpenFiles;
+  $<HTMLInputElement>("currentSelectionInput").disabled = allOpenFiles;
   const selectionLabel = selectionInput.closest("label");
   selectionLabel?.classList.toggle("scope-disabled", allOpenFiles);
   if (selectionLabel) selectionLabel.title = allOpenFiles ? "多文件搜索不使用当前选区" : "选取范围内";
@@ -9863,11 +9966,23 @@ function openQuickOpen() {
 }
 
 function openCurrentFind(view: "find" | "replace") {
+  if (isSideEditorActive()) {
+    commandEditor().trigger("command", view === "find" ? "actions.find" : "editor.action.startFindReplaceAction", null);
+    return;
+  }
   setFindView(view);
   toggleFindOpen({ prefillFromSelection: true });
 }
 
 function runEditorAction(actionId: string, successMessage?: string) {
+  if (isSideEditorActive()) {
+    const doc = commandDocument();
+    if ((doc.readOnly || isReadingDocument(doc)) && !["editor.action.selectAll", "editor.action.clipboardCopyAction"].includes(actionId)) return;
+    commandEditor().trigger("command", actionId, null);
+    commandEditor().focus();
+    if (successMessage) log(successMessage);
+    return;
+  }
   if (isReadingDocument()) {
     if (actionId === "editor.action.selectAll") {
       const body = $("markdownPreview").querySelector(".markdown-preview-body");
@@ -9906,12 +10021,12 @@ function isFormattingActionSupported(doc = activeDocument()) {
 }
 
 async function formatActiveDocument() {
-  const doc = activeDocument();
-  if (doc.readOnly || isReadingDocument(doc) || isMarkdownWysiwygActive()) return;
-  await formatDocument(doc);
+  const doc = commandDocument();
+  if (doc.readOnly || isReadingDocument(doc) || (!isSideEditorActive() && isMarkdownWysiwygActive())) return;
+  await formatDocument(doc, commandEditor());
 }
 
-async function formatDocument(doc: OpenDocument) {
+async function formatDocument(doc: OpenDocument, target = editor) {
   const model = ensureDocumentModel(doc);
   const language = model.getLanguageId() || doc.language || "plaintext";
   const label = languageLabel(language);
@@ -9920,16 +10035,16 @@ async function formatDocument(doc: OpenDocument) {
     // onLanguage registers these providers asynchronously after a language switch.
     if (language === "html") await import("monaco-editor/esm/vs/language/html/htmlMode");
     if (["css", "scss", "less"].includes(language)) await import("monaco-editor/esm/vs/language/css/cssMode");
-    const action = editor.getAction("editor.action.formatDocument");
+    const action = target.getAction("editor.action.formatDocument");
     if (["html", "css", "scss", "less"].includes(language)) {
       const deadline = performance.now() + 3000;
       while (action && !action.isSupported() && performance.now() < deadline
-        && !model.isDisposed() && doc.id === state.activeId && model.getLanguageId() === language) {
+        && !model.isDisposed() && target.getModel() === model && model.getLanguageId() === language) {
         await new Promise<void>((resolve) => window.setTimeout(resolve, 25));
       }
     }
     if (doc.readOnly || model.isDisposed() || model.getLanguageId() !== language
-      || model.getVersionId() !== version || doc.id !== state.activeId) return;
+      || model.getVersionId() !== version || target.getModel() !== model) return;
     if (!(language === "sql" || supportsDprintLanguage(language) || action?.isSupported())) {
       const message = `${label} 暂无可用格式化器`;
       log(message);
@@ -9944,7 +10059,7 @@ async function formatDocument(doc: OpenDocument) {
 
     const before = model.getValue();
     await preserveHistory(doc, before);
-    if (doc.readOnly || isReadingDocument(doc) || model.isDisposed() || doc.id !== state.activeId
+    if (doc.readOnly || isReadingDocument(doc) || model.isDisposed() || target.getModel() !== model
       || model.getLanguageId() !== language || model.getVersionId() !== version) return;
     model.pushStackElement();
     if (!before.trim()) {
@@ -9986,7 +10101,7 @@ async function formatDocument(doc: OpenDocument) {
       await action?.run();
     }
     model.pushStackElement();
-    editor.focus();
+    target.focus();
     log(model.getValue() === before ? `${label} 已是规范格式` : `${label} 已格式化`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -10008,6 +10123,7 @@ function normalizeFormattedText(text: string, model: monaco.editor.ITextModel, o
 }
 
 function undoEditor() {
+  if (isSideEditorActive()) { runEditorAction("undo"); return; }
   if (isReadingDocument()) return;
   if (isMarkdownWysiwygActive() && markdownEditor) {
     markdownEditor.undo();
@@ -10019,6 +10135,7 @@ function undoEditor() {
 }
 
 function redoEditor() {
+  if (isSideEditorActive()) { runEditorAction("redo"); return; }
   if (isReadingDocument()) return;
   if (isMarkdownWysiwygActive() && markdownEditor) {
     markdownEditor.redo();
@@ -10030,6 +10147,7 @@ function redoEditor() {
 }
 
 function selectAllEditor() {
+  if (isSideEditorActive()) { runEditorAction("editor.action.selectAll"); return; }
   if (isMarkdownWysiwygActive() && markdownEditor) {
     markdownEditor.selectAll();
     return;
@@ -10046,10 +10164,11 @@ function transformToLowercase() {
 }
 
 async function goToLine() {
-  const model = editor.getModel();
+  const targetEditor = commandEditor();
+  const model = targetEditor.getModel();
   if (!model) return;
   const lineCount = model.getLineCount();
-  let value = String(editor.getPosition()?.lineNumber ?? 1);
+  let value = String(targetEditor.getPosition()?.lineNumber ?? 1);
   let subtitle = `当前文档共 ${lineCount} 行`;
 
   while (true) {
@@ -10060,15 +10179,16 @@ async function goToLine() {
       value,
       inputMode: "numeric",
     });
+    if (targetEditor.getModel() !== model || model.isDisposed()) return;
     if (input === null) {
-      editor.focus();
+      targetEditor.focus();
       return;
     }
     const lineNumber = Number(input);
     if (Number.isInteger(lineNumber) && lineNumber >= 1 && lineNumber <= lineCount) {
-      editor.setPosition({ lineNumber, column: 1 });
-      editor.revealLineInCenterIfOutsideViewport(lineNumber);
-      editor.focus();
+      targetEditor.setPosition({ lineNumber, column: 1 });
+      targetEditor.revealLineInCenterIfOutsideViewport(lineNumber);
+      targetEditor.focus();
       log(`跳转到第 ${lineNumber} 行`);
       return;
     }
@@ -10408,17 +10528,24 @@ async function importKeybindings() {
 }
 
 async function pastePlainText() {
-  if (isMarkdownWysiwygActive() && markdownEditor) {
+  const doc = commandDocument();
+  const target = commandEditor();
+  const model = target.getModel();
+  if (doc.readOnly || isReadingDocument(doc)) return;
+  if (!isSideEditorActive() && isMarkdownWysiwygActive() && markdownEditor) {
     await markdownEditor.pasteAsPlainText();
     return;
   }
   try {
     const text = await navigator.clipboard.readText();
-    const selections = editor.getSelections() ?? [];
-    editor.executeEdits("paste-plain", selections.map((range) => ({ range, text, forceMoveMarkers: true })));
-    editor.focus();
+    if (!model || model.isDisposed() || target.getModel() !== model || doc.readOnly || isReadingDocument(doc)) return;
+    const selections = target.getSelections() ?? [];
+    target.pushUndoStop();
+    target.executeEdits("paste-plain", selections.map((range) => ({ range, text, forceMoveMarkers: true })));
+    target.pushUndoStop();
+    target.focus();
   } catch (error) {
-    log(`粘贴纯文本失败：${String(error)}`);
+    await showWorkbenchError(`粘贴纯文本失败：${String(error)}`);
   }
 }
 
@@ -10962,7 +11089,8 @@ function scheduleSessionSave() {
   if (state.restoring) return;
   window.clearTimeout(sessionTimer);
   sessionTimer = window.setTimeout(() => {
-    void saveSession().catch((error) => log(`保存会话失败：${String(error)}`));
+    void saveSession().then(() => clearPersistenceError("session"))
+      .catch((error) => reportPersistenceError("session", "保存会话失败", error));
   }, sessionSaveDelayMs());
 }
 
@@ -10979,6 +11107,8 @@ async function saveSession() {
   const activeBeforeSave = activeDocument();
   if (activeBeforeSave) syncMarkdownModelFromEditor(activeBeforeSave);
   if (activeBeforeSave) syncActiveBookmarkLines(activeBeforeSave);
+  const sideDoc = state.documents.find((doc) => doc.id === sideDocumentId);
+  if (sideDoc) syncActiveBookmarkLines(sideDoc);
   if (activeBeforeSave) activeBeforeSave.viewState = editor.saveViewState() ?? undefined;
   const active = activeDocument();
   const snapshot: SessionSnapshot = {
@@ -11634,10 +11764,13 @@ function writingStatisticsLabel(doc: OpenDocument) {
     writingStatsCache.set(doc.id, cache);
   }
   const nativeSelection = window.getSelection();
-  const selection = isReadingDocument(doc)
+  const sideSelection = isSideEditorActive() ? commandEditor().getSelection() : null;
+  const selection = isSideEditorActive()
+    ? sideSelection ? doc.model?.getValueInRange(sideSelection) : ""
+    : isReadingDocument(doc)
     ? nativeSelection?.anchorNode && $("markdownPreview").contains(nativeSelection.anchorNode) ? nativeSelection.toString() : ""
     : isMarkdownWysiwygActive(doc) ? markdownEditor?.getSelectionText() : editor.getSelection() && doc.model?.getValueInRange(editor.getSelection()!);
-  const stats = selection ? writingStats(selection, !isMarkdownWysiwygActive(doc), state.workbench.includeCodeInStats) : cache.value;
+  const stats = selection ? writingStats(selection, isSideEditorActive() || !isMarkdownWysiwygActive(doc), state.workbench.includeCodeInStats) : cache.value;
   return `${selection ? "选区 " : ""}${stats.chinese} 汉字 · ${stats.words} 词 · 约 ${stats.readingMinutes} 分钟`;
 }
 
@@ -11687,13 +11820,19 @@ function scheduleRecovery(doc: OpenDocument) {
 async function persistRecovery(doc: OpenDocument) {
   if (!state.documents.includes(doc) || !doc.dirty || !state.workbench.recoveryEnabled) return;
   syncMarkdownModelFromEditor(doc);
-  const saved = await invoke<SnapshotEntry>("save_snapshot", { request: {
-    kind: "recovery", key: recoveryKey(doc), title: doc.title, path: doc.path ?? null,
-    text: documentText(doc), encoding: doc.encoding,
-    metadata: JSON.stringify({ diskRevision: doc.diskRevision, lineEnding: doc.lineEnding, language: doc.language, languageOverride: doc.languageOverride, draftId: doc.draftId, sourceEncoding: doc.sourceEncoding }),
-    retentionDays: state.workbench.retentionDays,
-  } });
-  recoveryIds.set(saved.key, saved.id);
+  try {
+    const saved = await invoke<SnapshotEntry>("save_snapshot", { request: {
+      kind: "recovery", key: recoveryKey(doc), title: doc.title, path: doc.path ?? null,
+      text: documentText(doc), encoding: doc.encoding,
+      metadata: JSON.stringify({ diskRevision: doc.diskRevision, lineEnding: doc.lineEnding, language: doc.language, languageOverride: doc.languageOverride, draftId: doc.draftId, sourceEncoding: doc.sourceEncoding }),
+      retentionDays: state.workbench.retentionDays,
+    } });
+    recoveryIds.set(saved.key, saved.id);
+    clearPersistenceError(`recovery:${doc.id}`);
+  } catch (error) {
+    reportPersistenceError(`recovery:${doc.id}`, `恢复副本保存失败：${doc.title}`, error);
+    throw error;
+  }
 }
 
 function discardRecovery(doc: OpenDocument, key = recoveryKey(doc)) {
@@ -11930,6 +12069,24 @@ function bindWorkbenchActions() {
   $("markdownPreview").addEventListener("scroll", syncMarkdownSourceScroll, { passive: true });
 }
 
+function reportPersistenceError(key: string, label: string, error: unknown) {
+  const message = `${label}：${error instanceof Error ? error.message : String(error)}`;
+  persistenceErrors.set(key, message);
+  log(message);
+  renderPersistenceErrors();
+}
+
+function clearPersistenceError(key: string) {
+  if (persistenceErrors.delete(key)) renderPersistenceErrors();
+}
+
+function renderPersistenceErrors() {
+  const messages = [...persistenceErrors.values()];
+  $("persistenceNotice").classList.toggle("hidden", messages.length === 0);
+  $("persistenceErrorButton").textContent = messages.length > 1 ? `${messages.length} 项保存异常 · 查看详情` : messages[0] ?? "";
+  $("persistenceErrorButton").title = messages.join("\n");
+}
+
 async function showWorkbenchError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   log(message);
@@ -11996,21 +12153,48 @@ async function compareWithOtherFile() {
 async function openSideEditor() {
   const doc = activeDocument(); syncMarkdownModelFromEditor(doc);
   const { createSideEditor } = await import("./workbenchPanels");
-  if (sideEditor) { sideEditor.setModel(ensureDocumentModel(doc)); sideEditor.updateOptions({ readOnly: doc.readOnly || isReadingDocument(doc) }); sideDocumentId = doc.id; return; }
+  if (sideEditor) {
+    const previous = state.documents.find((item) => item.id === sideDocumentId);
+    if (previous) syncActiveBookmarkLines(previous);
+    sideEditor.setModel(ensureDocumentModel(doc));
+    sideDocumentId = doc.id;
+    applyEditorPerformanceProfile(doc, sideEditor.editor);
+    renderBookmarkDecorations();
+    return;
+  }
   const host = document.createElement("aside"); host.id = "workbenchSidePane";
   $("editorArea").append(host);
   $("editorArea").classList.add("side-editor-open");
-  const close = () => { sideEditor?.dispose(); sideEditor = null; sideDocumentId = 0; host.remove(); $("editorArea").classList.remove("side-editor-open"); requestEditorLayout(); };
-  sideEditor = createSideEditor(host, ensureDocumentModel(doc), { ...workbenchEditorOptions(), readOnly: doc.readOnly || isReadingDocument(doc), onClose: close });
+  host.addEventListener("keydown", handleEditorKeybinding, true);
+  sideEditor = createSideEditor(host, ensureDocumentModel(doc), {
+    ...workbenchEditorOptions(), readOnly: doc.readOnly || isReadingDocument(doc), onClose: closeSideEditor,
+  });
   sideDocumentId = doc.id;
+  sideBookmarkDecorations = sideEditor.editor.createDecorationsCollection();
+  sideEditor.editor.onDidChangeCursorPosition(renderChrome);
+  sideEditor.editor.onDidBlurEditorWidget(() => {
+    const current = state.documents.find((item) => item.id === sideDocumentId);
+    if (current) saveOnFocusChange(current);
+  });
+  sideEditor.editor.onDidChangeCursorSelection(() => renderDocumentStatus());
+  applyEditorPerformanceProfile(doc, sideEditor.editor);
+  renderBookmarkDecorations();
   sideEditor.setSync(editor, sideScrollSync);
   requestEditorLayout();
 }
 
+function closeSideEditor() {
+  const doc = state.documents.find((item) => item.id === sideDocumentId);
+  if (doc) syncActiveBookmarkLines(doc);
+  sideBookmarkDecorations?.clear(); sideBookmarkDecorations = null;
+  sideEditor?.dispose(); sideEditor = null; sideDocumentId = 0; sideEditorFocused = false;
+  $("workbenchSidePane")?.remove();
+  $("editorArea").classList.remove("side-editor-open");
+  renderChrome(); requestEditorLayout();
+}
+
 function closeSideEditorFor(doc: OpenDocument) {
-  if (sideDocumentId !== doc.id) return;
-  sideEditor?.dispose(); sideEditor = null; sideDocumentId = 0; $("workbenchSidePane")?.remove();
-  $("editorArea").classList.remove("side-editor-open"); requestEditorLayout();
+  if (sideDocumentId === doc.id) closeSideEditor();
 }
 
 async function openLargeFileReader() {

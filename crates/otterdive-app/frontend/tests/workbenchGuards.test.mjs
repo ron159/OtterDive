@@ -42,13 +42,14 @@ test("replace-all skips reading Markdown while editing eligible text documents",
   const markdown = { id: 1 }, plain = { id: 2 }, readOnly = { id: 3, readOnly: true };
   const edited = [];
   const context = harness(["replaceOpenDocuments"], {
+    monaco: { editor: { EndOfLinePreference: { LF: 1 } } },
     state: { documents: [markdown, plain, readOnly] }, $: id => ({ value: id === "findInput" ? "source" : "replacement", checked: false }),
     currentSearchPatternError: () => "", setCurrentFindError: noop, commitSearchHistory: noop, commitReplaceHistory: noop,
     activeDocument: () => markdown, syncMarkdownModelFromEditor: noop, isReadingDocument: doc => doc.id === 1,
     getSearchMode: () => "literal", editorSearchQuery: value => value, matchAllowed: () => true, replacementForMatch: () => "replacement", findOpenDocuments: noop, log: noop,
     ensureDocumentModel(doc) {
       assert.equal(doc, plain);
-      return { findMatches: () => [{ range: {}, matches: ["source"] }], pushEditOperations: () => edited.push(doc.id) };
+      return { findMatches: () => [{ range: {}, matches: ["source"] }], getValue: () => "source", getLineContent: () => "source", getEOL: () => "\n", getValueInRange: () => "source", getOffsetAt: () => 0, pushStackElement: noop, pushEditOperations: () => edited.push(doc.id) };
     },
   });
   context.replaceOpenDocuments();
@@ -84,15 +85,26 @@ test("workspace close clears recovery, parallel views and sessions only for its 
   assert.equal(state.documents.length, 1); assert.equal(state.documents[0], standalone);
   assert.equal(sessions.has(1), false); assert.equal(stats.has(1), false); assert.equal(sessions.has(2), true); assert.equal(stats.has(2), true);
 });
-test("rebinding a side editor to a reading document enforces read-only", async () => {
-  const doc = { id: 8, readOnly: false };
-  let readOnly;
-  const context = harness(["openSideEditor"], {
-    activeDocument: () => doc, syncMarkdownModelFromEditor: noop, createSideEditor: noop,
-    sideEditor: { setModel: noop, updateOptions: options => { readOnly = options.readOnly; } },
-    ensureDocumentModel: () => ({}), isReadingDocument: () => true,
-  });
-  await context.openSideEditor(); assert.equal(readOnly, true);
+test("rebinding a side editor applies reading protection and shared display preferences", async () => {
+  for (const reading of [true, false]) {
+    const doc = { id: 8, readOnly: false };
+    let options;
+    const context = harness(["openSideEditor", "applyEditorPerformanceProfile"], {
+      activeDocument: () => doc, syncMarkdownModelFromEditor: noop, createSideEditor: noop,
+      state: { documents: [doc], wordWrap: true, fontSize: 19, minimap: true, renderWhitespace: "all" },
+      sideDocumentId: 0, syncActiveBookmarkLines: noop, renderBookmarkDecorations: noop,
+      sideEditor: { setModel: noop, editor: { updateOptions: value => { options = value; } } },
+      editor: { updateOptions() { assert.fail("side settings changed primary editor"); } },
+      document: { documentElement: { style: { setProperty: noop } } },
+      resolveEditorFontStack: () => "monospace", editorLineHeight: () => 24,
+      ensureDocumentModel: () => ({}), isReadingDocument: () => reading,
+    });
+    await context.openSideEditor();
+    assert.equal(options.readOnly, reading);
+    assert.equal(options.wordWrap, "on");
+    assert.equal(options.fontSize, 19);
+    assert.equal(options.renderWhitespace, "all");
+  }
 });
 
 test("metadata conversions respect reading mode and schedule recovery when editable", () => {
@@ -100,7 +112,7 @@ test("metadata conversions respect reading mode and schedule recovery when edita
     const doc = { id: 1, encoding: "UTF-8", lineEnding: "LF", readOnly: false };
     let recovery = 0, edits = 0;
     const context = harness(["convertEncoding", "setLineEnding"], {
-      activeDocument: () => doc, isReadingDocument: () => reading, closeMenus: noop, renderAll: noop,
+      activeDocument: () => doc, commandDocument: () => doc, isReadingDocument: () => reading, closeMenus: noop, renderAll: noop,
       scheduleAutoSave: noop, scheduleSessionSave: noop, log: noop, syncMarkdownModelFromEditor: noop, syncMarkdownEditorFromModel: noop,
       scheduleRecovery: () => recovery++, ensureDocumentModel: () => ({ getValue: () => "one\ntwo", pushStackElement: noop }),
       normalizeLineEndings: () => "one\r\ntwo", replaceModelText: () => edits++,
