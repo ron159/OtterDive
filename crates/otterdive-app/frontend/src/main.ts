@@ -6456,6 +6456,7 @@ function bindResultAnalysis() {
   });
   $("resultAnalysisCsv").addEventListener("click", () => void exportResultAnalysis("csv"));
   $("resultAnalysisJson").addEventListener("click", () => void exportResultAnalysis("json"));
+  $("clearResultsButton").addEventListener("click", clearSearchResults);
 }
 
 function renderResultAnalysis(body: HTMLElement, summary: HTMLElement) {
@@ -8257,7 +8258,7 @@ function renderSearchSidebarResults() {
   const source = $<HTMLSelectElement>("resultAnalysisSource");
   const options = `<option value="current">当前搜索结果</option>` + state.searchResultHistory.map(entry => `<option value="${entry.id}">${escapeHtml(entry.query)}</option>`).join("");
   if (source.innerHTML !== options) { const selected = source.value; source.innerHTML = options; if ([...source.options].some(option => option.value === selected)) source.value = selected; }
-  $("resultAnalysisToolbar").classList.toggle("hidden", !state.results || workspaceSearchIsBusy() || state.panel === "preview");
+  $("resultAnalysisToolbar").classList.toggle("hidden", (!state.results && state.searchResultHistory.length === 0) || workspaceSearchIsBusy() || state.panel === "preview");
   if (analysedRows && !workspaceSearchIsBusy() && state.panel !== "preview") { renderResultAnalysis(body, summary); return; }
 
   const busy = workspaceSearchIsBusy();
@@ -8337,13 +8338,11 @@ function renderSearchSidebarResults() {
   }
   if (state.results.total === 0) {
     summary.textContent = searchReportSummary(state.results);
-    body.innerHTML = `<div class="find-result-empty"><span>这次没捞到内容，可检查大小写、全词或文件过滤。</span><button class="tool-button" id="clearResultsButton">${iconSvg("X")}<span>清除</span></button></div>`;
-    $("clearResultsButton").addEventListener("click", clearSearchResults);
+    body.innerHTML = `<div class="find-result-empty"><span>这次没捞到内容，可检查大小写、全词或文件过滤。</span></div>`;
     return;
   }
   summary.textContent = searchReportSummary(state.results);
-  body.innerHTML = `<div class="find-result-actions"><button class="tool-button" id="clearResultsButton">${iconSvg("X")}<span>清除</span></button></div><div class="find-result-list" id="workspaceSearchResultList" data-current-search-results="true"></div>`;
-  $("clearResultsButton").addEventListener("click", clearSearchResults);
+  body.innerHTML = `<div class="find-result-list" id="workspaceSearchResultList" data-current-search-results="true"></div>`;
   const list = $("workspaceSearchResultList");
   list.addEventListener("click", (event) => {
     const row = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-result-index]");
@@ -8358,8 +8357,7 @@ function renderSearchResultHistory(body: HTMLElement, summary: HTMLElement, rend
   const entries = state.searchResultHistory;
   const latest = entries[entries.length - 1];
   summary.textContent = `${entries.length} 次搜索 · ${searchReportSummary(latest.report)}`;
-  body.innerHTML = `<div class="find-result-actions"><button class="tool-button" id="clearResultsButton">${iconSvg("X")}<span>清除全部</span></button></div><div class="find-result-history-list" id="searchResultHistoryList"></div>`;
-  $("clearResultsButton").addEventListener("click", clearSearchResults);
+  body.innerHTML = `<div class="find-result-history-list" id="searchResultHistoryList"></div>`;
   const historyList = $("searchResultHistoryList");
   historyList.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;

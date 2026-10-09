@@ -33,7 +33,7 @@
   --editor-font: "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
 }
 
-.workbench-setting { grid-template-columns: minmax(160px, 1fr) minmax(80px, 240px); }
+.settings-row.workbench-setting { grid-template-columns: minmax(160px, 1fr) minmax(80px, 240px); }
 .workbench-setting > input[type="checkbox"] { justify-self: end; width: 18px; height: 18px; accent-color: var(--primary); }
 .workbench-setting > input:not([type="checkbox"]), .workbench-setting > select {
   min-width: 0; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
@@ -94,7 +94,7 @@
 .high-contrast { --line: currentColor; --line-soft: currentColor; --text-3: var(--text); --text-2: var(--text); }
 .high-contrast :focus-visible { outline: 3px solid var(--primary) !important; outline-offset: 2px; }
 @media (max-width: 900px) {
-  .workbench-setting { grid-template-columns: minmax(140px, 1fr) minmax(75px, 180px); }
+  .settings-row.workbench-setting { grid-template-columns: minmax(140px, 1fr) minmax(75px, 180px); }
   #workbenchSidePane { min-width: 200px; }
   .workbench-dialog { padding: 14px; }
 }
@@ -7029,7 +7029,8 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 }
 
 .bottom-results-content .find-results-pane:has(.result-analysis-toolbar:not(.hidden)) { grid-template-rows: 36px auto minmax(0, 1fr); }
-.result-analysis-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); max-height: 110px; overflow: auto; }
+.result-analysis-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); max-height: 110px; overflow: auto; font-size: 12px; }
+.result-analysis-toolbar .tool-button { height: 28px; }
 .result-analysis-toolbar input:not([type="checkbox"]) { flex: 1; min-width: 180px; }
 .result-analysis-toolbar label { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; }
 .result-analysis-toolbar input, .result-analysis-toolbar select { color: inherit; background: var(--input-surface); border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
@@ -7070,6 +7071,7 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 }
 
 .document-outline {
+  --outline-spring: cubic-bezier(.22, 1.35, .36, 1);
   position: relative;
   grid-row: 1;
   grid-column: 2;
@@ -7080,6 +7082,13 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   min-width: 0;
   max-height: calc(100% - 80px);
   color: var(--text-2);
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  .document-outline {
+    /* Damped spring: quick expansion, a small overshoot, then a soft return. */
+    --outline-spring: linear(0, .1103, .3409, .5857, .7891, .9318, 1.0161, 1.0548, 1.0632, 1.0549, 1.0399, 1.0246, 1.0121, 1.0035, .9986, .9964, .996, .9966, .9976, .9985, 1);
+  }
 }
 
 .outline-left .document-outline {
@@ -7121,7 +7130,7 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  transition: opacity 180ms ease, transform 220ms ease;
+  transition: opacity 180ms ease, transform 500ms var(--outline-spring);
 }
 
 .outline-mark {
@@ -7133,7 +7142,7 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   opacity: .35;
   transform: scaleX(.5);
   transform-origin: left center;
-  transition: transform 260ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, background-color 180ms ease;
+  transition: transform 500ms var(--outline-spring), opacity 180ms ease, background-color 180ms ease;
 }
 
 .document-outline .outline-row:is(:hover, :focus-visible),
@@ -7153,6 +7162,9 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   transform: translateX(2px);
 }
 .document-outline .outline-row:active .outline-mark {
+  transform: scaleX(.75) scaleY(1.5);
+}
+.document-outline .outline-row[aria-current]:active .outline-mark {
   transform: scaleX(.9) scaleY(1.5);
 }
 .document-outline .outline-row[aria-current] span {
@@ -7177,8 +7189,9 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 
 .outline-options {
   position: absolute;
-  top: -32px;
+  top: -28px;
   right: 12px;
+  width: 24px;
   z-index: 10;
 }
 .outline-left .outline-options {
@@ -7186,17 +7199,32 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   right: auto;
 }
 .outline-options summary {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
   list-style: none;
   cursor: pointer;
-  padding: 2px 8px;
-  font-size: 20px;
-  line-height: 24px;
+  padding: 0;
+  border-radius: 4px;
   color: var(--text-3);
+}
+.outline-options summary:is(:hover, :focus-visible),
+.outline-options[open] summary {
+  color: var(--text-2);
+  background: var(--surface-2);
+}
+.outline-options summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 .outline-options summary::-webkit-details-marker {
   display: none;
 }
 .outline-options-body {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
   display: grid;
   gap: 8px;
   width: 156px;
@@ -7205,6 +7233,10 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   border: 1px solid var(--line-soft);
   border-radius: 6px;
   font-size: 12px;
+}
+.outline-left .outline-options-body {
+  left: 0;
+  right: auto;
 }
 .outline-options-body button,
 .outline-options-body select {
