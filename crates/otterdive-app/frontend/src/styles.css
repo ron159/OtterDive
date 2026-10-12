@@ -3476,6 +3476,8 @@ body.dark .markdown-preview .token.variable {
   min-height: 0;
   overflow: auto;
   padding: 6px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .find-result-actions {
@@ -5860,7 +5862,14 @@ tbody tr.result-active {
   padding: 4px 12px;
   border: 0;
   border-radius: 0;
+  cursor: text;
+  -webkit-user-select: text;
   user-select: text;
+}
+
+.find-result-row:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 
 .find-result-row:hover {

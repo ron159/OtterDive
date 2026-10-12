@@ -16,9 +16,12 @@ const javascript = ts.transpileModule(renderer.getText(ast), {
 
 test("renders every ordinary search result beyond the former 400-row limit", () => {
   class Element {
+    constructor(tagName) { this.tagName = tagName; }
     children = [];
     dataset = {};
+    attributes = {};
     isConnected = true;
+    setAttribute(name, value) { this.attributes[name] = value; }
     appendChild(child) { this.children.push(child); }
     set innerHTML(value) {
       this.html = value;
@@ -36,7 +39,7 @@ test("renders every ordinary search result beyond the former 400-row limit", () 
   };
   const list = new Element();
   const context = vm.createContext({
-    document: { createElement: () => new Element() },
+    document: { createElement: tagName => new Element(tagName) },
     window: { requestAnimationFrame: callback => frames.push(callback) },
     performance: { now: () => 0 },
     state: { results: report, activeResultIndex: 0 },
@@ -52,6 +55,7 @@ test("renders every ordinary search result beyond the former 400-row limit", () 
 
   const rows = list.children.flatMap(group => group.lastElementChild.children);
   assert.equal(rows.length, report.total);
+  assert.ok(rows.every(row => row.tagName === "div" && row.attributes.role === "button" && row.tabIndex === 0));
   assert.equal(rows[0].dataset.resultIndex, "0");
   assert.equal(rows.at(-1).dataset.resultIndex, "1000");
   assert.equal(list.children.length, 2);
@@ -111,4 +115,56 @@ test("clicking a result keeps the results scroll position while navigating to it
   assert.equal(selected.has("result-active"), true);
   assert.equal(context.state.activeResultIndex, 1);
   assert.equal(vm.runInContext("searchResultNavigationDepth", context), 0);
+});
+
+test("search-result keyboard activation preserves native copy shortcuts", () => {
+  const handler = ast.statements.find(node =>
+    ts.isFunctionDeclaration(node) && node.name?.text === "handleSearchResultKeydown"
+  );
+  assert.ok(handler);
+  const javascript = ts.transpileModule(handler.getText(ast), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  let activations = 0;
+  class Element {
+    closest() { return this; }
+    click() { activations += 1; }
+  }
+  const row = new Element();
+  const context = vm.createContext({ HTMLElement: Element });
+  vm.runInContext(javascript, context);
+  for (const key of ["Enter", " "]) {
+    let prevented = false;
+    context.handleSearchResultKeydown({ key, target: row, preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true);
+  }
+  assert.equal(activations, 2);
+  context.handleSearchResultKeydown({ key: "c", ctrlKey: true, target: row,
+    preventDefault: () => assert.fail("copy must use the native text selection") });
+  context.handleSearchResultKeydown({ key: " ", repeat: true, target: row, preventDefault: () => {} });
+  context.handleSearchResultKeydown({ key: "Enter", target: {}, preventDefault: () => assert.fail("unrelated targets keep their keyboard behavior") });
+  assert.equal(activations, 2);
+});
+
+test("drag-selected result text prevents mouse navigation without blocking keyboard activation", () => {
+  const guard = ast.statements.find(node =>
+    ts.isFunctionDeclaration(node) && node.name?.text === "mouseClickHasTextSelection"
+  );
+  assert.ok(guard);
+  const javascript = ts.transpileModule(guard.getText(ast), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const textNode = {};
+  const row = { contains: node => node === textNode };
+  let selection = { isCollapsed: false, anchorNode: textNode, focusNode: {} };
+  const context = vm.createContext({ window: { getSelection: () => selection } });
+  vm.runInContext(javascript, context);
+  assert.equal(context.mouseClickHasTextSelection({ detail: 1 }, row), true);
+  selection = { isCollapsed: false, anchorNode: {}, focusNode: textNode };
+  assert.equal(context.mouseClickHasTextSelection({ detail: 1 }, row), true);
+  assert.equal(context.mouseClickHasTextSelection({ detail: 0 }, row), false);
+  selection = { isCollapsed: true, anchorNode: textNode, focusNode: textNode };
+  assert.equal(context.mouseClickHasTextSelection({ detail: 1 }, row), false);
+  selection = { isCollapsed: false, anchorNode: {}, focusNode: {} };
+  assert.equal(context.mouseClickHasTextSelection({ detail: 1 }, row), false);
 });

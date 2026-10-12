@@ -2226,6 +2226,7 @@ function bindActions() {
   $("closeBottomResultsButton").addEventListener("click", closeBottomResults);
   $("editorArea").addEventListener("wheel", handleEditorWheelZoom, { passive: false });
   $("findResultsBody").addEventListener("wheel", handleSearchResultWheel, { passive: false });
+  $("findResultsBody").addEventListener("keydown", handleSearchResultKeydown);
   $("findCurrentButton").addEventListener("click", () => findSelectedDocuments(true));
   $("findNextButton").addEventListener("click", () => void findNextResult());
   $("findPreviousButton").addEventListener("click", () => void findPreviousResult());
@@ -6065,6 +6066,15 @@ function handleSearchResultHorizontalScroll(event: WheelEvent) {
   resultList.scrollLeft += event.deltaX;
 }
 
+function handleSearchResultKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  const row = target?.closest<HTMLElement>('.find-result-row[role="button"]');
+  if (!row) return;
+  event.preventDefault();
+  if (!event.repeat) row.click();
+}
+
 async function openSearchResult(index: number, revealInResults = true) {
   const items = flattenSearchResults();
   if (items.length === 0) return;
@@ -6462,8 +6472,9 @@ function bindResultAnalysis() {
 function renderResultAnalysis(body: HTMLElement, summary: HTMLElement) {
   const rows = analysedRows!;
   summary.textContent = `二次分析 · ${rows.length} 条 · 保留原始文件位置`;
-  body.innerHTML = `<div class="find-result-list">${rows.slice(0, analysisVisibleRows).map((row, index) => `<button class="find-result-row" data-analysis-row="${index}"><span class="find-result-line">${row.line}:${row.column}</span><span class="find-result-preview">${escapeHtml(row.text)}</span><small>${escapeHtml(row.path)}</small></button>`).join("")}</div>${rows.length > analysisVisibleRows ? '<button class="tool-button" id="moreAnalysisRows">继续显示</button>' : ""}`;
-  body.querySelectorAll<HTMLElement>("[data-analysis-row]").forEach(button => button.addEventListener("click", () => {
+  body.innerHTML = `<div class="find-result-list">${rows.slice(0, analysisVisibleRows).map((row, index) => `<div class="find-result-row" role="button" tabindex="0" data-analysis-row="${index}"><span class="find-result-line">${row.line}:${row.column}</span><span class="find-result-preview">${escapeHtml(row.text)}</span><small>${escapeHtml(row.path)}</small></div>`).join("")}</div>${rows.length > analysisVisibleRows ? '<button class="tool-button" id="moreAnalysisRows">继续显示</button>' : ""}`;
+  body.querySelectorAll<HTMLElement>("[data-analysis-row]").forEach(button => button.addEventListener("click", (event) => {
+    if (mouseClickHasTextSelection(event, button)) return;
     const row = rows[Number(button.dataset.analysisRow)];
     void openResult(row.path, row.line, row.column);
   }));
@@ -8271,7 +8282,9 @@ function renderSearchSidebarResults() {
     const list = $("streamSearchResults");
     list.addEventListener("click", (event) => {
       const row = (event.target as HTMLElement).closest<HTMLElement>("[data-result-index]");
-      if (row) void openSearchResult(Number(row.dataset.resultIndex), false);
+      if (row && !mouseClickHasTextSelection(event, row)) {
+        void openSearchResult(Number(row.dataset.resultIndex), false);
+      }
     });
     if (state.results) renderProgressiveSearchResults(state.results, list, renderVersion);
     return;
@@ -8345,7 +8358,7 @@ function renderSearchSidebarResults() {
   body.innerHTML = `<div class="find-result-list" id="workspaceSearchResultList" data-current-search-results="true"></div>`;
   const list = $("workspaceSearchResultList");
   list.addEventListener("click", (event) => {
-    const row = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-result-index]");
+    const row = (event.target as HTMLElement).closest<HTMLElement>("[data-result-index]");
     if (row && !mouseClickHasTextSelection(event, row)) {
       void openSearchResult(Number(row.dataset.resultIndex ?? "0"), false);
     }
@@ -8368,7 +8381,7 @@ function renderSearchResultHistory(body: HTMLElement, summary: HTMLElement, rend
       renderSearchSidebarResults();
       return;
     }
-    const row = target.closest<HTMLButtonElement>("[data-search-batch-id][data-result-index]");
+    const row = target.closest<HTMLElement>("[data-search-batch-id][data-result-index]");
     if (row && !mouseClickHasTextSelection(event, row)) {
       const batchId = Number(row.dataset.searchBatchId ?? "0");
       const resultIndex = Number(row.dataset.resultIndex ?? "0");
@@ -8487,9 +8500,12 @@ function renderProgressiveSearchResults(
         rows = group.lastElementChild as HTMLElement;
       }
       const match = hit.matches[matchIndex];
-      const row = document.createElement("button");
+      // WebKit does not allow dragging a text selection through native buttons.
+      const row = document.createElement("div");
       const active = report === state.results && resultIndex === state.activeResultIndex;
       row.className = `find-result-row ${active ? "result-active" : ""}`;
+      row.setAttribute("role", "button");
+      row.tabIndex = 0;
       row.dataset.resultIndex = String(resultIndex);
       if (batchId !== undefined) row.dataset.searchBatchId = String(batchId);
       row.innerHTML = `<span class="find-result-line">${match.line}:${match.column}</span><span class="find-result-preview">${highlightMatchLine(match)}</span>`;
