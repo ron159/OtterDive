@@ -4,3 +4,5 @@ tests/analyse-compat/expected/*.json text eol=lf
 tests/analyse-compat/cases/*.json text eol=lf
 tests/analyse-compat/reference/*.json text eol=lf
 tests/analyse-compat/reference/*.ps1 text eol=crlf
+# Patch context must retain its leading spaces and original whitespace.
+crates/otterdive-app/frontend/vendor/marktext-muya/integration.patch text eol=lf -whitespace

@@ -1,7 +1,11 @@
+export type { ISerializedHistory } from './history';
 export type { ILocale } from './i18n/types';
-export { de, en, es, fr, ja, ko, pt, tr, zhCN, zhTW } from './locales';
 
+export { de, en, es, fr, ja, ko, nl, pt, ru, tr, zhCN, zhTW } from './locales';
 export { Muya } from './muya';
+export type { IMatch, IReplaceOption, ISearchOption } from './search/types';
+export type { IIndexCursor } from './selection/offsetCursor';
+export type { IHistorySelection, IPublicCursorInput } from './selection/types';
 export type { ITocItem } from './state/getTOC';
 export { MarkdownToHtml } from './state/markdownToHtml';
 export { renderToStaticHTML } from './state/renderToStaticHTML';
@@ -24,10 +28,13 @@ export { ParagraphFrontButton } from './ui/paragraphFrontButton';
 export { ParagraphFrontMenu } from './ui/paragraphFrontMenu';
 export { ParagraphQuickInsertMenu } from './ui/paragraphQuickInsertMenu';
 export { PreviewToolBar } from './ui/previewToolBar';
+export type { IPreviewDiagramPayload } from './ui/previewToolBar';
 export { default as TableChessboard } from './ui/tableChessboard';
 export { TableColumnToolbar } from './ui/tableColumnToolbar';
 export { TableDragBar } from './ui/tableDragBar';
 export { TableRowColumMenu } from './ui/tableRowColumMenu';
+export { renderDiagramForExport } from './utils/diagram/render';
+export type { IExportRenderOptions } from './utils/diagram/render';
 export type { IImageInfo } from './utils/image';
 export { getImageInfo } from './utils/image';
 export { escapeHTML, sanitize, unescapeHTML, wordCount } from './utils/index';

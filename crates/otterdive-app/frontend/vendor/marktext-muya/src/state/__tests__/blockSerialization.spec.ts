@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
+import type Parent from '../../block/base/parent';
 import type TreeNode from '../../block/base/treeNode';
 import type CodeBlock from '../../block/commonMark/codeBlock';
 import type { Nullable } from '../../types';
+import type { ICodeBlockState } from '../types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Muya } from '../../muya';
 import { MarkdownToState } from '../markdownToState';
@@ -15,8 +17,10 @@ import ExportMarkdown from '../stateToMarkdown';
 function roundTrip(md: string): string {
     const states = new MarkdownToState({
         footnote: false,
-        math: true,
-        isGitlabCompatibilityEnabled: false,
+        texMathDollars: true,
+        texMathGfm: false,
+        texMathSingleBackslash: false,
+        texMathDoubleBackslash: false,
         trimUnnecessaryCodeBlockEmptyLines: false,
         frontMatter: true,
     }).generate(md);
@@ -26,8 +30,10 @@ function roundTrip(md: string): string {
 function parse(md: string) {
     return new MarkdownToState({
         footnote: false,
-        math: true,
-        isGitlabCompatibilityEnabled: false,
+        texMathDollars: true,
+        texMathGfm: false,
+        texMathSingleBackslash: false,
+        texMathDoubleBackslash: false,
         trimUnnecessaryCodeBlockEmptyLines: false,
         frontMatter: true,
     }).generate(md);
@@ -132,6 +138,60 @@ line 3
 `;
         expect(roundTrip(md)).toBe(md);
     });
+
+    it('round-trips a tilde-fenced code block with a language tag', () => {
+        const md = `~~~js
+const x = 1;
+~~~
+`;
+        expect(roundTrip(md)).toBe(md);
+    });
+
+    it('round-trips a tilde-fenced code block without a language tag', () => {
+        const md = `~~~
+plain code
+~~~
+`;
+        expect(roundTrip(md)).toBe(md);
+    });
+
+    it('keeps the tilde fence when its info string contains backticks', () => {
+        // CommonMark §4.5 Example 146: a tilde info string may contain
+        // backticks and tildes; the fence character must not be rewritten.
+        const md = `~~~aa \`\`\` ~~~
+foo
+~~~
+`;
+        expect(roundTrip(md)).toBe(md);
+    });
+
+    it('always records fenceChar for fenced blocks', () => {
+        const tilde = parse('~~~js\nx\n~~~\n')[0] as ICodeBlockState;
+        expect(tilde.meta).toEqual({ type: 'fenced', lang: 'js', fenceChar: '~' });
+
+        const backtick = parse('```js\nx\n```\n')[0] as ICodeBlockState;
+        expect(backtick.meta).toEqual({ type: 'fenced', lang: 'js', fenceChar: '`' });
+
+        // Indented blocks have no fence, so they never carry the field.
+        const indented = parse('    x\n')[0] as ICodeBlockState;
+        expect(indented.meta.fenceChar).toBeUndefined();
+    });
+
+    it('grows the tilde fence past an interior run of the same character', () => {
+        const md = `~~~~
+~~~
+~~~~
+`;
+        expect(roundTrip(md)).toBe(md);
+    });
+
+    it('switches to a tilde fence when a backtick fence carries a backtick in its info string', () => {
+        const out = new ExportMarkdown({ listIndentation: 1 }).generate([
+            { name: 'code-block', meta: { type: 'fenced', lang: 'a`b', fenceChar: '`' }, text: 'x' },
+        ]);
+        expect(out).toContain('~~~a`b');
+        expect(out).toContain('~~~\n');
+    });
 });
 
 describe('stateToMarkdown — blockquote round-trip', () => {
@@ -210,6 +270,30 @@ describe('stateToMarkdown — table edge cases', () => {
     });
 });
 
+describe('muya getMarkdown — ordered list source markers', () => {
+    // `getMarkdown` serializes the JSON state, which only sees block metadata
+    // once an edit re-inserts the list from `block.getState()` (as toggling a
+    // loose list or indenting does). Replacing the list with its clone forces
+    // that path without changing the list's structure.
+    it('preserves repeated ordered markers after the list is rebuilt from its blocks (#4772)', () => {
+        const md = `Below is the numbered list:
+
+1. One
+1. Two
+1. Three
+
+Text after numbered list.
+`;
+        const muya = bootMuya(md);
+        const list = muya.editor.scrollPage!.find(1) as Parent;
+
+        list.replaceWith(list.clone());
+        muya.flush();
+
+        expect(muya.getMarkdown()).toBe(md);
+    });
+});
+
 describe('markdownToState — indented code block', () => {
     it('parses a 4-space-indented block as a code-block with meta.type "indented"', () => {
         const states = parse('    code\n');
@@ -261,6 +345,7 @@ describe('codeBlock — setting lang promotes an indented block to fenced', () =
             if (state.name !== 'code-block')
                 throw new Error('expected a code-block state');
             expect(state.meta.type).toBe('fenced');
+            expect(state.meta.fenceChar).toBe('`');
         });
     });
 

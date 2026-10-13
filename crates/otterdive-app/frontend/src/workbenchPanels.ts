@@ -1,6 +1,6 @@
-import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
-import "monaco-editor/esm/vs/editor/browser/widget/diffEditor/diffEditor.contribution";
-import "monaco-editor/esm/vs/editor/contrib/find/browser/findController";
+import * as monaco from "monaco-editor/editor";
+import "monaco-editor/features/diffEditor/register";
+import "monaco-editor/features/find/register";
 
 let nextDialogId = 0;
 

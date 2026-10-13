@@ -30,11 +30,16 @@ export interface IMuyaOptions {
     spellcheckEnabled: boolean;
     spellcheckHideMarks: boolean;
     superSubScript: boolean;
-    highlight?: boolean;
     mathEquationLabels?: Record<string, string>;
     footnote: boolean;
-    math: boolean;
-    isGitlabCompatibilityEnabled: boolean;
+    texMathDollars: boolean;
+    texMathGfm: boolean;
+    texMathSingleBackslash: boolean;
+    texMathDoubleBackslash: boolean;
+    highlightSyntax: boolean;
+    inlineDiff: boolean;
+    multilineBlockquote: boolean;
+    softNewlineAsSpace: boolean;
     autoMoveCheckedToEnd: boolean;
     disableHtml: boolean;
     locale: {

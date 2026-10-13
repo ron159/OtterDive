@@ -31,7 +31,13 @@ export type Rules = Record<string, RegExp>;
 export interface ITokenizerFacOptions {
     superSubScript: boolean;
     footnote: boolean;
-    highlight?: boolean;
+    texMathDollars: boolean;
+    texMathGfm: boolean;
+    texMathSingleBackslash: boolean;
+    texMathDoubleBackslash: boolean;
+    highlightSyntax: boolean;
+    inlineDiff?: boolean;
+
 }
 
 export interface ITokenizerOptions {
@@ -55,6 +61,8 @@ export type Token
         | CodeEmojiMathToken
         | DelToken
         | MarkToken
+        | InlineDiffToken
+
         | SuperSubScriptToken
         | FootnoteIdentifierToken
         | ImageToken
@@ -130,7 +138,20 @@ export type DelToken = IBaseToken & {
     backlash: string;
 };
 
-export type MarkToken = Omit<DelToken, 'type'> & { type: 'mark' };
+export type MarkToken = IBaseToken & {
+    type: 'mark';
+    marker: string;
+    children: Token[];
+    backlash: string;
+};
+
+export type InlineDiffToken = IBaseToken & {
+    type: 'inline_diff';
+    marker: string;
+    content: string;
+    backlash: string;
+};
+
 
 export type SuperSubScriptToken = IBaseToken & {
     type: 'super_sub_script';

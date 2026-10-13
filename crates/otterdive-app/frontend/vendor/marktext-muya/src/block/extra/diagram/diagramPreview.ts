@@ -10,6 +10,8 @@ import {
     repairDisconnectedMermaidClusterEdges,
     runMermaidWithCompatibility,
 } from '../../../utils/diagram/mermaidCompat';
+import { finalizeRenderedDiagram } from '../../../utils/diagram/render';
+
 import logger from '../../../utils/logger';
 import Parent from '../../base/parent';
 
@@ -326,9 +328,11 @@ async function renderDiagram({
     }
 }
 
+
 class DiagramPreview extends Parent {
     private _code: string;
     private _type: string;
+    private _cancelFinalize: (() => void) | null = null;
     static override blockName = 'diagram-preview';
 
     static create(muya: Muya, state: IDiagramState) {
@@ -383,6 +387,13 @@ class DiagramPreview extends Parent {
         if (this._code !== code)
             this._code = code;
 
+        // A previous render may still be waiting for its `<svg>`; it must not
+        // describe whatever this one puts in its place.
+        this._cancelFinalize?.();
+        this._cancelFinalize = null;
+        this.domNode!.removeAttribute('role');
+        this.domNode!.removeAttribute('aria-label');
+
         if (code) {
             this.domNode!.innerHTML = i18n.t('Loading...');
             const { mermaidTheme, vegaTheme, plantumlServer, sequenceTheme } = this.muya.options;
@@ -398,6 +409,7 @@ class DiagramPreview extends Parent {
                     plantumlServer,
                     sequenceTheme,
                 });
+                this._cancelFinalize = finalizeRenderedDiagram(this.domNode!, i18n.t('Diagram'));
             }
             catch (error) {
                 const detail

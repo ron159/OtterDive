@@ -42,7 +42,7 @@ test("equation labels ignore fenced examples and preserve explicit tags", async 
 test("live highlight tokens preserve exact source and readable heading text", async () => {
   const lexer = await bundle("../vendor/marktext-muya/src/inlineRenderer/lexer.ts");
   for (const source of ["==重点 **加粗**==", "`==code==`", "\\==literal==", "== spaced ==", "==escaped\\=="]) {
-    const tokens = lexer.tokenizer(source, { hasBeginRules: false, options: { superSubScript: true, footnote: true, highlight: true } });
+    const tokens = lexer.tokenizer(source, { hasBeginRules: false, options: { superSubScript: true, footnote: true, highlightSyntax: true } });
     assert.equal(lexer.generator(tokens), source);
     if (source.startsWith("==重点")) {
       assert.equal(tokens[0].type, "mark");
@@ -86,7 +86,7 @@ test("diagram PNG export is bounded for very large diagrams", async () => {
 test("Markdown extensions and rich structures survive repeated parse/save cycles", async () => {
   const { MarkdownToState } = await bundle("../vendor/marktext-muya/src/state/markdownToState.ts");
   const { default: StateToMarkdown } = await bundle("../vendor/marktext-muya/src/state/stateToMarkdown.ts");
-  const parser = new MarkdownToState({ footnote: true, math: true, frontMatter: true, isGitlabCompatibilityEnabled: true, trimUnnecessaryCodeBlockEmptyLines: false });
+  const parser = new MarkdownToState({ footnote: true, texMathDollars: true, frontMatter: true, texMathGfm: true, trimUnnecessaryCodeBlockEmptyLines: false });
   const serializer = new StateToMarkdown({ listIndentation: 1 });
   const fixtures = [
     "# 中文标题 😀\n\n[TOC]\n\n## 重复\n\n## 重复\n",
@@ -118,7 +118,7 @@ test("Markdown extensions and rich structures survive repeated parse/save cycles
 test("source cursor restoration resolves nested state paths without rebuilding the document", async () => {
   const { injectSentinels, resolveStateSentinelCursor } = await load("../vendor/marktext-muya/src/selection/offsetCursor.ts");
   const { MarkdownToState } = await bundle("../vendor/marktext-muya/src/state/markdownToState.ts");
-  const parser = new MarkdownToState({ footnote: true, math: true, frontMatter: true });
+  const parser = new MarkdownToState({ footnote: true, texMathDollars: true, frontMatter: true });
   const markdown = "# 标题\n\n正文中文\n\n> 引用正文\n\n- 列表正文\n";
   const clean = parser.generate(markdown);
   for (const cursor of [
@@ -160,7 +160,7 @@ test("a failed image asset copy removes the loading marker and keeps the origina
 test("live outline disambiguates repeated heading anchors and removes highlight syntax", async () => {
   const { getTOC } = await bundle("../vendor/marktext-muya/src/state/getTOC.ts");
   const headings = ["==重复==", "重复", "重复-1"].map((text) => ({ blockName: "atx-heading", meta: { level: 1 }, children: { head: { text: `# ${text}` } } }));
-  const toc = getTOC({ options: { superSubScript: true, footnote: true, highlight: true }, editor: { scrollPage: { children: { iterator: () => headings } } } });
+  const toc = getTOC({ options: { superSubScript: true, footnote: true, highlightSyntax: true }, editor: { inlineRenderer: { collectReferenceDefinitions: () => new Map() }, scrollPage: { children: { iterator: () => headings } } } });
   assert.deepEqual(toc.map(({ content, githubSlug }) => ({ content, githubSlug })), [
     { content: "重复", githubSlug: "重复" },
     { content: "重复", githubSlug: "重复-1" },

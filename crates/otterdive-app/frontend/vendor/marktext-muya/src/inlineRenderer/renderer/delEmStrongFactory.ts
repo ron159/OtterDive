@@ -10,10 +10,11 @@ import type Renderer from './index';
 import { CLASS_NAMES } from '../../config';
 import { snakeToCamel } from '../../utils';
 
-// render factory of `del`,`em`,`strong`
+// render factory of `del`,`mark`,`em`,`strong`
 export default function delEmStrongFac(
     this: Renderer,
-    type: 'del' | 'em' | 'strong' | 'mark',
+    type: 'del' | 'mark' | 'em' | 'strong',
+
     {
         h,
         cursor,

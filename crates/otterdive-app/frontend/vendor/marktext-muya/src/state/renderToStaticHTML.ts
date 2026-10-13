@@ -5,13 +5,19 @@ import { transformFootnotes } from './transformFootnotes';
 
 export interface IRenderToStaticHTMLOptions {
     footnote?: boolean;
-    math?: boolean;
-    isGitlabCompatibilityEnabled?: boolean;
+    texMathDollars?: boolean;
+    texMathGfm?: boolean;
+    texMathSingleBackslash?: boolean;
+    texMathDoubleBackslash?: boolean;
     superSubScript?: boolean;
     frontMatter?: boolean;
-    highlight?: boolean;
+    highlightSyntax?: boolean;
+    inlineDiff?: boolean;
+    multilineBlockquote?: boolean;
+
     toc?: boolean;
     alerts?: boolean;
+
     /**
      * Skip DOMPurify sanitization. **Unsafe with untrusted input** — drops
      * the XSS guarantees of the default export path. Only intended for
@@ -54,13 +60,18 @@ export function renderToStaticHTML(
 
     let html = getHighlightHtml(markdown, {
         footnote,
-        math: options.math ?? true,
-        isGitlabCompatibilityEnabled: options.isGitlabCompatibilityEnabled ?? true,
+        texMathDollars: options.texMathDollars ?? true,
+        texMathGfm: options.texMathGfm ?? false,
+        texMathSingleBackslash: options.texMathSingleBackslash ?? false,
+        texMathDoubleBackslash: options.texMathDoubleBackslash ?? false,
         superSubScript: options.superSubScript ?? true,
         frontMatter: options.frontMatter ?? false,
-        highlight: options.highlight ?? false,
+        highlightSyntax: options.highlightSyntax ?? false,
+        inlineDiff: options.inlineDiff ?? false,
+        multilineBlockquote: options.multilineBlockquote ?? false,
         toc: options.toc ?? false,
         alerts: options.alerts ?? false,
+
     });
 
     // Post-process footnotes into the standard GFM / pandoc shape (inline

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
+import * as monaco from "monaco-editor/editor";
 import {
   resolveAnalyseEnterAction,
   type AnalyseEnterAction,

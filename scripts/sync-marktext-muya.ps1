@@ -1,5 +1,5 @@
 param(
-    [string]$Tag = "v0.20.0-rc.1"
+    [string]$Tag = "v0.21.2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,20 +38,31 @@ try {
     Copy-Item -LiteralPath (Join-Path $checkoutRoot "packages/muya/package.json") -Destination (Join-Path $stagingRoot "upstream-package.json")
     Copy-Item -LiteralPath (Join-Path $checkoutRoot "LICENSE") -Destination (Join-Path $stagingRoot "LICENSE")
 
-    $prismLoaderPath = Join-Path $stagingRoot "src/utils/prism/loadLanguage.ts"
-    $prismLoader = [System.IO.File]::ReadAllText($prismLoaderPath)
-    $upstreamPrismPath = "../../../node_modules/prismjs/components/prism-`${lang}.js"
-    $otterdivePrismPath = "../../../../../node_modules/prismjs/components/prism-`${lang}.js"
-    if (-not $prismLoader.Contains($upstreamPrismPath)) {
-        throw "The MarkText Prism loader changed; review the OtterDive integration patch."
+    # This patch contains all reviewed OtterDive source adaptations. Fail before
+    # replacing the vendor tree when an upstream change needs a fresh review.
+    $integrationPatch = Join-Path $vendorRoot "integration.patch"
+    git -C $stagingRoot apply --no-index --check $integrationPatch
+    if ($LASTEXITCODE -ne 0) {
+        throw "The MarkText source changed; review and refresh the OtterDive integration patch."
     }
-    Write-Utf8NoBom $prismLoaderPath ($prismLoader.Replace($upstreamPrismPath, $otterdivePrismPath))
+    git -C $stagingRoot apply --no-index $integrationPatch
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to apply the OtterDive integration patch."
+    }
+    Copy-Item -LiteralPath $integrationPatch -Destination (Join-Path $stagingRoot "integration.patch")
 
     $adapter = Get-Content -LiteralPath (Join-Path $vendorRoot "package.json") -Raw | ConvertFrom-Json
     $upstream = Get-Content -LiteralPath (Join-Path $stagingRoot "upstream-package.json") -Raw | ConvertFrom-Json
     $adapter.version = $upstream.version
     $adapter.engines = $upstream.engines
+    $lucideVersion = $adapter.dependencies.lucide
+    $dompurifyVersion = $adapter.dependencies.dompurify
     $adapter.dependencies = $upstream.dependencies
+    # The language picker uses the existing SVG icon library. Retain the
+    # reviewed sanitizer baseline even if the pinned upstream still lags it.
+    $adapter.dependencies.PSObject.Properties.Remove("@marktext/file-icons")
+    $adapter.dependencies | Add-Member -NotePropertyName "lucide" -NotePropertyValue $lucideVersion -Force
+    $adapter.dependencies.dompurify = $dompurifyVersion
     Write-Utf8NoBom (Join-Path $stagingRoot "package.json") (($adapter | ConvertTo-Json -Depth 20) + "`n")
 
     $metadata = [ordered]@{
@@ -60,9 +71,7 @@ try {
         tagObject = $tagObject
         commit = $commit
         packagePath = "packages/muya"
-        integrationPatches = @(
-            "Resolve Prism components from the OtterDive frontend node_modules directory"
-        )
+        integrationPatches = (Get-Content -LiteralPath (Join-Path $vendorRoot "UPSTREAM.json") -Raw | ConvertFrom-Json).integrationPatches
         syncedAt = (Get-Date -Format "yyyy-MM-dd")
     }
     Write-Utf8NoBom (Join-Path $stagingRoot "UPSTREAM.json") (($metadata | ConvertTo-Json -Depth 5) + "`n")

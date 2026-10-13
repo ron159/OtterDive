@@ -35,13 +35,18 @@ function buildHtmlOptions(options: Muya['options']) {
     const {
         footnote,
         frontMatter = true,
-        math,
-        isGitlabCompatibilityEnabled,
+        texMathDollars,
+        texMathGfm,
+        texMathSingleBackslash,
+        texMathDoubleBackslash,
         superSubScript,
-        highlight,
+        highlightSyntax,
+        inlineDiff,
+        multilineBlockquote,
     } = options;
 
-    return { footnote, frontMatter, math, isGitlabCompatibilityEnabled, superSubScript, highlight };
+    return { footnote, frontMatter, texMathDollars, texMathGfm, texMathSingleBackslash, texMathDoubleBackslash, superSubScript, highlightSyntax, inlineDiff, multilineBlockquote };
+
 }
 
 /**

@@ -3,8 +3,8 @@ import fs from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
 import ts from "typescript";
-import { Range } from "monaco-editor/esm/vs/editor/common/core/range.js";
-import { SearchParams, TextModelSearch } from "monaco-editor/esm/vs/editor/common/model/textModelSearch.js";
+import { Range } from "monaco-editor/editor/common/core/range.js";
+import { SearchParams, TextModelSearch } from "monaco-editor/editor/common/model/textModelSearch.js";
 
 const replacementSource = fs.readFileSync(new URL("../src/searchReplacement.ts", import.meta.url), "utf8");
 const replacementJavascript = ts.transpileModule(replacementSource, {

@@ -1,14 +1,20 @@
 import type { MarkedToken, Tokens } from 'marked';
+import type { IMultilineBlockquoteToken } from './extensions/multilineBlockquote';
 
 export interface ILexOption {
     footnote?: boolean;
-    math?: boolean;
-    isGitlabCompatibilityEnabled?: boolean;
+    texMathDollars?: boolean;
+    texMathGfm?: boolean;
+    texMathSingleBackslash?: boolean;
+    texMathDoubleBackslash?: boolean;
     frontMatter?: boolean;
     superSubScript?: boolean;
-    highlight?: boolean;
+    highlightSyntax?: boolean;
+    inlineDiff?: boolean;
+    multilineBlockquote?: boolean;
     toc?: boolean;
     alerts?: boolean;
+
 }
 
 export type Heading = Tokens.Heading & {
@@ -19,6 +25,7 @@ export type Heading = Tokens.Heading & {
 export type ListItemToken = Tokens.ListItem & {
     listItemType: 'order' | 'bullet' | 'task';
     bulletMarkerOrDelimiter: '.' | ')' | '*' | '+' | '-' | '';
+    orderMarker?: string;
 };
 
 export type ListToken = Tokens.List & {
@@ -41,7 +48,7 @@ export interface IMultipleMathToken {
     raw: string;
     text: string;
     displayMode: boolean;
-    mathStyle: '' | 'gitlab';
+    mathStyle: '' | 'gfm';
 }
 
 export interface IFrontmatterToken {
@@ -54,7 +61,7 @@ export interface IFrontmatterToken {
 
 export interface IBlockEndToken {
     type: 'block-end';
-    tokenType: 'blockquote' | 'list' | 'list-item' | 'footnote';
+    tokenType: 'blockquote' | 'multilineBlockquote' | 'list' | 'list-item' | 'footnote';
 }
 
 // Tokens the lexer (lexBlock) emits. Replace marked's default
@@ -71,7 +78,8 @@ export type TLexedToken
         | ListItemToken
         | IFootnoteToken
         | IMultipleMathToken
-        | IFrontmatterToken;
+        | IFrontmatterToken
+        | IMultilineBlockquoteToken;
 
 // The working token stream `markdownToState` walks: lexer output plus the
 // synthetic `block-end` markers it injects to pop the parent stack.

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
-import "monaco-editor/esm/vs/editor/contrib/find/browser/findController";
+import * as monaco from "monaco-editor/editor";
+import "monaco-editor/features/find/register";
 import { createWorkbenchDialog } from "./workbenchPanels";
 import {
   logChunkRequest, nextLogFollowAction, retainLogWindow, shouldPauseLogFollow,

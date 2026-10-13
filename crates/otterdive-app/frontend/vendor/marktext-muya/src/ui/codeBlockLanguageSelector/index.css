@@ -41,8 +41,9 @@
     height: 28px;
 }
 
-.mu-list-picker .item .icon-wrapper span::before {
-    font-size: 14px;
+.mu-list-picker .item .icon-wrapper svg {
+    color: var(--editor-color);
+    opacity: 0.7;
 }
 
 .mu-list-picker .item .language {

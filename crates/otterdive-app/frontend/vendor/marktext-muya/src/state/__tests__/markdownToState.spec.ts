@@ -19,8 +19,10 @@ function generate(
 ): IStateLike[] {
     return new MarkdownToState({
         footnote: false,
-        math: false,
-        isGitlabCompatibilityEnabled: false,
+        texMathDollars: false,
+        texMathGfm: false,
+        texMathSingleBackslash: false,
+        texMathDoubleBackslash: false,
         trimUnnecessaryCodeBlockEmptyLines: false,
         frontMatter: false,
         ...options,
@@ -298,6 +300,22 @@ describe('markdownToState — task list nesting (marktext 23435ce6)', () => {
         expect(out).toContain('[^1]: definition');
     });
 
+    it('keeps definitions packed one per line as siblings', () => {
+        const states = generate(
+            `a[^1] b[^2] c[^3]
+
+[^1]: one
+[^2]: two
+[^3]: three`,
+            { footnote: true },
+        );
+        const footnotes = states.filter(s => s.name === 'footnote');
+        expect(footnotes.map(f => f.meta!.identifier)).toEqual(['1', '2', '3']);
+        // None of them may have swallowed a sibling as a nested child.
+        for (const footnote of footnotes)
+            expect(footnote.children!.map(c => c.name)).toEqual(['paragraph']);
+    });
+
     it('keeps tight (no blank lines) nested task lists nested', () => {
         const md = `- [ ] task1
   - [ ] task1_1
@@ -332,7 +350,7 @@ describe('markdownToState — trimUnnecessaryCodeBlockEmptyLines (#1265)', () =>
         const states = generate(fenced, { trimUnnecessaryCodeBlockEmptyLines: false });
         expect(states.length).toBe(1);
         expect(states[0].name).toBe('code-block');
-        expect(states[0].meta).toEqual({ type: 'fenced', lang: 'js' });
+        expect(states[0].meta).toEqual({ type: 'fenced', lang: 'js', fenceChar: '`' });
         // marked already drops one of the three blanks on each side; the
         // option being OFF leaves the remaining surrounding blanks intact.
         expect(states[0].text).toBe('\n\ncode\n\n');

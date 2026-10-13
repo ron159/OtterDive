@@ -7,11 +7,13 @@ import type Parent from './parent';
 import diff from 'fast-diff';
 import TreeNode from '../../block/base/treeNode';
 import { ScrollPage } from '../../block/scrollPage';
-import { BACK_HASH, BRACKET_HASH, EVENT_KEYS, isFirefox } from '../../config';
+import { BACK_HASH, BRACKET_HASH, CLASS_NAMES, EVENT_KEYS } from '../../config';
 import Selection from '../../selection';
+import { offsetInBlockAtPoint } from '../../selection/dom';
 import {
     adjustOffset,
     diffToTextOp,
+    isCompositionEndEvent,
     isInputEvent,
     isKeyboardEvent,
     isMouseEvent,
@@ -91,6 +93,22 @@ function extractWord(
         right,
         word: text.slice(left, right),
     };
+}
+
+/**
+ * Zero-width space an IME composes into instead of the block's trailing
+ * newline — see `Content._seedCompositionAnchor`.
+ */
+const COMPOSITION_ANCHOR = '\u200B';
+
+function countKeptBefore(text: string, offset: number): number {
+    let kept = 0;
+    for (let i = 0; i < offset; i++) {
+        if (text[i] !== COMPOSITION_ANCHOR)
+            kept++;
+    }
+
+    return kept;
 }
 
 function shouldRemoveClosingChar(
@@ -295,31 +313,36 @@ function collapsedInputAutoPair(
 }
 
 function lineBreakAutoPair(
-    event: InputEvent,
+    event: InputEvent | CompositionEvent,
     text: string,
     start: INodeOffset,
     end: INodeOffset,
     oldStart: INodeOffset,
     blockText: string,
 ) {
+    const inputType = isInputEvent(event) ? event.inputType : '';
+
     // Just work for `Shift + Enter` to create a soft and hard line break.
     if (
         blockText.endsWith('\n')
         && start.offset === text.length
-        && (event.inputType === 'insertText' || event.type === 'compositionend')
+        && typeof event.data === 'string'
+        && (inputType === 'insertText' || event.type === 'compositionend')
     ) {
         text = blockText + event.data;
-        // I don't know why firefox don't need to offset++
+        // Re-anchor to the rebuilt text instead of nudging the DOM offset: how
+        // far the DOM drifted depends on whether the browser kept the trailing
+        // newline (Firefox does, Chromium overwrites it) and on whether the
+        // caret sat in a composition anchor. The end of the rebuilt text is the
+        // one answer that holds in every case.
         // For more info: https://github.com/marktext/muya/issues/130
-        if (!isFirefox) {
-            start.offset++;
-            end.offset++;
-        }
+        start.offset = text.length;
+        end.offset = text.length;
     }
     else if (
         blockText.length === oldStart.offset
         && blockText[oldStart.offset - 2] === '\n'
-        && event.inputType === 'deleteContentBackward'
+        && inputType === 'deleteContentBackward'
     ) {
         text = blockText.substring(0, oldStart.offset - 1);
         start.offset = text.length;
@@ -332,6 +355,8 @@ function lineBreakAutoPair(
 class Content extends TreeNode {
     private _text: string;
     protected isComposed: boolean;
+    private _compositionAnchor: Nullable<Text> = null;
+    private _compositionLineEnd: Nullable<Element> = null;
 
     static override blockName = 'content';
 
@@ -455,46 +480,28 @@ class Content extends TreeNode {
         if (!isKeyboardEvent(event))
             return;
 
-        const previousContentBlock = this.previousContentInContext();
-        const nextContentBlock = this.nextContentInContext();
         const { start, end } = this.getCursor()!;
-        const { topOffset, bottomOffset } = Selection.getCursorYOffset(
-            this.domNode!,
-        );
 
         // Just do nothing if the cursor is not collapsed or `shiftKey` pressed
         if (start.offset !== end.offset || event.shiftKey)
             return;
 
-        if (
-            (event.key === EVENT_KEYS.ArrowUp && topOffset > 0)
-            || (event.key === EVENT_KEYS.ArrowDown && bottomOffset > 0)
-        ) {
+        if (this._deferArrowToBrowser(event, start.offset, end.offset))
             return;
-        }
 
-        const { muya } = this;
+        const direction = this._arrowDirection(event, start.offset, this.text.length);
+        if (direction == null)
+            return;
+
+        event.preventDefault();
+        event.stopPropagation();
+
         let cursorBlock = null;
         let offset = 0;
-        // In RTL the physical Left/Right arrows are visually mirrored, so the
-        // cross-block boundary keys swap (offset 0 is the visual right end).
-        const isRtl = this.domNode?.closest('[dir]')?.getAttribute('dir') === 'rtl';
-        const prevKey = isRtl ? EVENT_KEYS.ArrowRight : EVENT_KEYS.ArrowLeft;
-        const nextKey = isRtl ? EVENT_KEYS.ArrowLeft : EVENT_KEYS.ArrowRight;
 
-        if (
-            event.key === EVENT_KEYS.ArrowUp
-            || (event.key === prevKey && start.offset === 0)
-        ) {
-            event.preventDefault();
-            event.stopPropagation();
-
+        if (direction === 'up') {
+            const previousContentBlock = this.previousContentInContext();
             if (!previousContentBlock) {
-                // First block, no previous: ArrowUp moves the caret to the
-                // start of the line (offset 0) instead of staying put (#3193).
-                // A boundary ArrowLeft has nowhere to go, so leave it. Skip the
-                // re-set when the caret is already at offset 0, so a no-op
-                // ArrowUp doesn't emit a spurious selection-change or re-render.
                 if (event.key === EVENT_KEYS.ArrowUp && start.offset !== 0)
                     this.setCursor(0, 0, true);
 
@@ -502,40 +509,115 @@ class Content extends TreeNode {
             }
 
             cursorBlock = previousContentBlock;
-            offset = previousContentBlock.text.length;
+            offset = this._upArrowOffset(previousContentBlock, event);
         }
-        else if (
-            event.key === EVENT_KEYS.ArrowDown
-            || (event.key === nextKey && start.offset === this.text.length)
-        ) {
-            event.preventDefault();
-            event.stopPropagation();
-            if (nextContentBlock) {
-                cursorBlock = nextContentBlock;
-            }
-            // Only append a trailing paragraph when the last block has content.
-            // Otherwise ArrowDown in an already-empty last paragraph would keep
-            // creating empty paragraphs on every keypress (#3520).
-            else if (this.text.length > 0) {
-                const newNodeState = {
-                    name: 'paragraph',
-                    text: '',
-                };
+        else {
+            cursorBlock = this.nextContentInContext();
+            if (!cursorBlock && this.text.length > 0) {
+                const newNodeState = { name: 'paragraph', text: '' };
                 const newNode = ScrollPage.loadBlock(newNodeState.name).create(
-                    muya,
+                    this.muya,
                     newNodeState,
                 );
                 this.scrollPage?.append(newNode, 'user');
                 cursorBlock = newNode.children.head;
             }
+
             if (cursorBlock)
-                offset = adjustOffset(0, cursorBlock, event);
+                offset = this._downArrowOffset(cursorBlock, event);
         }
 
         if (cursorBlock) {
             this.update();
             cursorBlock.setCursor(offset, offset, true);
         }
+    }
+
+    private _upArrowOffset(block: Content, event: KeyboardEvent): number {
+        if (event.key !== EVENT_KEYS.ArrowUp)
+            return block.text.length;
+
+        return this._nearestOffsetAtColumn(block, 'bottom') ?? block.text.length;
+    }
+
+    private _moveDownOntoTrailingBlankLine(event: KeyboardEvent, offset: number): boolean {
+        // Only inline blocks paint this line as a span the browser cannot reach,
+        // so ArrowDown clamps to the line above instead. `softNewlineAsSpace`
+        // drops the span and a code block renders its own, which it can reach.
+        if (!this.domNode?.lastElementChild?.classList.contains(CLASS_NAMES.MU_LINE_END))
+            return false;
+
+        if (event.key !== EVENT_KEYS.ArrowDown || this.text.indexOf('\n', offset) !== this.text.length - 1)
+            return false;
+
+        event.preventDefault();
+        event.stopPropagation();
+        this.setCursor(this.text.length, this.text.length, true);
+
+        return true;
+    }
+
+    /**
+     * Whether the key is left to the browser's own move. Its y-offset test cannot
+     * measure a caret on an empty line (no rect), so a line break on the caret's
+     * side decides that case instead.
+     */
+    private _deferArrowToBrowser(event: KeyboardEvent, start: number, end: number): boolean {
+        if (this._moveDownOntoTrailingBlankLine(event, end))
+            return true;
+
+        if (Selection.getCursorCoords() == null && this._lineBreakOnCaretSide(event, start, end))
+            return true;
+
+        const { topOffset, bottomOffset } = Selection.getCursorYOffset(this.domNode!);
+
+        return (event.key === EVENT_KEYS.ArrowUp && topOffset > 0)
+            || (event.key === EVENT_KEYS.ArrowDown && bottomOffset > 0);
+    }
+
+    /** The cross-block direction the key moves in, or null for the keys the browser keeps. */
+    private _arrowDirection(event: KeyboardEvent, offset: number, textLength: number): 'up' | 'down' | null {
+        // In RTL the physical Left/Right arrows are visually mirrored, so the
+        // cross-block boundary keys swap (offset 0 is the visual right end).
+        const isRtl = this.domNode?.closest('[dir]')?.getAttribute('dir') === 'rtl';
+        const prevKey = isRtl ? EVENT_KEYS.ArrowRight : EVENT_KEYS.ArrowLeft;
+        const nextKey = isRtl ? EVENT_KEYS.ArrowLeft : EVENT_KEYS.ArrowRight;
+
+        if (event.key === EVENT_KEYS.ArrowUp || (event.key === prevKey && offset === 0))
+            return 'up';
+
+        if (event.key === EVENT_KEYS.ArrowDown || (event.key === nextKey && offset === textLength))
+            return 'down';
+
+        return null;
+    }
+
+    private _lineBreakOnCaretSide(event: KeyboardEvent, start: number, end: number): boolean {
+        if (event.key === EVENT_KEYS.ArrowUp)
+            return this.text.slice(0, start).includes('\n');
+
+        if (event.key === EVENT_KEYS.ArrowDown)
+            return this.text.slice(end).includes('\n');
+
+        return false;
+    }
+
+    private _downArrowOffset(block: Content, event: KeyboardEvent): number {
+        const boundary = adjustOffset(0, block, event);
+        if (event.key !== EVENT_KEYS.ArrowDown)
+            return boundary;
+
+        const nearest = this._nearestOffsetAtColumn(block, 'top');
+        // A hit can land before an ATX heading's `#` prefix; keep it a lower bound.
+        return nearest == null ? boundary : Math.max(nearest, boundary);
+    }
+
+    private _nearestOffsetAtColumn(block: Content, edge: 'top' | 'bottom'): number | null {
+        const x = Selection.getCursorCoords()?.x;
+        if (x == null)
+            return null;
+
+        return offsetInBlockAtPoint(document, block, x, edge);
     }
 
     override createDomNode() {
@@ -601,12 +683,118 @@ class Content extends TreeNode {
     composeHandler(event: Event) {
         if (event.type === 'compositionstart') {
             this.isComposed = true;
+            this._seedCompositionAnchor();
         }
         else if (event.type === 'compositionend') {
             this.isComposed = false;
+            this._consumeCompositionAnchor();
             // Because the compose event will not cause `input` event, So need call `inputHandler` by ourself
             this.inputHandler(event);
         }
+    }
+
+    /**
+     * Give an IME its own text node to compose in when the caret sits at the
+     * end of a block whose text ends with `\n`.
+     *
+     * That newline is the last thing in the block's DOM, so the caret sits
+     * inside it, and Chromium will not sustain a composition there: it
+     * overwrites the newline and abandons the composition, which costs the
+     * input method the first keystroke of the word (#3468). An appended node
+     * takes the composition instead and the newline is left alone. The node
+     * has to carry a zero-width space — Chromium ignores an empty one.
+     *
+     * Seeded on `compositionstart` and stripped again on `compositionend`, so
+     * it exists only while `inputHandler` is short-circuited by `isComposed`
+     * and is never visible to the DOM ↔ text offset mapping.
+     */
+    private _seedCompositionAnchor() {
+        const { domNode } = this;
+        const cursor = this.getCursor();
+        if (
+            domNode == null
+            || cursor == null
+            || cursor.start.offset !== cursor.end.offset
+            || cursor.start.offset !== this.text.length
+            || !this.text.endsWith('\n')
+        ) {
+            return;
+        }
+
+        const anchor = document.createTextNode(COMPOSITION_ANCHOR);
+        // Ahead of a code block's trailing line break: past it, the composition
+        // would start a line below the caret.
+        domNode.insertBefore(anchor, domNode.querySelector(`:scope > .${CLASS_NAMES.MU_TRAILING_BREAK}`));
+        this._compositionAnchor = anchor;
+
+        // `mu-line-end` makes the trailing newline a block of its own, because
+        // a newline with nothing after it renders no line at all. The anchor is
+        // now that something, so the newline renders on its own — and the class
+        // has to go, or the block keeps a line to itself and the composition
+        // lands one line below the caret.
+        const lineEnd = domNode.querySelector(`.${CLASS_NAMES.MU_LINE_END}`);
+        if (lineEnd != null) {
+            lineEnd.classList.remove(CLASS_NAMES.MU_LINE_END);
+            this._compositionLineEnd = lineEnd;
+        }
+
+        // In front of the zero-width space, not behind it: Chromium composes at
+        // the caret and leaves the caret where it was, so a trailing anchor
+        // keeps the caret on the far side of the text being composed and it
+        // draws to the left of the glyph the user is typing.
+        const range = document.createRange();
+        range.setStart(anchor, 0);
+        range.collapse(true);
+        const selection = document.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+    }
+
+    /**
+     * Strip the seeded anchor, keeping the text the IME committed into it and
+     * the caret where the user sees it, so the input handler that runs next
+     * reads an anchor-free block.
+     */
+    private _consumeCompositionAnchor() {
+        const anchor = this._compositionAnchor;
+        const lineEnd = this._compositionLineEnd;
+        this._compositionAnchor = null;
+        this._compositionLineEnd = null;
+        lineEnd?.classList.add(CLASS_NAMES.MU_LINE_END);
+        if (anchor == null)
+            return;
+
+        const selection = document.getSelection();
+        const text = anchor.textContent ?? '';
+        // Capture the caret before touching the node: assigning `textContent`
+        // replaces the text node's data and drops any selection inside it.
+        const caretOffset = selection?.anchorNode === anchor
+            ? countKeptBefore(text, selection.anchorOffset)
+            : null;
+        const stripped = text.split(COMPOSITION_ANCHOR).join('');
+
+        if (stripped === '') {
+            // Composition cancelled, or backspaced away character by character.
+            // The anchor goes with it, and the caret goes with the anchor — so
+            // put the caret back where it was before the composition started,
+            // at the end of the block's own text.
+            anchor.parentNode?.removeChild(anchor);
+            if (caretOffset != null)
+                this.setCursor(this.text.length, this.text.length);
+
+            return;
+        }
+
+        anchor.textContent = stripped;
+
+        if (caretOffset == null || selection == null)
+            return;
+
+        const range = document.createRange();
+        range.setStart(anchor, caretOffset);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
     }
 
     /**
@@ -628,11 +816,15 @@ class Content extends TreeNode {
         let needRender = false;
 
         // The event will not be input event, when click task list item input element.
-        if (!isInputEvent(event) || !oldStart)
+        // `compositionend` is let through as well: `composeHandler` forwards it
+        // straight into `inputHandler`, and it is the only signal an IME commit
+        // ever produces here — rejecting it left the soft-line-break repair
+        // below unreachable for CJK input (#5279).
+        if ((!isInputEvent(event) && !isCompositionEndEvent(event)) || !oldStart)
             return { text, needRender };
 
         if (this.text !== text) {
-            if (start.offset === end.offset && event.type === 'input') {
+            if (isInputEvent(event) && start.offset === end.offset && event.type === 'input') {
                 const collapsed = collapsedInputAutoPair(event, text, start, end, {
                     blockText: this.text,
                     options: this.muya.options,
@@ -720,11 +912,15 @@ class Content extends TreeNode {
 
         switch (event.key) {
             case EVENT_KEYS.Backspace:
-                this.backspaceHandler(event);
+                if (!this.isComposed)
+                    this.backspaceHandler(event);
+
                 break;
 
             case EVENT_KEYS.Delete:
-                this.deleteHandler(event);
+                if (!this.isComposed)
+                    this.deleteHandler(event);
+
                 break;
 
             case EVENT_KEYS.Enter:

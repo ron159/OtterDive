@@ -29,6 +29,8 @@ import type TableBodyCell from "../vendor/marktext-muya/src/block/gfm/table/cell
 import { cancelPendingDiagramRenders } from "../vendor/marktext-muya/src/block/extra/diagram/diagramPreview";
 import { BLOCK_DOM_PROPERTY } from "../vendor/marktext-muya/src/config";
 import { getCursorReference } from "../vendor/marktext-muya/src/selection";
+import { injectStateSentinels, resolveStateSentinelCursor } from "../vendor/marktext-muya/src/selection/offsetCursor";
+import { SelectionCaretType, SelectionDirection } from "../vendor/marktext-muya/src/selection/types";
 import { encodeImageSrc, getImageInfo, type IImageInfo } from "../vendor/marktext-muya/src/utils/image";
 import {
   classifyMermaidDiagramSize,
@@ -37,7 +39,7 @@ import {
   runMermaidWithCompatibility,
 } from "../vendor/marktext-muya/src/utils/diagram/mermaidCompat";
 
-export const MARKDOWN_ENGINE_VERSION = "MarkText v0.20.0-rc.1 / @muyajs/core 0.2.0";
+export const MARKDOWN_ENGINE_VERSION = "MarkText v0.21.2 / @muyajs/core 0.2.0";
 
 export type MarkdownSearchOptions = {
   matchCase: boolean;
@@ -177,7 +179,7 @@ type MarkdownEngineMatch = {
   start: number;
   end: number;
   match: string;
-  subMatches: string[];
+  subMatches: (string | undefined)[];
 };
 
 type MarkdownPlugin = Parameters<typeof Muya.use>[0];
@@ -222,13 +224,15 @@ export function renderMarkdownPreviewHtml(markdown: string, options: MarkdownPre
   const extensions = options.extensions ?? {};
   const body = renderToStaticHTML(normalizeMarkdownForEngine(markdown), {
     footnote: extensions.footnote ?? true,
-    math: extensions.math ?? true,
+    texMathDollars: extensions.math ?? true,
+    texMathGfm: extensions.math ?? true,
+    texMathSingleBackslash: false,
+    texMathDoubleBackslash: false,
     superSubScript: extensions.superSubScript ?? true,
     frontMatter: extensions.frontMatter ?? true,
-    highlight: extensions.highlight ?? true,
+    highlightSyntax: extensions.highlight ?? true,
     toc: extensions.toc ?? true,
     alerts: extensions.alerts ?? true,
-    isGitlabCompatibilityEnabled: true,
   });
   const container = document.createElement("div");
   container.innerHTML = body;
@@ -472,6 +476,14 @@ export class MarkdownEditorBridge {
   private synchronizedRevision = 0;
   private lastSearch: { value: string; options: MarkdownSearchOptions } | null = null;
   private searchSelection: MarkdownSelectionRange | null = null;
+  private searchSelectionMarkdown: string | null = null;
+  private readonly searchRefreshListener = () => {
+    this.restoreSearchSelection();
+    if (this.lastSearch?.options.selectionOnly) {
+      const result = this.muya.editor.searchModule;
+      this.filterSearchToSelection(result, result.index);
+    }
+  };
   private tableContextCell: TableBodyCell | null = null;
   private imageContext: {
     wrapper: HTMLElement;
@@ -514,12 +526,14 @@ export class MarkdownEditorBridge {
       markdown: initialMarkdown,
       locale: zhCN,
       frontMatter: initialExtensions.frontMatter ?? true,
-      highlight: options.writingOptions?.extensions?.highlight ?? true,
+      highlightSyntax: initialExtensions.highlight ?? true,
       mathEquationLabels: collectEquationLabels(initialMarkdown),
       footnote: initialExtensions.footnote ?? true,
-      math: initialExtensions.math ?? true,
+      texMathDollars: initialExtensions.math ?? true,
+      texMathGfm: initialExtensions.math ?? true,
+      texMathSingleBackslash: false,
+      texMathDoubleBackslash: false,
       superSubScript: initialExtensions.superSubScript ?? true,
-      isGitlabCompatibilityEnabled: true,
       codeBlockLineNumbers: true,
       autoPairBracket: true,
       autoPairMarkdownSyntax: true,
@@ -567,6 +581,7 @@ export class MarkdownEditorBridge {
     };
     this.muya.on("json-change", this.changeListener);
     this.muya.on("heading-copy-link", this.headingCopyListener);
+    this.muya.on("search-refreshed", this.searchRefreshListener);
     this.muya.locale(zhCN);
     this.applyingMarkdown = true;
     try {
@@ -687,13 +702,16 @@ export class MarkdownEditorBridge {
     const lineHeight = Math.min(3, Math.max(1.2, value.lineHeight ?? 1.7));
     const paragraphSpacing = Math.min(3, Math.max(0, value.paragraphSpacing ?? 1));
     this.muya.setFocusMode(value.focusMode ?? false);
-    this.muya.setOptions({
+    this.updateMuyaOptions({
       lineHeight,
       spellcheckEnabled: value.spellcheckEnabled ?? true,
       plantumlServer: value.plantumlServer ?? "",
-      highlight: value.extensions?.highlight ?? true,
+      highlightSyntax: value.extensions?.highlight ?? true,
       footnote: value.extensions?.footnote ?? true,
-      math: value.extensions?.math ?? true,
+      texMathDollars: value.extensions?.math ?? true,
+      texMathGfm: value.extensions?.math ?? true,
+      texMathSingleBackslash: false,
+      texMathDoubleBackslash: false,
       superSubScript: value.extensions?.superSubScript ?? true,
       frontMatter: value.extensions?.frontMatter ?? true,
     }, previousServer !== (value.plantumlServer ?? "") || previousExtensions !== JSON.stringify(value.extensions ?? {}));
@@ -773,7 +791,7 @@ export class MarkdownEditorBridge {
     if (signature === this.equationLabelSignature) return;
     this.equationLabelSignature = signature;
     this.muya.editor.inlineRenderer.renderer.loadMathMap.clear();
-    this.muya.setOptions({ mathEquationLabels: labels }, true);
+    this.updateMuyaOptions({ mathEquationLabels: labels }, true);
   }
 
   private scheduleDecorations() {
@@ -1131,10 +1149,50 @@ export class MarkdownEditorBridge {
       (anchorBlock === focusBlock && anchorOffset === focusOffset)
     ) {
       this.searchSelection = null;
+      this.searchSelectionMarkdown = null;
       return false;
     }
     this.searchSelection = { anchorBlock, anchorOffset, focusBlock, focusOffset };
+    this.rememberSearchSelection();
     return true;
+  }
+
+  private rememberSearchSelection() {
+    const range = this.searchSelection;
+    this.searchSelectionMarkdown = null;
+    if (!range?.anchorBlock.outMostBlock || !range.focusBlock.outMostBlock) return;
+    const { anchorBlock, anchorOffset, focusBlock, focusOffset } = range;
+    const state = injectStateSentinels(structuredClone(this.muya.editor.jsonState.getState()), {
+      anchor: { block: anchorBlock, path: anchorBlock.path, offset: anchorOffset },
+      focus: { block: focusBlock, path: focusBlock.path, offset: focusOffset },
+      isCollapsed: false,
+      isSelectionInSameBlock: anchorBlock === focusBlock,
+      direction: SelectionDirection.FORWARD,
+      type: SelectionCaretType.RANGE,
+    });
+    if (state) this.searchSelectionMarkdown = this.muya.editor.jsonState.getMarkdownFromState(state);
+  }
+
+  private restoreSearchSelection() {
+    if (!this.searchSelection) return;
+    const markdown = this.searchSelectionMarkdown;
+    const cursor = markdown ? resolveStateSentinelCursor(
+      this.muya.editor.jsonState.markdownToState(markdown), this.muya.editor.jsonState.getState(),
+    ) : null;
+    const anchor = cursor && this.muya.editor.scrollPage?.queryBlock(cursor.anchorPath);
+    const focus = cursor && this.muya.editor.scrollPage?.queryBlock(cursor.focusPath);
+    // Parsing can remove a selected syntax marker. An unresolved range must
+    // yield no matches, never silently expand into a different block.
+    this.searchSelection = cursor && anchor?.isContent() && focus?.isContent()
+      ? { anchorBlock: anchor, anchorOffset: cursor.anchor.offset, focusBlock: focus, focusOffset: cursor.focus.offset }
+      : null;
+  }
+
+  private updateMuyaOptions(options: Parameters<Muya["setOptions"]>[0], forceRender = false) {
+    if (forceRender) this.rememberSearchSelection();
+    this.muya.setOptions(options, forceRender);
+    // Muya emits search-refreshed only while a nonempty query is active.
+    if (forceRender && !this.muya.editor.searchModule.value) this.restoreSearchSelection();
   }
 
   searchSelectionSignature() {
@@ -1277,16 +1335,20 @@ export class MarkdownEditorBridge {
   }
 
   replace(replacement: string, replaceAll: boolean, regex: boolean): MarkdownSearchState {
-    if (regex && this.lastSearch) return this.replaceRegex(replacement, replaceAll);
+    if (this.lastSearch && (regex || this.lastSearch.options.selectionOnly)) {
+      return this.replaceSearchMatches(replacement, replaceAll, regex);
+    }
     const result = this.muya.replace(replacement, { isSingle: !replaceAll, isRegexp: regex });
     return { total: result.matches.length, index: result.index };
   }
 
-  private replaceRegex(replacement: string, replaceAll: boolean): MarkdownSearchState {
+  private replaceSearchMatches(replacement: string, replaceAll: boolean, regex: boolean): MarkdownSearchState {
     const search = this.muya.editor.searchModule;
+    const lastSearch = this.lastSearch;
+    if (lastSearch?.options.selectionOnly) this.filterSearchToSelection(search, search.index);
     const active = search.matches[search.index];
     const targets = replaceAll ? [...search.matches] : active ? [active] : [];
-    if (targets.length === 0 || !this.lastSearch) {
+    if (targets.length === 0 || !lastSearch) {
       return { total: search.matches.length, index: search.index };
     }
 
@@ -1299,30 +1361,44 @@ export class MarkdownEditorBridge {
 
     for (const [block, matches] of matchesByBlock) {
       const source = block.text;
+      const replacements = matches.map((match) => ({
+        ...match,
+        text: regex ? expandRegexReplacement(replacement, match, source, lastSearch) : replacement,
+      }));
       let cursor = 0;
       let next = "";
-      for (const match of matches) {
-        next += source.slice(cursor, match.start);
-        next += expandRegexReplacement(replacement, match, source, this.lastSearch);
+      for (const match of replacements) {
+        next += source.slice(cursor, match.start) + match.text;
         cursor = match.end;
+      }
+      // Keep the captured range around the replacement text, including when
+      // replacing with a shorter string before its end boundary.
+      const range = this.searchSelection;
+      if (range) {
+        const shift = (offset: number) => replacements.reduce((delta, match) => {
+          if (match.end > offset) return delta;
+          return delta + match.text.length - (match.end - match.start);
+        }, 0);
+        if (range.anchorBlock === block) range.anchorOffset += shift(range.anchorOffset);
+        if (range.focusBlock === block) range.focusOffset += shift(range.focusOffset);
       }
       block.text = next + source.slice(cursor);
     }
 
     const previousIndex = search.index;
-    const refreshed = this.muya.search(this.lastSearch.value, {
-      isCaseSensitive: this.lastSearch.options.matchCase,
-      isWholeWord: this.lastSearch.options.wholeWord,
-      isRegexp: true,
+    return this.search(lastSearch.value, {
+      ...lastSearch.options,
       highlightIndex: replaceAll ? -1 : Math.max(0, Math.min(previousIndex, search.matches.length - 1)),
     });
-    return { total: refreshed.matches.length, index: refreshed.index };
   }
 
   clearSearch(preserveSelection = false) {
     this.muya.search("", { selectHighlight: true });
     this.lastSearch = null;
-    if (!preserveSelection) this.searchSelection = null;
+    if (!preserveSelection) {
+      this.searchSelection = null;
+      this.searchSelectionMarkdown = null;
+    }
   }
 
   hideFloatTools() {
@@ -1370,6 +1446,7 @@ export class MarkdownEditorBridge {
     cancelPendingDiagramRenders(this.root);
     this.muya.off("json-change", this.changeListener);
     this.muya.off("heading-copy-link", this.headingCopyListener);
+    this.muya.off("search-refreshed", this.searchRefreshListener);
     this.root.querySelectorAll<HTMLImageElement>("img").forEach((image) => {
       image.removeAttribute("src");
       image.removeAttribute("srcset");

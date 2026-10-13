@@ -27,7 +27,9 @@ import htmlRuby from './htmlRuby';
 import htmlTag from './htmlTag';
 import image from './image';
 import inlineCode from './inlineCode';
+import inlineDiff from './inlineDiff';
 import inlineMath from './inlineMath';
+import lineBreakHighlights from './lineBreakHighlights';
 import link from './link';
 import mark from './mark';
 import loadImageAsync from './loadImageAsync';
@@ -47,12 +49,12 @@ const inlineSyntaxRenderer = {
     highlight,
     header,
     link,
-    mark,
     htmlTag,
     hr,
     tailHeader,
     hardLineBreak,
     softLineBreak,
+    lineBreakHighlights,
     codeFence,
     inlineMath,
     autoLink,
@@ -62,8 +64,10 @@ const inlineSyntaxRenderer = {
     delEmStrongFac,
     emoji,
     inlineCode,
+    inlineDiff,
     text,
     del,
+    mark,
     em,
     strong,
     htmlEscape,

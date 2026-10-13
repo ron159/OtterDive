@@ -1,11 +1,16 @@
 {
   "repository": "https://github.com/marktext/marktext.git",
-  "tag": "v0.20.0-rc.1",
-  "tagObject": "285b8d01c66e634e49154a3cc4a8df6537d6dc82",
-  "commit": "8f1d0a6253efea9ac33304e45364cc05874522a9",
+  "tag": "v0.21.2",
+  "tagObject": "34c57730d9b6d91b7c2104839e009f26b1cb758f",
+  "commit": "ae7a869c989950a3a56ce5c2f7fc0df12c652933",
   "packagePath": "packages/muya",
   "integrationPatches": [
-    "Resolve Prism components from the OtterDive frontend node_modules directory"
+    "Resolve Prism components from the OtterDive frontend node_modules directory",
+    "Keep Tauri image resolution, image paste hooks, selection and cursor restoration",
+    "Keep OtterDive table controls, editor typography, heading anchors and Markdown extensions",
+    "Keep deferred Mermaid rendering and WebView layout compatibility",
+    "Use existing Lucide SVG icons instead of the vulnerable file-icons dependency chain",
+    "Replay reviewed source changes from integration.patch when syncing the pinned release"
   ],
-  "syncedAt": "2026-07-13"
+  "syncedAt": "2026-10-13"
 }

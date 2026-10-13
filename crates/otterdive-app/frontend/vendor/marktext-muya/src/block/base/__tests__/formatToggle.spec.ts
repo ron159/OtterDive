@@ -40,10 +40,10 @@ afterEach(() => {
         delete (window as Partial<Window>).MUYA_VERSION;
 });
 
-function bootMuya(markdown: string): Muya {
+function bootMuya(markdown: string, options: Record<string, unknown> = {}): Muya {
     const host = document.createElement('div');
     document.body.appendChild(host);
-    const muya = new Muya(host, { markdown } as ConstructorParameters<typeof Muya>[1]);
+    const muya = new Muya(host, { markdown, ...options } as ConstructorParameters<typeof Muya>[1]);
     muya.init();
     bootedHosts.push(muya.domNode);
     return muya;
@@ -113,6 +113,26 @@ describe('format.format() toggle-off with the caret inside the formatted run', (
         expect(content.text).toBe('word');
     });
 
+    it('display math: `$$word$$` removes both markers without shifting the selection', () => {
+        const content = selectInFirstBlock(bootMuya('$$word$$\n'), 2, 6);
+        const setCursor = vi.spyOn(content, 'setCursor');
+
+        content.format('inline_math');
+
+        expect(content.text).toBe('word');
+        expect(setCursor).toHaveBeenLastCalledWith(0, 4, true);
+    });
+
+    it('inline_code: ``` ``word`` ``` removes both markers without shifting the selection', () => {
+        const content = selectInFirstBlock(bootMuya('``word``\n'), 2, 6);
+        const setCursor = vi.spyOn(content, 'setCursor');
+
+        content.format('inline_code');
+
+        expect(content.text).toBe('word');
+        expect(setCursor).toHaveBeenLastCalledWith(0, 4, true);
+    });
+
     it('u (html_tag): `<u>word</u>` removes the underline tags', () => {
         // `format('u')` matches the html_tag token whose tag === 'u'.
         const content = caretInFirstBlock(bootMuya('<u>word</u>\n'), 2);
@@ -124,6 +144,24 @@ describe('format.format() toggle-off with the caret inside the formatted run', (
         const content = caretInFirstBlock(bootMuya('<mark>word</mark>\n'), 2);
         content.format('mark');
         expect(content.text).toBe('word');
+    });
+
+    it('mark (== syntax): `==word==` removes the highlight markers', () => {
+        const content = caretInFirstBlock(
+            bootMuya('==word==\n', { highlightSyntax: true }),
+            2,
+        );
+        content.format('mark');
+        expect(content.text).toBe('word');
+    });
+
+    it('mark (== syntax): unwrapping keeps the trailing backslash run', () => {
+        const content = caretInFirstBlock(
+            bootMuya('==a\\\\==\n', { highlightSyntax: true }),
+            2,
+        );
+        content.format('mark');
+        expect(content.text).toBe('a\\\\');
     });
 
     it('sup (html_tag): `<sup>word</sup>` removes the superscript tags', () => {
@@ -177,6 +215,16 @@ describe('format.format() apply-ON over a non-collapsed selection', () => {
         await vi.waitFor(() => {
             expect(muya.getMarkdown()).toContain('**abc**');
         });
+    });
+
+    it('applying bold elsewhere keeps a highlight\'s trailing backslash run', () => {
+        const content = selectInFirstBlock(
+            bootMuya('==a\\\\== b\n', { highlightSyntax: true }),
+            8,
+            9,
+        );
+        content.format('strong');
+        expect(content.text).toBe('==a\\\\== **b**');
     });
 
     it('em: selecting `abc` and applying wraps it in `*…*`', async () => {

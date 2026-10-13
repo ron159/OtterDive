@@ -1,0 +1,3619 @@
+diff --git a/src/__tests__/createTableImageCursor.spec.ts b/src/__tests__/createTableImageCursor.spec.ts
+index e50696d..66eaf82 100644
+--- a/src/__tests__/createTableImageCursor.spec.ts
++++ b/src/__tests__/createTableImageCursor.spec.ts
+@@ -2,6 +2,7 @@
+ 
+ import type Content from '../block/base/content';
+ import type Parent from '../block/base/parent';
++import type Table from '../block/gfm/table';
+ import type { ITableState, TState } from '../state/types';
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+ import { Muya } from '../muya';
+@@ -207,6 +208,46 @@ describe('muya.createTable()', () => {
+     });
+ });
+ 
++describe('table structural editing', () => {
++    function tableBlock(muya: Muya) {
++        return muya.editor.scrollPage!.firstChild as Table;
++    }
++
++    it('resizes while preserving existing cells and alignment', async () => {
++        const muya = bootMuya('| A | B |\n| :-- | --: |\n| C | D |\n');
++        tableBlock(muya).resize(4, 3);
++        await vi.waitFor(() => {
++            const state = firstTable(muya);
++            expect(state.children.length).toBe(4);
++            expect(state.children.every(row => row.children.length === 3)).toBe(true);
++            expect(state.children[0].children.map(cell => cell.text)).toEqual(['A', 'B', '']);
++            expect(state.children[0].children.map(cell => cell.meta.align)).toEqual(['left', 'right', 'none']);
++        });
++    });
++
++    it('moves rows and columns without losing cell content', async () => {
++        const muya = bootMuya('| A | B |\n| --- | --- |\n| C | D |\n| E | F |\n');
++        const movedRow = tableBlock(muya).moveRow(2, 1, 0);
++        movedRow?.setCursor(0, 0, true);
++        await vi.waitFor(() => {
++            expect(firstTable(muya).children.map(row => row.children[0].text)).toEqual(['A', 'E', 'C']);
++        });
++        tableBlock(muya).moveColumn(1, 0, 0);
++        await vi.waitFor(() => {
++            expect(firstTable(muya).children[0].children.map(cell => cell.text)).toEqual(['B', 'A']);
++        });
++    });
++
++    it('leaves an editable paragraph when deleting the only table', async () => {
++        const muya = bootMuya('| A |\n| --- |\n| B |\n');
++        const cursor = tableBlock(muya).removeTable();
++        cursor?.setCursor(0, 0, true);
++        await vi.waitFor(() => {
++            expect(muya.getState()).toEqual([{ name: 'paragraph', text: '' }]);
++        });
++    });
++});
++
+ describe('muya.insertImage()', () => {
+     it('inserts an inline image at the cursor', async () => {
+         const muya = bootMuya('hello\n');
+diff --git a/src/__tests__/getTOC.spec.ts b/src/__tests__/getTOC.spec.ts
+index eb98bcf..54e2585 100644
+--- a/src/__tests__/getTOC.spec.ts
++++ b/src/__tests__/getTOC.spec.ts
+@@ -16,12 +16,12 @@ import { Muya } from '../muya';
+ //    the anchor id the HTML export injects from `heading.textContent`.
+ //  - Slug is a stable per-block identifier (so `getTOC()` returns the
+ //    same slug across multiple invocations on the same document); duplicate
+-//    headings keep distinct slugs but share `githubSlug`. The marktext
+-//    fix didn't dedupe and we don't either — that is the caller's call.
++//    headings also keep distinct githubSlug values matching preview/export.
+ //  - `generateGithubSlug` keeps Unicode letters, marks and numbers the way
+ //    GitHub does, so `[jump](#中文标题)` resolves (#5292); emoji and
+ //    punctuation are stripped.
+ 
++
+ const bootedHosts: HTMLElement[] = [];
+ let originalVersion: string | undefined;
+ let hadVersion = false;
+@@ -214,6 +214,7 @@ describe('muya.getTOC()', () => {
+ 
+     it('githubSlug keeps non-ASCII letters, strips emoji and punctuation, collapses whitespace', () => {
+         const md = `# 你好 World 🎉\n\n# API & Usage Examples!\n\n## 中文标题\n\n## Café Résumé`;
++
+         const muya = bootMuya(md);
+         const toc = muya.getTOC();
+         expect(toc[0].githubSlug).toBe('你好-world-');
+@@ -222,13 +223,13 @@ describe('muya.getTOC()', () => {
+         expect(toc[3].githubSlug).toBe('café-résumé');
+     });
+ 
+-    it('duplicate headings share githubSlug but get distinct stable slugs', () => {
++    it('duplicate headings get distinct githubSlug and stable slugs', () => {
+         const md = `## Foo\n\n## Foo`;
+         const muya = bootMuya(md);
+         const toc = muya.getTOC();
+         expect(toc).toHaveLength(2);
+         expect(toc[0].githubSlug).toBe('foo');
+-        expect(toc[1].githubSlug).toBe('foo');
++        expect(toc[1].githubSlug).toBe('foo-1');
+         expect(toc[0].slug).not.toBe(toc[1].slug);
+     });
+ 
+diff --git a/src/__tests__/headingLocaleCrash.spec.ts b/src/__tests__/headingLocaleCrash.spec.ts
+index 3f567cc..9f8d4ed 100644
+--- a/src/__tests__/headingLocaleCrash.spec.ts
++++ b/src/__tests__/headingLocaleCrash.spec.ts
+@@ -90,6 +90,22 @@ function typeHeading(muya: Muya, raw: string): void {
+     );
+ }
+ 
++async function typeCharacter(muya: Muya, character: string): Promise<void> {
++    const content = muya.editor.scrollPage!.firstContentInDescendant() as Content;
++    const raw = content.text + character;
++    muya.editor.activeContentBlock = content;
++    content.domNode!.textContent = raw;
++    content.setCursor(raw.length, raw.length);
++    content.inputHandler(
++        new InputEvent('input', {
++            bubbles: true,
++            data: character,
++            inputType: 'insertText',
++        }),
++    );
++    await flush();
++}
++
+ function flush(): Promise<void> {
+     return new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+ }
+@@ -99,6 +115,32 @@ function copyLinkAffordance(muya: Muya): HTMLElement | null {
+ }
+ 
+ describe('typing `#` to create a heading under a non-en locale (#4424 / #4427)', () => {
++    it('waits for the space before converting an ATX heading', async () => {
++        const muya = bootMuya('\n', zhCN);
++
++        await typeCharacter(muya, '#');
++        await typeCharacter(muya, '#');
++        expect(muya.getState()[0].name).toBe('paragraph');
++
++        await typeCharacter(muya, ' ');
++        await typeCharacter(muya, 'x');
++        expect(muya.getState()[0]).toMatchObject({
++            name: 'atx-heading',
++            meta: { level: 2 },
++            text: '## x',
++        });
++
++        const heading = muya.editor.scrollPage!.firstContentInDescendant() as Content;
++        expect(heading.domNode!.querySelector('.mu-gray')?.textContent).toBe('##');
++
++        muya.editor.activeContentBlock = null;
++        expect(heading.domNode!.querySelector('.mu-gray')).toBeNull();
++        expect(heading.domNode!.querySelector('.mu-hide')?.textContent).toBe('##');
++
++        heading.setCursor(heading.text.length, heading.text.length);
++        expect(heading.domNode!.querySelector('.mu-gray')?.textContent).toBe('##');
++    });
++
+     it('does not throw when converting a paragraph to an ATX heading under zh-CN', async () => {
+         const muya = bootMuya('\n', zhCN);
+ 
+diff --git a/src/assets/styles/blockSyntax.css b/src/assets/styles/blockSyntax.css
+index 0582a30..079c638 100644
+--- a/src/assets/styles/blockSyntax.css
++++ b/src/assets/styles/blockSyntax.css
+@@ -618,6 +618,7 @@ li.mu-task-list-item > span.mu-checkbox-checked::before {
+ 
+ .mu-table-inner tr td {
+     position: relative;
++    isolation: isolate;
+ 
+     margin: 0;
+     padding: 6px 13px;
+@@ -655,11 +656,16 @@ li.mu-task-list-item > span.mu-checkbox-checked::before {
+ }
+ 
+ .mu-table-inner tr td.mu-table-cell-selected::before {
+-    z-index: 1;
++    z-index: 0;
+ 
+     background: var(--editor-color-04);
+ }
+ 
++.mu-table-inner tr td > .mu-table-cell-content {
++    position: relative;
++    z-index: 1;
++}
++
+ .mu-table-inner tr td.mu-table-cell-border-top::before {
+     border-top-color: var(--theme-color);
+ }
+diff --git a/src/assets/styles/fonts/DejaVuSansMono_LICENSE b/src/assets/styles/fonts/DejaVuSansMono_LICENSE
+index df52c17..8d71958 100644
+--- a/src/assets/styles/fonts/DejaVuSansMono_LICENSE
++++ b/src/assets/styles/fonts/DejaVuSansMono_LICENSE
+@@ -74,7 +74,7 @@ Fonts, only if the fonts are renamed to names not containing either
+ the words "Tavmjong Bah" or the word "Arev".
+ 
+ This License becomes null and void to the extent applicable to Fonts
+-or Font Software that has been modified and is distributed under the 
++or Font Software that has been modified and is distributed under the
+ "Tavmjong Bah Arev" names.
+ 
+ The Font Software may be sold as part of a larger software package but
+diff --git a/src/block/base/format.ts b/src/block/base/format.ts
+index b33429e..f3a1d3c 100644
+--- a/src/block/base/format.ts
++++ b/src/block/base/format.ts
+@@ -420,11 +420,23 @@ class Format extends Content {
+ 
+     override blurHandler() {
+         super.blurHandler();
+-        const needRender = this.checkNeedRender();
++        const needRender
++            = this.parent?.blockName === 'atx-heading' || this.checkNeedRender();
+         if (needRender)
+             this.update();
+     }
+ 
++    override focusHandler() {
++        super.focusHandler();
++        if (this.parent?.blockName !== 'atx-heading')
++            return;
++
++        // setCursor focuses the block before installing its DOM selection.
++        // A detached or cleared range must still reveal the heading markers.
++        const cursor = this.getCursor();
++        this.update({ ...cursor, block: this });
++    }
++
+     /**
+      * Update emoji text if cursor is in emoji syntax.
+      * @param {string} text emoji text
+@@ -819,7 +831,9 @@ class Format extends Content {
+                 this._convertToTaskList();
+                 break;
+ 
+-            case !!atxHeading:
++            case !!atxHeading
++                && (this.parent?.blockName === 'atx-heading'
++                    || /(?:^|\n) {0,3}#{1,6}\s+/.test(text)):
+                 this._convertToAtxHeading(atxHeading);
+                 break;
+ 
+diff --git a/src/block/commonMark/html/htmlPreview.ts b/src/block/commonMark/html/htmlPreview.ts
+index 2ebef03..6a373ca 100644
+--- a/src/block/commonMark/html/htmlPreview.ts
++++ b/src/block/commonMark/html/htmlPreview.ts
+@@ -68,7 +68,7 @@ class HTMLPreview extends Parent {
+ 
+             for (const img of imgs) {
+                 const src = img.getAttribute('src')!;
+-                const imageSrc = getImageSrc(src);
++                const imageSrc = getImageSrc(src, this.muya.options.resolveImageSrc);
+                 img.setAttribute('src', imageSrc.src);
+             }
+ 
+diff --git a/src/block/extra/diagram/__tests__/diagramPreview.spec.ts b/src/block/extra/diagram/__tests__/diagramPreview.spec.ts
+index 22a1097..38ca54a 100644
+--- a/src/block/extra/diagram/__tests__/diagramPreview.spec.ts
++++ b/src/block/extra/diagram/__tests__/diagramPreview.spec.ts
+@@ -6,7 +6,7 @@ import { CLASS_NAMES } from '../../../../config';
+ import I18n from '../../../../i18n';
+ import { en } from '../../../../locales/en';
+ import { zhCN } from '../../../../locales/zh-CN';
+-import DiagramPreview from '../diagramPreview';
++import DiagramPreview, { cancelPendingDiagramRenders } from '../diagramPreview';
+ 
+ // The diagram renderer (`utils/diagram` default export) dynamically imports
+ // heavy renderer packages (mermaid / vega / flowchart) that don't load under
+@@ -53,6 +53,7 @@ function makeState(text: string, type: IDiagramMeta['type'] = 'mermaid'): IDiagr
+ function makePreview(text: string, type: IDiagramMeta['type'] = 'mermaid', locale = en) {
+     const { muya, i18n } = makeFakeMuya(locale);
+     const preview = new DiagramPreview(muya, makeState(text, type));
++    document.body.append(preview.domNode!);
+     bootedHosts.push(preview.domNode!);
+     return { preview, muya, i18n };
+ }
+@@ -116,6 +117,203 @@ describe('diagramPreview — invalid / error state', () => {
+     });
+ });
+ 
++describe('diagramPreview — mermaid SVG ownership', () => {
++    it('pauses queued rendering while the containing editor tab is hidden', async () => {
++        const run = vi.fn(async ({ nodes }: { nodes: HTMLElement[] }) => {
++            nodes[0].innerHTML = '<svg><g class="root"></g></svg>';
++            nodes[0].querySelector<SVGGElement>('g.root')!.getBBox = () => ({
++                x: 0,
++                y: 0,
++                width: 100,
++                height: 80,
++            } as DOMRect);
++        });
++        loadRendererMock.mockResolvedValue({ initialize: vi.fn(), run });
++
++        const pane = document.createElement('div');
++        pane.className = 'markdown-editor-pane';
++        pane.setAttribute('aria-hidden', 'true');
++        document.body.append(pane);
++        bootedHosts.push(pane);
++
++        const { muya } = makeFakeMuya();
++        const preview = new DiagramPreview(muya, makeState(''));
++        pane.append(preview.domNode!);
++        const update = preview.update('flowchart TD\nA --> B');
++
++        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
++        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
++        expect(run).not.toHaveBeenCalled();
++
++        pane.setAttribute('aria-hidden', 'false');
++        await update;
++        expect(run).toHaveBeenCalledTimes(1);
++    });
++
++    it('releases deferred jobs when their editor is destroyed', async () => {
++        const run = vi.fn(async () => undefined);
++        loadRendererMock.mockResolvedValue({ initialize: vi.fn(), run });
++
++        const pane = document.createElement('div');
++        pane.className = 'markdown-editor-pane';
++        pane.setAttribute('aria-hidden', 'true');
++        document.body.append(pane);
++        bootedHosts.push(pane);
++
++        const { muya } = makeFakeMuya();
++        const preview = new DiagramPreview(muya, makeState(''));
++        pane.append(preview.domNode!);
++        const update = preview.update('flowchart TD\nA --> B');
++
++        cancelPendingDiagramRenders(pane);
++        await update;
++        expect(run).not.toHaveBeenCalled();
++    });
++
++    it('normalizes the Mermaid viewBox to its graph bounds without rerendering', async () => {
++        const run = vi.fn(async ({ nodes }: { nodes: HTMLElement[] }) => {
++            nodes[0].innerHTML = '<svg viewBox="-138 -83 2146 2091"><g class="root"></g></svg>';
++            nodes[0].querySelector<SVGGElement>('g.root')!.getBBox = () => ({
++                x: 8,
++                y: 8,
++                width: 509,
++                height: 1758,
++            } as DOMRect);
++        });
++        loadRendererMock.mockResolvedValue({ initialize: vi.fn(), run });
++
++        const { preview } = makePreview('');
++        await preview.update('flowchart TD\nA --> B');
++
++        expect(run).toHaveBeenCalledTimes(1);
++        expect(preview.domNode!.querySelector('svg')!.getAttribute('viewBox')).toBe('0 0 525 1774');
++    });
++
++    it('waits for document fonts before Mermaid measures the connected preview', async () => {
++        let resolveFonts!: () => void;
++        const fontsReady = new Promise<void>((resolve) => {
++            resolveFonts = resolve;
++        });
++        const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
++        Object.defineProperty(document, 'fonts', {
++            configurable: true,
++            value: { ready: fontsReady },
++        });
++        const initialize = vi.fn();
++        const run = vi.fn(async () => undefined);
++        loadRendererMock.mockResolvedValue({ initialize, run });
++
++        try {
++            const code = 'flowchart TD\nA --> B';
++            const { preview } = makePreview(code);
++            const update = preview.update(code);
++            await Promise.resolve();
++            expect(run).not.toHaveBeenCalled();
++
++            resolveFonts();
++            await update;
++            expect(run).toHaveBeenCalled();
++        }
++        finally {
++            if (originalFonts)
++                Object.defineProperty(document, 'fonts', originalFonts);
++            else
++                Reflect.deleteProperty(document, 'fonts');
++        }
++    });
++
++    it('renders in the connected preview node so Mermaid measures final DOM geometry', async () => {
++        const initialize = vi.fn();
++        const run = vi.fn(async ({ nodes }: { nodes: HTMLElement[] }) => {
++            expect(nodes).toHaveLength(1);
++            expect(nodes[0].isConnected).toBe(true);
++            expect(nodes[0].textContent).toContain('subgraph TARGET');
++            nodes[0].innerHTML = [
++                '<svg viewBox="0 0 3986 1915">',
++                '<g class="root" transform="translate(8, 8)"></g>',
++                '</svg>',
++            ].join('');
++        });
++        loadRendererMock.mockResolvedValue({ initialize, run });
++
++        const code = [
++            'flowchart TB',
++            'subgraph TARGET["Data"]',
++            'A["A"]',
++            'end',
++            'SOURCE --> TARGET',
++        ].join('\n');
++        const { preview } = makePreview(code);
++        await preview.update(code);
++
++        expect(initialize).toHaveBeenLastCalledWith({
++            startOnLoad: false,
++            securityLevel: 'strict',
++            theme: 'default',
++            htmlLabels: false,
++            flowchart: { htmlLabels: false, curve: 'linear' },
++            class: { htmlLabels: false },
++        });
++        expect(run).toHaveBeenCalled();
++        const svg = preview.domNode!.querySelector('svg')!;
++        expect(svg.getAttribute('viewBox')).toBe('0 0 3986 1915');
++        expect(svg.querySelector('g.root')!.getAttribute('transform')).toBe('translate(8, 8)');
++    });
++
++    it('keeps SVG labels for class diagrams in WebView2', async () => {
++        const initialize = vi.fn();
++        const run = vi.fn(async ({ nodes }: { nodes: HTMLElement[] }) => {
++            nodes[0].innerHTML = '<svg class="classDiagram"><g class="root"></g></svg>';
++            nodes[0].querySelector<SVGGElement>('g.root')!.getBBox = () => ({
++                x: 8,
++                y: 8,
++                width: 512,
++                height: 1104,
++            } as DOMRect);
++        });
++        loadRendererMock.mockResolvedValue({ initialize, run });
++
++        const code = 'classDiagram\nclass User';
++        const { preview } = makePreview(code);
++        await preview.update(code);
++
++        expect(initialize).toHaveBeenLastCalledWith({
++            startOnLoad: false,
++            securityLevel: 'strict',
++            theme: 'default',
++            htmlLabels: false,
++            flowchart: { htmlLabels: false, curve: 'linear' },
++            class: { htmlLabels: false },
++        });
++        const svg = preview.domNode!.querySelector('svg')!;
++        expect(svg.classList.contains('mu-diagram-class')).toBe(true);
++        expect(svg.classList.contains('mu-diagram-balanced')).toBe(false);
++        expect(svg.getAttribute('viewBox')).toBe('0 0 528 1120');
++    });
++
++    it('keeps tall ER diagrams readable instead of treating them as portraits', async () => {
++        const run = vi.fn(async ({ nodes }: { nodes: HTMLElement[] }) => {
++            nodes[0].innerHTML = '<svg class="erDiagram"><g class="root"></g></svg>';
++            nodes[0].querySelector<SVGGElement>('g.root')!.getBBox = () => ({
++                x: 8,
++                y: 8,
++                width: 650,
++                height: 1150,
++            } as DOMRect);
++        });
++        loadRendererMock.mockResolvedValue({ initialize: vi.fn(), run });
++
++        const code = 'erDiagram\nTASK ||--o{ TASK_VERSION : creates';
++        const { preview } = makePreview(code);
++        await preview.update(code);
++
++        const svg = preview.domNode!.querySelector('svg')!;
++        expect(svg.classList.contains('mu-diagram-wide')).toBe(true);
++        expect(svg.classList.contains('mu-diagram-portrait')).toBe(false);
++        expect(svg.getAttribute('viewBox')).toBe('0 0 666 1166');
++    });
++});
++
+ describe('diagramPreview — clickHandler routing', () => {
+     it('preventDefault + stopPropagation + setCursor(0,0) on the parent first content', () => {
+         const { preview } = makePreview('');
+diff --git a/src/block/extra/diagram/diagramPreview.ts b/src/block/extra/diagram/diagramPreview.ts
+index 1785191..4f23ad1 100644
+--- a/src/block/extra/diagram/diagramPreview.ts
++++ b/src/block/extra/diagram/diagramPreview.ts
+@@ -3,12 +3,332 @@ import type { IDiagramState, TState } from '../../../state/types';
+ import { fromEvent } from 'rxjs';
+ import { CLASS_NAMES, PREVIEW_DOMPURIFY_CONFIG } from '../../../config';
+ import { sanitize } from '../../../utils';
+-import { finalizeRenderedDiagram, renderDiagram } from '../../../utils/diagram/render';
++import loadRenderer from '../../../utils/diagram';
++import {
++    classifyMermaidDiagramSize,
++    createMermaidRenderConfig,
++    repairDisconnectedMermaidClusterEdges,
++    runMermaidWithCompatibility,
++} from '../../../utils/diagram/mermaidCompat';
++import { finalizeRenderedDiagram } from '../../../utils/diagram/render';
++
+ import logger from '../../../utils/logger';
+ import Parent from '../../base/parent';
+ 
+ const debug = logger('diagramPreview:');
+ 
++interface IMermaidRenderJob {
++    target: HTMLElement;
++    run: () => Promise<void>;
++    resolve: () => void;
++    reject: (error: unknown) => void;
++}
++
++const mermaidRenderJobs: IMermaidRenderJob[] = [];
++let mermaidRenderRunning = false;
++let mermaidRenderWakeFrame = 0;
++let mermaidRenderWakeListenersReady = false;
++
++function diagramRenderViewport(target: HTMLElement): { top: number; bottom: number; height: number } {
++    const pane = target.closest<HTMLElement>('.markdown-editor-pane');
++    if (pane) {
++        const rect = pane.getBoundingClientRect();
++        const height = rect.height || pane.clientHeight;
++        if (height > 0)
++            return { top: rect.top, bottom: rect.bottom, height };
++    }
++    const height = Math.max(1, window.innerHeight);
++    return { top: 0, bottom: height, height };
++}
++
++function diagramDistanceFromViewport(target: HTMLElement): number {
++    if (!target.isConnected || target.closest('[aria-hidden="true"]'))
++        return Number.MAX_SAFE_INTEGER;
++    const rect = target.getBoundingClientRect();
++    const viewport = diagramRenderViewport(target);
++    if (rect.bottom >= viewport.top && rect.top <= viewport.bottom)
++        return 0;
++    return rect.top > viewport.bottom ? rect.top - viewport.bottom : viewport.top - rect.bottom;
++}
++
++function diagramIsNearViewport(target: HTMLElement): boolean {
++    const distance = diagramDistanceFromViewport(target);
++    return distance <= Math.max(800, diagramRenderViewport(target).height * 1.5);
++}
++
++function requestMermaidRenderDrain(): void {
++    if (mermaidRenderJobs.length === 0 || mermaidRenderWakeFrame)
++        return;
++    mermaidRenderWakeFrame = window.requestAnimationFrame(() => {
++        mermaidRenderWakeFrame = 0;
++        void drainMermaidRenderQueue();
++    });
++}
++
++function ensureMermaidRenderWakeListeners(): void {
++    if (mermaidRenderWakeListenersReady)
++        return;
++    mermaidRenderWakeListenersReady = true;
++    document.addEventListener('scroll', requestMermaidRenderDrain, true);
++    window.addEventListener('resize', requestMermaidRenderDrain);
++    new MutationObserver(requestMermaidRenderDrain).observe(document.documentElement, {
++        subtree: true,
++        attributes: true,
++        attributeFilter: ['aria-hidden'],
++    });
++}
++
++function takeNextMermaidRenderJob(): IMermaidRenderJob | null {
++    for (let index = mermaidRenderJobs.length - 1; index >= 0; index -= 1) {
++        const job = mermaidRenderJobs[index];
++        if (!job.target.isConnected) {
++            mermaidRenderJobs.splice(index, 1);
++            job.resolve();
++        }
++    }
++
++    let nextIndex = -1;
++    let nextDistance = Number.MAX_SAFE_INTEGER;
++    mermaidRenderJobs.forEach((job, index) => {
++        if (!diagramIsNearViewport(job.target))
++            return;
++        const distance = diagramDistanceFromViewport(job.target);
++        if (distance < nextDistance) {
++            nextIndex = index;
++            nextDistance = distance;
++        }
++    });
++    return nextIndex >= 0 ? mermaidRenderJobs.splice(nextIndex, 1)[0] : null;
++}
++
++export function cancelPendingDiagramRenders(root: Node): void {
++    for (let index = mermaidRenderJobs.length - 1; index >= 0; index -= 1) {
++        const job = mermaidRenderJobs[index];
++        if (job.target === root || root.contains(job.target)) {
++            mermaidRenderJobs.splice(index, 1);
++            job.resolve();
++        }
++    }
++}
++
++async function waitForDiagramRenderOpportunity(): Promise<void> {
++    if (document.readyState !== 'complete') {
++        await new Promise<void>((resolve) => {
++            window.addEventListener('load', () => resolve(), { once: true });
++        });
++    }
++    if (document.fonts)
++        await document.fonts.ready;
++    await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
++    await new Promise<void>((resolve) => {
++        if (typeof window.requestIdleCallback === 'function') {
++            window.requestIdleCallback(() => resolve(), { timeout: 80 });
++        }
++        else {
++            window.requestAnimationFrame(() => resolve());
++        }
++    });
++}
++
++async function drainMermaidRenderQueue(): Promise<void> {
++    if (mermaidRenderRunning)
++        return;
++    mermaidRenderRunning = true;
++    try {
++        while (mermaidRenderJobs.length > 0) {
++            await waitForDiagramRenderOpportunity();
++            const job = takeNextMermaidRenderJob();
++            if (!job)
++                return;
++            try {
++                await job.run();
++                job.resolve();
++            }
++            catch (error) {
++                job.reject(error);
++            }
++        }
++    }
++    finally {
++        mermaidRenderRunning = false;
++        if (mermaidRenderJobs.length > 0)
++            void drainMermaidRenderQueue();
++    }
++}
++
++function scheduleMermaidRender(target: HTMLElement, run: () => Promise<void>): Promise<void> {
++    ensureMermaidRenderWakeListeners();
++    return new Promise((resolve, reject) => {
++        mermaidRenderJobs.push({ target, run, resolve, reject });
++        void drainMermaidRenderQueue();
++    });
++}
++
++function applyDiagramSizeClass(svg: SVGSVGElement, width: number, height: number): void {
++    svg.classList.remove(
++        'mu-diagram-wide',
++        'mu-diagram-balanced',
++        'mu-diagram-portrait',
++        'mu-diagram-class',
++    );
++    svg.classList.add(`mu-diagram-${classifyMermaidDiagramSize(svg, width, height)}`);
++}
++
++function normalizeMermaidViewBox(target: HTMLElement): boolean {
++    const svg = target.querySelector<SVGSVGElement>('svg');
++    const root = svg?.querySelector<SVGGElement>('g.root');
++    if (!svg || !root)
++        return false;
++    let bounds: DOMRect | SVGRect;
++    try {
++        bounds = root.getBBox();
++    }
++    catch {
++        return false;
++    }
++    if (
++        ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)
++        || bounds.width <= 0
++        || bounds.height <= 0
++    )
++        return false;
++    const padding = 8;
++    const width = bounds.width + padding * 2;
++    const height = bounds.height + padding * 2;
++    svg.setAttribute(
++        'viewBox',
++        `${bounds.x - padding} ${bounds.y - padding} ${width} ${height}`,
++    );
++    applyDiagramSizeClass(svg, width, height);
++    return true;
++}
++
++async function renderMermaidInTarget(
++    render: { run: (options: { nodes: HTMLElement[] }) => Promise<void> },
++    target: HTMLElement,
++    code: string,
++): Promise<void> {
++    target.innerHTML = sanitize(code, PREVIEW_DOMPURIFY_CONFIG, true) as string;
++    target.removeAttribute('data-processed');
++    await render.run({ nodes: [target] });
++    repairDisconnectedMermaidClusterEdges(target, code);
++    normalizeMermaidViewBox(target);
++}
++
++// Give a fixed-size `<svg>` a viewBox when needed, then classify its aspect
++// ratio so the host can enlarge compact diagrams without stretching tall ones
++// across the whole editor.
++function finalizeSvg(target: HTMLElement): boolean {
++    const svg = target.querySelector('svg');
++    if (!svg)
++        return false;
++    const viewBox = svg.viewBox.baseVal;
++    const width = viewBox.width || Number.parseFloat(svg.getAttribute('width') ?? '');
++    const height = viewBox.height || Number.parseFloat(svg.getAttribute('height') ?? '');
++    if (width > 0 && height > 0) {
++        if (!svg.getAttribute('viewBox'))
++            svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
++        applyDiagramSizeClass(svg, width, height);
++        return true;
++    }
++    return false;
++}
++
++// `drawSVG` (js-sequence-diagrams / flowchart.js) renders the `<svg>`
++// asynchronously — it's drawn from a theme callback after its font loads — so
++// the element and its `width`/`height` attributes aren't there synchronously.
++// Try once, then observe `target` until the sized `<svg>` appears.
++function ensureViewBox(target: HTMLElement): void {
++    if (finalizeSvg(target))
++        return;
++    const observer = new MutationObserver(() => {
++        if (finalizeSvg(target))
++            observer.disconnect();
++    });
++    observer.observe(target, {
++        childList: true,
++        subtree: true,
++        attributes: true,
++        attributeFilter: ['width', 'height'],
++    });
++    // Safety net so the observer can't leak if the svg never renders.
++    setTimeout(() => observer.disconnect(), 5000);
++}
++
++interface IRenderOptions {
++    type: string;
++    code: string;
++    target: HTMLElement;
++    vegaTheme: string;
++    mermaidTheme: string;
++    plantumlServer: string;
++    sequenceTheme: 'hand' | 'simple';
++}
++
++async function renderDiagram({
++    type,
++    code,
++    target,
++    vegaTheme,
++    mermaidTheme,
++    plantumlServer,
++    sequenceTheme,
++}: IRenderOptions) {
++    if (type === 'mermaid') {
++        await scheduleMermaidRender(target, async () => {
++            const render = await loadRenderer(type);
++            await runMermaidWithCompatibility(async () => {
++                render.initialize(createMermaidRenderConfig(mermaidTheme, code));
++                await renderMermaidInTarget(render, target, code);
++            });
++        });
++        return;
++    }
++
++    const render = await loadRenderer(type);
++    const options = {};
++    if (type === 'vega-lite') {
++        Object.assign(options, {
++            actions: false,
++            tooltip: false,
++            renderer: 'svg',
++            theme: vegaTheme,
++            ast: true,
++        });
++    }
++    else if (type === 'sequence') {
++        Object.assign(options, { theme: sequenceTheme });
++    }
++
++    if (type === 'plantuml') {
++        if (!plantumlServer?.trim()) {
++            target.textContent = 'PlantUML 网络渲染已关闭，请在 Markdown 设置中配置服务器';
++            return;
++        }
++        const endpoint = new URL(plantumlServer);
++        if (!['https:', 'http:'].includes(endpoint.protocol))
++            throw new Error('PlantUML server must use HTTP or HTTPS');
++        const diagram = render.parse(code, plantumlServer);
++        target.innerHTML = '';
++        diagram.insertImgElement(target);
++    }
++    else if (type === 'vega-lite') {
++        await render(target, JSON.parse(code), options);
++        finalizeSvg(target);
++    }
++    else if (type === 'flowchart' || type === 'sequence') {
++        const diagram = render.parse(code);
++        target.innerHTML = '';
++        diagram.drawSVG(target, options);
++        // js-sequence-diagrams / flowchart.js emit an <svg> with a fixed pixel
++        // width/height but NO viewBox, so the `max-width: 100%` style can only
++        // clip a wide diagram, not scale it. Derive a viewBox from those pixel
++        // dimensions (once the async draw completes) so it scales to fit.
++        ensureViewBox(target);
++    }
++}
++
++
+ class DiagramPreview extends Parent {
+     private _code: string;
+     private _type: string;
+diff --git a/src/block/extra/math/mathPreview.ts b/src/block/extra/math/mathPreview.ts
+index 8922468..e75b199 100644
+--- a/src/block/extra/math/mathPreview.ts
++++ b/src/block/extra/math/mathPreview.ts
+@@ -5,6 +5,7 @@ import { fromEvent } from 'rxjs';
+ import { CLASS_NAMES } from '../../../config';
+ import { escapeHTML } from '../../../utils';
+ import logger from '../../../utils/logger';
++import { prepareEquationTex } from '../../../utils/equationReferences';
+ import Parent from '../../base/parent';
+ import 'katex/dist/contrib/mhchem.mjs';
+ 
+@@ -66,7 +67,7 @@ class MathPreview extends Parent {
+ 
+         if (math) {
+             try {
+-                const html = katex.renderToString(math, {
++                const html = katex.renderToString(prepareEquationTex(math, this.muya.options.mathEquationLabels ?? {}, true), {
+                     displayMode: true,
+                 });
+                 this.domNode!.innerHTML = html;
+diff --git a/src/block/gfm/table/index.ts b/src/block/gfm/table/index.ts
+index b04e9f2..c0e5f3c 100644
+--- a/src/block/gfm/table/index.ts
++++ b/src/block/gfm/table/index.ts
+@@ -9,7 +9,8 @@ import type TableRow from './row';
+ import type TableInner from './table';
+ import diff from 'fast-diff';
+ import { fromEvent } from 'rxjs';
+-import { diffToTextOp } from '../../../utils';
++import emptyStates from '../../../config/emptyStates';
++import { deepClone, diffToTextOp } from '../../../utils';
+ import logger from '../../../utils/logger';
+ import { LinkedList } from '../../base/linkedList/linkedList';
+ import Parent from '../../base/parent';
+@@ -271,6 +272,90 @@ class Table extends Parent {
+         });
+     }
+ 
++    resize(rows: number, columns: number) {
++        const safeRows = Math.max(2, Number.isFinite(rows) ? Math.floor(rows) : 0);
++        const safeColumns = Math.max(1, Number.isFinite(columns) ? Math.floor(columns) : 0);
++        const state = this.getState();
++        const alignments = state.children[0]?.children.map(cell => cell.meta.align) ?? [];
++
++        state.children.length = Math.min(state.children.length, safeRows);
++        while (state.children.length < safeRows) {
++            state.children.push({
++                name: 'table.row',
++                children: Array.from({ length: safeColumns }, (_, index) => ({
++                    name: 'table.cell',
++                    meta: { align: alignments[index] ?? 'none' },
++                    text: '',
++                })),
++            });
++        }
++        state.children.forEach((row) => {
++            row.children.length = Math.min(row.children.length, safeColumns);
++            while (row.children.length < safeColumns) {
++                const index = row.children.length;
++                row.children.push({
++                    name: 'table.cell',
++                    meta: { align: alignments[index] ?? 'none' },
++                    text: '',
++                });
++            }
++        });
++
++        return this._replaceWithState(state, 0, 0);
++    }
++
++    moveRow(from: number, to: number, column = 0) {
++        const max = this.rowCount - 1;
++        if (from < 0 || from > max)
++            return null;
++        const target = Math.max(0, Math.min(to, max));
++        if (target === from)
++            return this.cellAt(from, Math.min(column, this.columnCount - 1))?.firstContentInDescendant() ?? null;
++
++        const state = this.getState();
++        const row = state.children.splice(from, 1)[0];
++        state.children.splice(target, 0, row);
++        return this._replaceWithState(state, target, Math.min(column, this.columnCount - 1));
++    }
++
++    moveColumn(from: number, to: number, row = 0) {
++        const max = this.columnCount - 1;
++        if (from < 0 || from > max)
++            return null;
++        const target = Math.max(0, Math.min(to, max));
++        if (target === from)
++            return this.cellAt(Math.min(row, this.rowCount - 1), from)?.firstContentInDescendant() ?? null;
++
++        const state = this.getState();
++        state.children.forEach((tableRow) => {
++            const cell = tableRow.children.splice(from, 1)[0];
++            tableRow.children.splice(target, 0, cell);
++        });
++        return this._replaceWithState(state, Math.min(row, this.rowCount - 1), target);
++    }
++
++    removeTable() {
++        let cursorBlock = this.prev?.lastContentInDescendant()
++            ?? this.next?.firstContentInDescendant()
++            ?? null;
++        if (!cursorBlock) {
++            const paragraph = ScrollPage.loadBlock('paragraph').create(
++                this.muya,
++                deepClone(emptyStates.paragraph),
++            );
++            this.parent!.insertAfter(paragraph, this);
++            cursorBlock = paragraph.firstContentInDescendant();
++        }
++        this.remove();
++        return cursorBlock;
++    }
++
++    private _replaceWithState(state: ITableState, row: number, column: number) {
++        const newTable = ScrollPage.loadBlock('table').create(this.muya, state) as Table;
++        this.replaceWith(newTable);
++        return newTable.cellAt(row, column)?.firstContentInDescendant() ?? null;
++    }
++
+     /**
+      * Resolve a body cell by its (row, column) offsets, both zero-based. Returns
+      * `null` when either index is out of range. Used by the cross-cell selection
+diff --git a/src/clipboard/copyData.ts b/src/clipboard/copyData.ts
+index 398ae17..768e3f8 100644
+--- a/src/clipboard/copyData.ts
++++ b/src/clipboard/copyData.ts
+@@ -46,6 +46,7 @@ function buildHtmlOptions(options: Muya['options']) {
+     } = options;
+ 
+     return { footnote, frontMatter, texMathDollars, texMathGfm, texMathSingleBackslash, texMathDoubleBackslash, superSubScript, highlightSyntax, inlineDiff, multilineBlockquote };
++
+ }
+ 
+ /**
+diff --git a/src/clipboard/pasteImage.ts b/src/clipboard/pasteImage.ts
+index 51c10a5..76cdcc1 100644
+--- a/src/clipboard/pasteImage.ts
++++ b/src/clipboard/pasteImage.ts
+@@ -96,11 +96,14 @@ async function insertImageSrc(
+     const placeholderText = insertImageText(anchorBlock, src, id);
+ 
+     let finalSrc = src;
+-    const resolved = await imageAction({ src, alt: '', title: '' });
+-    if (resolved)
+-        finalSrc = resolved;
+-
+-    replacePlaceholderImage(anchorBlock, placeholderText, finalSrc);
++    try {
++        const resolved = await imageAction({ src, alt: '', title: '' });
++        if (resolved) finalSrc = resolved;
++    } finally {
++        // A failed copy/upload must not leave a permanent loading marker or
++        // discard a pasted screenshot. Keep the source while surfacing error.
++        replacePlaceholderImage(anchorBlock, placeholderText, finalSrc);
++    }
+ }
+ 
+ // Resolve a pasted image to an `src`: a clipboard FILE path (via the
+@@ -293,12 +296,13 @@ async function replaceImageAt(
+     const placeholderText = spliceImageText(block, range, src, id);
+ 
+     let finalSrc = src;
+-    const resolved = await imageAction({ src, alt: '', title: '' });
+-    if (resolved)
+-        finalSrc = resolved;
+-
+-    replacePlaceholderImage(block, placeholderText, finalSrc);
+-    reselectImageAt(clipboard, block, range.start);
++    try {
++        const resolved = await imageAction({ src, alt: '', title: '' });
++        if (resolved) finalSrc = resolved;
++    } finally {
++        replacePlaceholderImage(block, placeholderText, finalSrc);
++        reselectImageAt(clipboard, block, range.start);
++    }
+ }
+ 
+ /**
+diff --git a/src/editor/dragDropImage.ts b/src/editor/dragDropImage.ts
+index 0ec106e..29a3108 100644
+--- a/src/editor/dragDropImage.ts
++++ b/src/editor/dragDropImage.ts
+@@ -204,7 +204,7 @@ async function persistDroppedImage(
+ 
+     try {
+         const newSrc = await imageAction({ src: path, alt: name, title: '' });
+-        const { src } = getImageSrc(path);
++        const { src } = getImageSrc(path, muya.options.resolveImageSrc);
+         if (src)
+             muya.editor.inlineRenderer.renderer.urlMap.set(newSrc, src);
+ 
+diff --git b/src/inlineRenderer/__tests__/emptyLinkVisibility.spec.ts b/src/inlineRenderer/__tests__/emptyLinkVisibility.spec.ts
+new file mode 100644
+index 0000000..1fb16fe
+--- /dev/null
++++ b/src/inlineRenderer/__tests__/emptyLinkVisibility.spec.ts
+@@ -0,0 +1,46 @@
++// @vitest-environment happy-dom
++
++import type { Muya as MuyaType } from '../../muya';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { Muya } from '../../muya';
++
++const bootedHosts: HTMLElement[] = [];
++let originalVersion: string | undefined;
++let hadVersion = false;
++
++beforeEach(() => {
++    hadVersion = 'MUYA_VERSION' in window;
++    originalVersion = window.MUYA_VERSION;
++    window.MUYA_VERSION = 'test';
++});
++
++afterEach(() => {
++    while (bootedHosts.length)
++        bootedHosts.pop()!.remove();
++    document.getSelection()?.removeAllRanges();
++    if (hadVersion)
++        window.MUYA_VERSION = originalVersion as string;
++    else
++        delete (window as Partial<Window>).MUYA_VERSION;
++});
++
++function bootMuya(markdown: string): MuyaType {
++    const host = document.createElement('div');
++    document.body.appendChild(host);
++    const muya = new Muya(host, { markdown } as ConstructorParameters<typeof Muya>[1]);
++    muya.init();
++    bootedHosts.push(muya.domNode);
++    return muya;
++}
++
++describe('empty link visibility', () => {
++    it('hides heading permalinks outside the active cursor token', () => {
++        const muya = bootMuya('## 用户权限[](https://example.com/doc#permissions)\n');
++        const link = muya.domNode.querySelector<HTMLAnchorElement>('a.mu-no-text-link')!;
++
++        expect(link).toBeDefined();
++        expect(link.classList.contains('mu-hide')).toBe(true);
++        expect(link.previousElementSibling?.classList.contains('mu-hide')).toBe(true);
++        expect(link.nextElementSibling?.classList.contains('mu-hide')).toBe(true);
++    });
++});
+diff --git a/src/inlineRenderer/lexer.ts b/src/inlineRenderer/lexer.ts
+index d327630..21ddab0 100644
+--- a/src/inlineRenderer/lexer.ts
++++ b/src/inlineRenderer/lexer.ts
+@@ -283,6 +283,7 @@ function tryChunks(state: ILexState): boolean {
+         const to = Array.isArray(ruleValue)
+             ? ruleValue.map(rule => rule.exec(state.src)).find(Boolean)
+             : ruleValue.exec(state.src);
++
+         if (to && isLengthEven(to[3])) {
+             if (rule === 'emoji') {
+                 // An emoji opener must sit at a word boundary: a ":" glued to a
+@@ -922,6 +923,7 @@ function rebuildWrapperToken(token: Token): string {
+         case 'mark':
+             return token.marker + generator(token.children, true) + token.backlash + token.marker;
+ 
++
+         case 'html_tag':
+             if (token.openTag != null && token.closeTag != null && token.children != null)
+                 return token.openTag + generator(token.children, true) + token.closeTag;
+diff --git a/src/inlineRenderer/renderer/__tests__/image.spec.ts b/src/inlineRenderer/renderer/__tests__/image.spec.ts
+index b4a77fe..072632f 100644
+--- a/src/inlineRenderer/renderer/__tests__/image.spec.ts
++++ b/src/inlineRenderer/renderer/__tests__/image.spec.ts
+@@ -26,6 +26,7 @@ interface IFakeRenderer {
+     muya: {
+         editor: { selection: { image: null | unknown } };
+         i18n: { t: (s: string) => string };
++        options: { resolveImageSrc?: (src: string) => string };
+     };
+ }
+ 
+@@ -42,6 +43,7 @@ function makeRenderer(loadResult: {
+         muya: {
+             editor: { selection: { image: null } },
+             i18n: { t: (s: string) => s },
++            options: {},
+         },
+     };
+ }
+@@ -90,6 +92,24 @@ function findImgSrc(vnodes: VNode | VNode[]): string | undefined {
+     return found;
+ }
+ 
++function findImgProps(vnodes: VNode | VNode[]): Record<string, unknown> | undefined {
++    const arr = Array.isArray(vnodes) ? vnodes : [vnodes];
++    let found: Record<string, unknown> | undefined;
++    const walk = (node: unknown) => {
++        if (!node || typeof node !== 'object' || found)
++            return;
++        const vnode = node as VNode;
++        if (vnode.sel === 'img') {
++            found = vnode.data?.props as Record<string, unknown> | undefined;
++            return;
++        }
++        if (Array.isArray(vnode.children))
++            vnode.children.forEach(walk);
++    };
++    arr.forEach(walk);
++    return found;
++}
++
+ // Narrow casts shared by every test: the fake renderer and block stubs
+ // don't satisfy the full Renderer / Format / IRenderCursor surface, but
+ // `image()` only touches the loadImageAsync / urlMap / muya fields and
+@@ -224,6 +244,26 @@ describe('image renderer — uses the cache-busted url for local files', () => {
+ 
+         expect(findImgSrc(out)).toBe('https://example.com/x.png');
+     });
++
++    it('defers offscreen decoding for rendered images', () => {
++        const renderer = makeRenderer({
++            id: 'mu-image-lazy',
++            isSuccess: true,
++            width: 1200,
++            height: 800,
++        });
++
++        const out = image.call(
++            asRenderer(renderer),
++            { h, block: fakeBlock, token: makeImageToken(), cursor: fakeCursor },
++        );
++
++        expect(findImgProps(out)).toMatchObject({
++            decoding: 'async',
++            loading: 'lazy',
++            referrerPolicy: 'no-referrer',
++        });
++    });
+ });
+ 
+ // Regression: the wrapper class gate that drives click-to-open-editor.
+diff --git a/src/inlineRenderer/renderer/__tests__/loadImageAsync.spec.ts b/src/inlineRenderer/renderer/__tests__/loadImageAsync.spec.ts
+index 3fb8c0a..51f3bc1 100644
+--- a/src/inlineRenderer/renderer/__tests__/loadImageAsync.spec.ts
++++ b/src/inlineRenderer/renderer/__tests__/loadImageAsync.spec.ts
+@@ -238,6 +238,14 @@ describe('loadImageAsync — small image class on first load', () => {
+         expect(wrapper.classList.contains('mu-image-success')).toBe(true);
+         expect(wrapper.classList.contains('mu-small-image')).toBe(false);
+     });
++
++    it('marks the asynchronously inserted image for lazy async decoding', async () => {
++        const wrapper = await runLoad({ url: 'data:image/png;base64,x', width: 1200, height: 800 });
++        const image = wrapper.querySelector('img');
++        expect(image?.loading).toBe('lazy');
++        expect(image?.decoding).toBe('async');
++        expect(image?.referrerPolicy).toBe('no-referrer');
++    });
+ });
+ 
+ // Regression for #4991: an SVG carrying only a `viewBox` has no intrinsic
+diff --git a/src/inlineRenderer/renderer/delEmStrongFactory.ts b/src/inlineRenderer/renderer/delEmStrongFactory.ts
+index 62ec867..036d93f 100644
+--- a/src/inlineRenderer/renderer/delEmStrongFactory.ts
++++ b/src/inlineRenderer/renderer/delEmStrongFactory.ts
+@@ -1,8 +1,8 @@
+ import type { VNode } from 'snabbdom';
+ import type {
+     DelToken,
+-    ISyntaxRenderOptions,
+     MarkToken,
++    ISyntaxRenderOptions,
+     StrongEmToken,
+     Token,
+ } from '../types';
+@@ -14,6 +14,7 @@ import { snakeToCamel } from '../../utils';
+ export default function delEmStrongFac(
+     this: Renderer,
+     type: 'del' | 'mark' | 'em' | 'strong',
++
+     {
+         h,
+         cursor,
+diff --git a/src/inlineRenderer/renderer/header.ts b/src/inlineRenderer/renderer/header.ts
+index a295757..84ae844 100644
+--- a/src/inlineRenderer/renderer/header.ts
++++ b/src/inlineRenderer/renderer/header.ts
+@@ -14,17 +14,19 @@ export default function header(
+ ) {
+     const { content } = token;
+     const { start, end } = token.range;
+-    const className = this.getClassName(
+-        outerClass,
+-        block,
+-        {
+-            range: {
+-                start,
+-                end: end - content.length,
+-            },
+-        } as BeginRuleToken,
+-        cursor,
+-    );
++    const className = cursor.block === block
++        ? CLASS_NAMES.MU_GRAY
++        : this.getClassName(
++                outerClass,
++                block,
++                {
++                    range: {
++                        start,
++                        end: end - content.length,
++                    },
++                } as BeginRuleToken,
++                cursor,
++            );
+     const markerVnode = this.highlight(
+         h,
+         block,
+diff --git a/src/inlineRenderer/renderer/image.ts b/src/inlineRenderer/renderer/image.ts
+index 043b317..97e7ca8 100644
+--- a/src/inlineRenderer/renderer/image.ts
++++ b/src/inlineRenderer/renderer/image.ts
+@@ -80,7 +80,7 @@ export default function image(
+     this: Renderer,
+     { h, block, token }: ISyntaxRenderOptions & { token: ImageToken },
+ ) {
+-    const imageSrc = getImageSrc(token.attrs.src);
++    const imageSrc = getImageSrc(token.attrs.src, this.muya.options.resolveImageSrc);
+     const selectedImage = this.muya.editor.selection.image;
+     const { i18n } = this.muya;
+     const data = {
+@@ -201,6 +201,9 @@ export default function image(
+             const data = {
+                 props: {
+                     alt: alt.replace(/[`*{}[\]()#+\-.!_>~:|<$]/g, ''),
++                    decoding: 'async',
++                    loading: 'lazy',
++                    referrerPolicy: 'no-referrer',
+                     src: imgSrc,
+                     title,
+                 },
+diff --git a/src/inlineRenderer/renderer/index.ts b/src/inlineRenderer/renderer/index.ts
+index 578aa5a..e42a451 100644
+--- a/src/inlineRenderer/renderer/index.ts
++++ b/src/inlineRenderer/renderer/index.ts
+@@ -31,8 +31,8 @@ import inlineDiff from './inlineDiff';
+ import inlineMath from './inlineMath';
+ import lineBreakHighlights from './lineBreakHighlights';
+ import link from './link';
+-import loadImageAsync from './loadImageAsync';
+ import mark from './mark';
++import loadImageAsync from './loadImageAsync';
+ import multipleMath from './multipleMath';
+ import referenceDefinition from './referenceDefinition';
+ import referenceImage from './referenceImage';
+diff --git a/src/inlineRenderer/renderer/inlineMath.ts b/src/inlineRenderer/renderer/inlineMath.ts
+index f94c854..cadc33e 100644
+--- a/src/inlineRenderer/renderer/inlineMath.ts
++++ b/src/inlineRenderer/renderer/inlineMath.ts
+@@ -4,6 +4,7 @@ import type Renderer from './index';
+ import katex from 'katex';
+ import { CLASS_NAMES } from '../../config';
+ import { htmlToVNode } from '../../utils/snabbdom';
++import { prepareEquationTex } from '../../utils/equationReferences';
+ import 'katex/dist/contrib/mhchem.mjs';
+ 
+ import 'katex/dist/katex.min.css';
+@@ -88,7 +89,9 @@ export default function inlineMath(this: Renderer, {
+ 
+     const { loadMathMap } = this;
+ 
+-    const key = JSON.stringify([math, type, displayMode]);
++    const resolvedMath = prepareEquationTex(math, this.muya.options.mathEquationLabels ?? {}, displayMode);
++    const key = JSON.stringify([resolvedMath, type, displayMode]);
++
+     let mathVnode = null;
+     let previewSelector = `span.${CLASS_NAMES.MU_MATH_RENDER}`;
+     // Inline math errors stay compact to keep the surrounding text baseline
+@@ -99,7 +102,7 @@ export default function inlineMath(this: Renderer, {
+     }
+     else {
+         try {
+-            const html = katex.renderToString(math, {
++            const html = katex.renderToString(resolvedMath, {
+                 displayMode,
+             });
+             mathVnode = htmlToVNode(html);
+diff --git a/src/inlineRenderer/renderer/link.ts b/src/inlineRenderer/renderer/link.ts
+index fcd71db..ab690ba 100644
+--- a/src/inlineRenderer/renderer/link.ts
++++ b/src/inlineRenderer/renderer/link.ts
+@@ -68,14 +68,16 @@ export default function link(
+         && isLengthEven(token.backlash.second)
+     ) {
+         if (!token.children.length && !token.backlash.first) {
+-            // no-text-link
++            // Empty links have no rendered content in Markdown. Keep their
++            // source editable when the cursor enters the token, but hide the
++            // permalink syntax in the normal WYSIWYG view.
+             return [
+                 h(
+-                    `span.${CLASS_NAMES.MU_GRAY}.${CLASS_NAMES.MU_REMOVE}`,
++                    `span.${className}.${CLASS_NAMES.MU_REMOVE}`,
+                     firstMiddleBracket,
+                 ),
+                 h(
+-                    `a.${CLASS_NAMES.MU_NO_TEXT_LINK}.${CLASS_NAMES.MU_INLINE_RULE}`,
++                    `a.${CLASS_NAMES.MU_NO_TEXT_LINK}.${CLASS_NAMES.MU_INLINE_RULE}.${className}`,
+                     {
+                         props: {
+                             href: sanitizeHyperlink(
+@@ -96,7 +98,7 @@ export default function link(
+                         ),
+                     ],
+                 ),
+-                h(`span.${CLASS_NAMES.MU_GRAY}.${CLASS_NAMES.MU_REMOVE}`, lastBracket),
++                h(`span.${className}.${CLASS_NAMES.MU_REMOVE}`, lastBracket),
+             ];
+         }
+         else {
+diff --git a/src/inlineRenderer/renderer/loadImageAsync.ts b/src/inlineRenderer/renderer/loadImageAsync.ts
+index c45bb31..d3e2dd6 100644
+--- a/src/inlineRenderer/renderer/loadImageAsync.ts
++++ b/src/inlineRenderer/renderer/loadImageAsync.ts
+@@ -40,6 +40,9 @@ export default function loadImageAsync(
+             .then(({ url, width, height }) => {
+                 const imageText: HTMLElement | null = document.querySelector(`#${id}`);
+                 const img = document.createElement('img');
++                img.referrerPolicy = 'no-referrer';
++                img.loading = 'lazy';
++                img.decoding = 'async';
+                 img.src = url;
+ 
+                 const NUM_REG = /^\d+$/;
+diff --git a/src/inlineRenderer/renderer/referenceImage.ts b/src/inlineRenderer/renderer/referenceImage.ts
+index 4738e0f..e3f5990 100644
+--- a/src/inlineRenderer/renderer/referenceImage.ts
++++ b/src/inlineRenderer/renderer/referenceImage.ts
+@@ -25,7 +25,7 @@ export default function referenceImage(
+     if (this.parent.labels.has(rawSrc.toLowerCase()))
+         ({ href, title } = this.parent.labels.get(rawSrc.toLowerCase())!);
+ 
+-    const imageSrc = getImageSrc(href);
++    const imageSrc = getImageSrc(href, this.muya.options.resolveImageSrc);
+     const { src } = imageSrc;
+     let id;
+     let isSuccess;
+@@ -61,7 +61,9 @@ export default function referenceImage(
+                 // Prefer the resolved URL from the loadImageAsync cache; fall
+                 // back to the raw src if the cache hasn't been populated for
+                 // some reason.
+-                h(`img.${CLASS_NAMES.MU_COPY_REMOVE}`, { props: { alt, src: resolvedSrc ?? src, title } }),
++                h(`img.${CLASS_NAMES.MU_COPY_REMOVE}`, {
++                    props: { alt, referrerPolicy: 'no-referrer', src: resolvedSrc ?? src, title },
++                }),
+             ]
+         : [h(selector, tag)];
+ }
+diff --git a/src/inlineRenderer/rules.ts b/src/inlineRenderer/rules.ts
+index 7203eee..66ed423 100644
+--- a/src/inlineRenderer/rules.ts
++++ b/src/inlineRenderer/rules.ts
+@@ -50,7 +50,7 @@ export const commonMarkRules = {
+     hard_line_break: /^( {2,})(\n)(?!\n)/,
+ 
+     // patched math marker `$`
+-    backlash: /^(\\)([\\`*{}[\]()#+\-.!_>~:|<$])/,
++    backlash: /^(\\)([\\`*{}[\]()#+\-.!_>~:|<$=])/,
+ };
+ 
+ export type CommonMarkRules = typeof commonMarkRules;
+@@ -99,6 +99,7 @@ export const inlineExtensionRules = {
+     // `\\)` it sees, so `\\(a\\)b\\)` holds `a` rather than running on.
+     inline_math_double_backslash: /^(\\\\\()((?:(?!\\\\\))[\s\S])+)\\\\\)/,
+     display_math_double_backslash: /^(\\\\\[)((?:(?!\\\\\])[\s\S])+)\\\\\]/,
++
+     // This is not the best regexp, because it not support `2^2\\^`.
+     superscript: /^(\^)((?:[^^\s]|(?<=\\)\1|(?<=\\) )+?)(?<!\\)\1(?!\1)/,
+     subscript: /^(~)((?:[^~\s]|(?<=\\)\1|(?<=\\) )+?)(?<!\\)\1(?!\1)/,
+diff --git a/src/inlineRenderer/types.ts b/src/inlineRenderer/types.ts
+index 4e59699..08d1a1e 100644
+--- a/src/inlineRenderer/types.ts
++++ b/src/inlineRenderer/types.ts
+@@ -37,6 +37,7 @@ export interface ITokenizerFacOptions {
+     texMathDoubleBackslash: boolean;
+     highlightSyntax: boolean;
+     inlineDiff?: boolean;
++
+ }
+ 
+ export interface ITokenizerOptions {
+@@ -61,6 +62,7 @@ export type Token
+         | DelToken
+         | MarkToken
+         | InlineDiffToken
++
+         | SuperSubScriptToken
+         | FootnoteIdentifierToken
+         | ImageToken
+@@ -150,6 +152,7 @@ export type InlineDiffToken = IBaseToken & {
+     backlash: string;
+ };
+ 
++
+ export type SuperSubScriptToken = IBaseToken & {
+     type: 'super_sub_script';
+     marker: string;
+diff --git a/src/muya.ts b/src/muya.ts
+index 7637dc8..a9da928 100644
+--- a/src/muya.ts
++++ b/src/muya.ts
+@@ -27,7 +27,7 @@ import {
+     injectSentinels,
+     injectStateSentinels,
+     locateSentinelOffsets,
+-    resolveSentinelCursor,
++    resolveStateSentinelCursor,
+ } from './selection/offsetCursor';
+ import { isAnyListState, isAtxHeadingState, isCodeBlockState, isSetextHeadingState } from './state/types';
+ import { Ui } from './ui/ui';
+@@ -1082,7 +1082,7 @@ export class Muya {
+         if (anchorBlock == null || !anchorBlock.isContent())
+             return;
+ 
+-        if (anchorBlock === focusBlock || focusBlock == null) {
++        if ((anchorBlock === focusBlock && anchor.offset <= focus.offset) || focusBlock == null) {
+             const begin = Math.min(anchor.offset, focus.offset);
+             const last = Math.max(anchor.offset, focus.offset);
+             anchorBlock.setCursor(begin, last, true);
+@@ -1132,16 +1132,9 @@ export class Muya {
+      * Restore the WYSIWYG caret from a source-mode (CodeMirror) `{ line, ch }`
+      * index cursor. The block tree has no source-line mapping, so the offsets
+      * are resolved as follows: inject sentinel
+-     * strings into the current markdown at the line/ch positions, rebuild the
+-     * tree (sentinels embed as literal text), find which content blocks they
+-     * landed in, then rebuild the clean document and set the cursor by the
+-     * resolved block paths + offsets. The sentinel-bearing tree is transient —
+-     * both `setContent` calls run synchronously within this task, so no
+-     * intermediate paint happens.
+-     *
+-     * `Editor.setContent` clears the undo history, so this method snapshots the
+-     * history before its internal rebuild and restores it afterwards — the undo
+-     * stack is preserved, leaving only the caret changed. No-op (returns
++     * strings into the current markdown at the line/ch positions, parse a
++     * throwaway state tree and resolve its content paths against the existing
++     * clean state. Neither the DOM nor undo history needs rebuilding. No-op (returns
+      * `false`) when the cursor is stale / unresolvable, letting the caller fall
+      * back to its default.
+      */
+@@ -1155,14 +1148,10 @@ export class Muya {
+         if (sentinelMarkdown == null)
+             return false;
+ 
+-        // Preserve the undo history across the internal setContent rebuild
+-        // (setContent clears it) so this stays a caret-only operation.
+-        const savedHistory = this.getHistory();
+-
+-        this.editor.setContent(sentinelMarkdown);
+-        const cursor = resolveSentinelCursor(this.editor.scrollPage!);
+-        this.editor.setContent(cleanMarkdown);
+-        this.setHistory(savedHistory);
++        const cursor = resolveStateSentinelCursor(
++            this.editor.jsonState.markdownToState(sentinelMarkdown),
++            this.editor.jsonState.getState(),
++        );
+ 
+         if (!cursor)
+             return false;
+diff --git a/src/selection/ImageSelection.ts b/src/selection/ImageSelection.ts
+index 622aa8a..30d7197 100644
+--- a/src/selection/ImageSelection.ts
++++ b/src/selection/ImageSelection.ts
+@@ -74,7 +74,7 @@ class ImageSelection {
+             = this._muya.domNode
+                 .querySelector<HTMLImageElement>(`#${imageId} img`)
+                 ?.getAttribute('src') ?? '';
+-        const src = getImageSrc(tokenSrc).src || imgSrc;
++        const src = getImageSrc(tokenSrc, this._muya.options.resolveImageSrc).src || imgSrc;
+ 
+         if (src) {
+             this._muya.eventCenter.emit('preview-image', {
+@@ -126,7 +126,9 @@ class ImageSelection {
+                 && !imageWrapper.closest(LINK_SELECTOR)
+             ) {
+                 const tokenSrc = imageInfo.token.src || imageInfo.token.attrs.src || '';
+-                const src = getImageSrc(tokenSrc).src || target.getAttribute('src') || '';
++                const src = getImageSrc(tokenSrc, this._muya.options.resolveImageSrc).src
++                    || target.getAttribute('src')
++                    || '';
+                 if (src) {
+                     eventCenter.emit('format-click', {
+                         event,
+diff --git a/src/selection/offsetCursor.ts b/src/selection/offsetCursor.ts
+index b75e819..bfa4307 100644
+--- a/src/selection/offsetCursor.ts
++++ b/src/selection/offsetCursor.ts
+@@ -158,6 +158,43 @@ export function resolveSentinelCursor(scrollPage: ScrollPage): IPathCursor | nul
+     };
+ }
+ 
++/** Resolve against a throwaway parsed state, leaving the live DOM/history intact. */
++export function resolveStateSentinelCursor(state: TState[], cleanState: TState[]): IPathCursor | null {
++    type Hit = { path: (string | number)[]; offset: number };
++    let anchorHit: Hit | null = null;
++    let focusHit: Hit | null = null;
++    const visit = (nodes: TState[], cleanNodes: TState[], parentPath: (string | number)[]) => {
++        nodes.forEach((node, index) => {
++            const cleanNode = cleanNodes[index];
++            // A marker inserted into Markdown syntax can change block structure.
++            // Do not restore a caret into an unrelated block in that case.
++            if (!cleanNode || node.name !== cleanNode.name) return;
++            const path = [...parentPath, index];
++            if ('text' in node && 'text' in cleanNode) {
++                const cleanText = node.text.replace(ANCHOR_SENTINEL, '').replace(FOCUS_SENTINEL, '');
++                if (cleanText !== cleanNode.text) return;
++                const anchor = node.text.indexOf(ANCHOR_SENTINEL);
++                const focus = node.text.indexOf(FOCUS_SENTINEL);
++                if (anchor >= 0) anchorHit = { path: [...path, 'text'], offset: anchor };
++                if (focus >= 0) focusHit = { path: [...path, 'text'], offset: focus };
++            }
++            if ('children' in node && 'children' in cleanNode) visit(node.children, cleanNode.children, [...path, 'children']);
++        });
++    };
++    visit(state, cleanState, []);
++    // Both endpoints must resolve: otherwise a range could silently collapse.
++    const anchor = anchorHit as Hit | null;
++    const focus = focusHit as Hit | null;
++    if (!anchor || !focus) return null;
++    const sameBlock = anchor.path.length === focus.path.length && anchor.path.every((part, i) => part === focus.path[i]);
++    return {
++        anchor: { offset: anchor.offset - (sameBlock && focus.offset < anchor.offset ? FOCUS_SENTINEL.length : 0) },
++        anchorPath: anchor.path,
++        focus: { offset: focus.offset - (sameBlock && anchor.offset < focus.offset ? ANCHOR_SENTINEL.length : 0) },
++        focusPath: focus.path,
++    };
++}
++
+ // INVERSE direction: WYSIWYG block-key selection -> source `{ line, ch }` index
+ // cursor, reusing the same sentinel/serialize path as the forward conversion.
+ 
+diff --git a/src/state/getTOC.ts b/src/state/getTOC.ts
+index eb17f52..a15d2db 100644
+--- a/src/state/getTOC.ts
++++ b/src/state/getTOC.ts
+@@ -39,6 +39,7 @@ export function getTOC(muya: Muya): ITocItem[] {
+     const labels = muya.editor.inlineRenderer.collectReferenceDefinitions();
+ 
+     const items: ITocItem[] = [];
++    const usedSlugs = new Set<string>();
+ 
+     for (const node of scrollPage.children.iterator()) {
+         const { blockName } = node;
+@@ -66,12 +67,18 @@ export function getTOC(muya: Muya): ITocItem[] {
+         const content = tokensToPlainText(tokens).trim();
+         const contentHtml = tokensToInlineHtml(tokens).trim();
+ 
++
++        const base = generateGithubSlug(content) || 'heading';
++        let githubSlug = base;
++        let suffix = 0;
++        while (usedSlugs.has(githubSlug)) githubSlug = `${base}-${++suffix}`;
++        usedSlugs.add(githubSlug);
+         items.push({
+             content,
+             contentHtml,
+             lvl: block.meta.level,
+             slug: stableSlug(block),
+-            githubSlug: generateGithubSlug(content),
++            githubSlug,
+         });
+     }
+ 
+diff --git a/src/state/markdownToHtml.ts b/src/state/markdownToHtml.ts
+index 8600a02..b786c2c 100644
+--- a/src/state/markdownToHtml.ts
++++ b/src/state/markdownToHtml.ts
+@@ -6,6 +6,11 @@ import exportStyle from '../assets/styles/exportStyle.css?inline';
+ import { EXPORT_DOMPURIFY_CONFIG } from '../config';
+ import { isHTMLElement, sanitize, unescapeHTML } from '../utils';
+ import loadRenderer from '../utils/diagram';
++import {
++    createMermaidRenderConfig,
++    repairDisconnectedMermaidClusterEdges,
++    runMermaidWithCompatibility,
++} from '../utils/diagram/mermaidCompat';
+ 
+ import { getHighlightHtml } from '../utils/marked';
+ import { generateGithubSlug } from '../utils/slug';
+@@ -65,28 +70,29 @@ export class MarkdownToHtml {
+             return;
+ 
+         const mermaid = await loadRenderer('mermaid');
+-        // We only export light theme, so set mermaid theme to `default`, in the future, we can choose which theme to export.
+-        mermaid.initialize({
+-            startOnLoad: false,
+-            securityLevel: 'strict',
+-            theme: 'default',
+-        });
+         // Render each diagram in isolation: `mermaid.run` rejects the whole
+         // batch on the first parse error, so one invalid diagram used to abort
+         // the entire export (#4812). Contain the failure to that diagram and
+         // fall back to the same placeholder the other diagram renderers use.
+         for (const node of nodes) {
++            const source = node.textContent ?? '';
+             try {
+-                await mermaid.run({ nodes: [node] });
++                await runMermaidWithCompatibility(async () => {
++                    mermaid.initialize(createMermaidRenderConfig('default', source));
++                    await mermaid.run({ nodes: [node] });
++                });
++                repairDisconnectedMermaidClusterEdges(node as HTMLElement, source);
+             }
+             catch {
+                 node.innerHTML = '< Invalid Diagram >';
+             }
+         }
+         if (this._muya) {
+-            mermaid.initialize({
+-                securityLevel: 'strict',
+-                theme: this._muya.options.mermaidTheme,
++            await runMermaidWithCompatibility(async () => {
++                mermaid.initialize({
++                    securityLevel: 'strict',
++                    theme: this._muya!.options.mermaidTheme,
++                });
+             });
+         }
+     }
+@@ -138,7 +144,14 @@ export class MarkdownToHtml {
+ 
+             try {
+                 if (functionType === 'plantuml') {
+-                    const diagram = render.parse(rawCode, this._muya?.options.plantumlServer);
++                    const server = this._muya?.options.plantumlServer;
++                    if (!server?.trim()) {
++                        diagramContainer.textContent = rawCode;
++                        continue;
++                    }
++                    if (!['https:', 'http:'].includes(new URL(server).protocol))
++                        throw new Error('PlantUML server must use HTTP or HTTPS');
++                    const diagram = render.parse(rawCode, server);
+                     diagramContainer.innerHTML = '';
+                     diagram.insertImgElement(diagramContainer);
+                 }
+diff --git a/src/state/renderToStaticHTML.ts b/src/state/renderToStaticHTML.ts
+index 10d8cb8..efa9932 100644
+--- a/src/state/renderToStaticHTML.ts
++++ b/src/state/renderToStaticHTML.ts
+@@ -14,6 +14,10 @@ export interface IRenderToStaticHTMLOptions {
+     highlightSyntax?: boolean;
+     inlineDiff?: boolean;
+     multilineBlockquote?: boolean;
++
++    toc?: boolean;
++    alerts?: boolean;
++
+     /**
+      * Skip DOMPurify sanitization. **Unsafe with untrusted input** — drops
+      * the XSS guarantees of the default export path. Only intended for
+@@ -65,6 +69,9 @@ export function renderToStaticHTML(
+         highlightSyntax: options.highlightSyntax ?? false,
+         inlineDiff: options.inlineDiff ?? false,
+         multilineBlockquote: options.multilineBlockquote ?? false,
++        toc: options.toc ?? false,
++        alerts: options.alerts ?? false,
++
+     });
+ 
+     // Post-process footnotes into the standard GFM / pandoc shape (inline
+diff --git a/src/types/index.d.ts b/src/types/index.d.ts
+index 542c95a..90954a7 100644
+--- a/src/types/index.d.ts
++++ b/src/types/index.d.ts
+@@ -16,7 +16,6 @@ declare module '*.woff2?inline' {
+ declare module 'joplin-turndown-plugin-gfm';
+ declare module 'prismjs/plugins/keep-markup/prism-keep-markup';
+ declare module 'prismjs/dependencies';
+-declare module '@marktext/file-icons';
+ declare module 'snapsvg-cjs';
+ 
+ declare module 'flowchart.js' {
+diff --git a/src/types.ts b/src/types.ts
+index 24169cb..a091b24 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -30,6 +30,7 @@ export interface IMuyaOptions {
+     spellcheckEnabled: boolean;
+     spellcheckHideMarks: boolean;
+     superSubScript: boolean;
++    mathEquationLabels?: Record<string, string>;
+     footnote: boolean;
+     texMathDollars: boolean;
+     texMathGfm: boolean;
+@@ -84,6 +85,13 @@ export interface IMuyaOptions {
+      * the raw `src` verbatim.
+      */
+     imageAction?: (state: IImageActionState) => Promise<string>;
++    /**
++     * Convert an image source into the URL the renderer should load without
++     * changing the source stored in Markdown. Desktop embedders use this to
++     * translate local file paths to their sandbox-safe asset protocol.
++     * Return an empty string to keep Muya's built-in resolution behavior.
++     */
++    resolveImageSrc?: (src: string) => string;
+     /**
+      * Resolve a dropped `File` to a local filesystem path.
+      *
+diff --git a/src/ui/baseFloat/index.ts b/src/ui/baseFloat/index.ts
+index c4bf7d6..a27e1e3 100644
+--- a/src/ui/baseFloat/index.ts
++++ b/src/ui/baseFloat/index.ts
+@@ -1,7 +1,7 @@
+ import type { Placement, ReferenceElement } from '@floating-ui/dom';
+ import type { Muya } from '../../index';
+ import type { IBaseOptions } from '../types';
+-import { autoUpdate, computePosition, flip, offset } from '@floating-ui/dom';
++import { autoUpdate, computePosition, flip, offset, shift } from '@floating-ui/dom';
+ import { EVENT_KEYS } from '../../config';
+ 
+ import { isHTMLElement, isKeyboardEvent, noop } from '../../utils';
+@@ -169,7 +169,7 @@ abstract class BaseFloat {
+         const cleanup = autoUpdate(reference, floatBox, () => {
+             computePosition(reference, floatBox, {
+                 placement,
+-                middleware: [offset(offsetOptions), flip()],
++                middleware: [offset(offsetOptions), flip(), shift({ padding: 8 })],
+             }).then(({ x, y }) => {
+                 // `computePosition` is async: a `hide()` (or a newer `show()`)
+                 // can land before this resolves. Applying it then would set
+diff --git a/src/ui/codeBlockLanguageSelector/index.css b/src/ui/codeBlockLanguageSelector/index.css
+index 8a60507..06ed0ef 100644
+--- a/src/ui/codeBlockLanguageSelector/index.css
++++ b/src/ui/codeBlockLanguageSelector/index.css
+@@ -41,8 +41,9 @@
+     height: 28px;
+ }
+ 
+-.mu-list-picker .item .icon-wrapper span::before {
+-    font-size: 14px;
++.mu-list-picker .item .icon-wrapper svg {
++    color: var(--editor-color);
++    opacity: 0.7;
+ }
+ 
+ .mu-list-picker .item .language {
+diff --git a/src/ui/codeBlockLanguageSelector/index.ts b/src/ui/codeBlockLanguageSelector/index.ts
+index 9b44e76..2cdd300 100644
+--- a/src/ui/codeBlockLanguageSelector/index.ts
++++ b/src/ui/codeBlockLanguageSelector/index.ts
+@@ -1,4 +1,5 @@
+ import type { VNode } from 'snabbdom';
++import { CodeXml, FileCode2, FileJson, FileText, createElement as createLucideElement } from 'lucide';
+ import type LangInputContent from '../../block/content/langInputContent';
+ import type ParagraphContent from '../../block/content/paragraphContent';
+ import type { Muya } from '../../index';
+@@ -7,9 +8,8 @@ import { firstWordOfInfo, parseFenceLine } from '../../utils';
+ import { createDiagramState, diagramTypeOfLang } from '../../utils/diagram/fence';
+ import { search } from '../../utils/prism';
+ 
+-import { h, patch } from '../../utils/snabbdom';
++import { h, patch, toVnode } from '../../utils/snabbdom';
+ import BaseScrollFloat from '../baseScrollFloat';
+-import fileIcons from '../utils/fileIcons';
+ 
+ import './index.css';
+ 
+@@ -120,29 +120,19 @@ export class CodeBlockLanguageSelector extends BaseScrollFloat {
+                 [key: string]: string;
+             }[]
+         ).map((item) => {
+-            let iconClassNames;
+-            if (item.name)
+-                iconClassNames = fileIcons.getClassByLanguage(item.name);
+-
+-            // Because `markdown mode in Codemirror` don't have extensions.
+-            // if still can not get the className, add a common className 'atom-icon light-cyan'
+-            if (!iconClassNames && item.name === 'markdown')
+-                iconClassNames = fileIcons.getClassByName('fakeName.md');
+-
+             const text = h('div.language', item.name);
+             const selector = activeItem === item ? 'li.item.active' : 'li.item';
+-            const itemContent = [text];
+-
+-            if (iconClassNames) {
+-                const iconSelector
+-                    = `span${
+-                        iconClassNames
+-                            .split(/\s/)
+-                            .map((s: string) => `.${s}`)
+-                            .join('')}`;
+-                const icon = h('div.icon-wrapper', h(iconSelector));
+-                itemContent.push(icon);
+-            }
++            const iconData = item.name === 'markdown' ? FileText
++                : /^(?:json|json5|jsonp|webmanifest)$/.test(item.name) ? FileJson
++                    : /^(?:markup|html|xml|svg|mathml|ssml|atom|rss)$/.test(item.name) ? CodeXml
++                        : FileCode2;
++            const icon = createLucideElement(iconData, {
++                width: 16,
++                height: 16,
++                'aria-hidden': 'true',
++                focusable: 'false',
++            });
++            const itemContent = [text, h('div.icon-wrapper', [toVnode(icon)])];
+ 
+             return h(
+                 selector,
+diff --git a/src/ui/imageEditTool/index.ts b/src/ui/imageEditTool/index.ts
+index 47e8389..9733e2b 100644
+--- a/src/ui/imageEditTool/index.ts
++++ b/src/ui/imageEditTool/index.ts
+@@ -408,7 +408,7 @@ export class ImageEditTool extends BaseFloat {
+         const uploadedSrc = await this.options.imageAction!({ src, title, alt });
+ 
+         // Store local path mapping if available
+-        const { src: localPath } = getImageSrc(src);
++        const { src: localPath } = getImageSrc(src, this.muya.options.resolveImageSrc);
+         if (localPath) {
+             this.muya.editor.inlineRenderer.renderer.urlMap.set(uploadedSrc, localPath);
+         }
+diff --git a/src/ui/paragraphFrontButton/index.ts b/src/ui/paragraphFrontButton/index.ts
+index f23f2bf..99efc0b 100644
+--- a/src/ui/paragraphFrontButton/index.ts
++++ b/src/ui/paragraphFrontButton/index.ts
+@@ -119,6 +119,10 @@ export class ParagraphFrontButton {
+                 return;
+             if (!isMouseEvent(event))
+                 return;
++            if (this.muya.domNode.closest('[aria-hidden="true"]')) {
++                this.hide();
++                return;
++            }
+ 
+             const { x, y } = event;
+             const els = [
+@@ -130,8 +134,12 @@ export class ParagraphFrontButton {
+                     ele[BLOCK_DOM_PROPERTY]
+                     && (ele[BLOCK_DOM_PROPERTY] as Parent).isOutMostBlock,
+             );
+-            if (outMostElement) {
+-                this.show(outMostElement[BLOCK_DOM_PROPERTY] as Parent);
++            const block = outMostElement?.[BLOCK_DOM_PROPERTY] as Parent | undefined;
++            if (block?.blockName === 'table') {
++                this.hide();
++            }
++            else if (block) {
++                this.show(block);
+                 this.render();
+             }
+             else {
+@@ -340,6 +348,7 @@ export class ParagraphFrontButton {
+     render() {
+         const { _container: container, _iconWrapper: iconWrapper, _block: block, _oldVNode: oldVNode } = this;
+ 
++        container.dataset.blockName = block!.blockName;
+         const iconWrapperSelector = 'div.mu-icon-wrapper';
+         const i = getIcon(block!);
+         const iconParagraph = renderIcon(i, 'paragraph');
+diff --git a/src/ui/previewToolBar/__tests__/items.spec.ts b/src/ui/previewToolBar/__tests__/items.spec.ts
+index e24f215..74e8616 100644
+--- a/src/ui/previewToolBar/__tests__/items.spec.ts
++++ b/src/ui/previewToolBar/__tests__/items.spec.ts
+@@ -32,11 +32,11 @@ describe('preview toolbar — actions per block', () => {
+         expect(types('math-block')).toEqual(['edit', 'delete']);
+     });
+ 
+-    it('offers view, edit and delete on a diagram block', () => {
+-        expect(types('diagram')).toEqual(['view', 'edit', 'delete']);
++    it('offers edit and delete while diagram viewing is handled by the host', () => {
++        expect(types('diagram')).toEqual(['edit', 'delete']);
+     });
+ 
+-    it('drops view when the diagram has not rendered', () => {
++    it('keeps edit and delete available before the diagram has rendered', () => {
+         expect(types('diagram', false)).toEqual(['edit', 'delete']);
+     });
+ 
+diff --git a/src/ui/previewToolBar/config.ts b/src/ui/previewToolBar/config.ts
+index c0c2135..69c0e9b 100644
+--- a/src/ui/previewToolBar/config.ts
++++ b/src/ui/previewToolBar/config.ts
+@@ -1,6 +1,5 @@
+ import DeleteIcon from '../../assets/icons/delete/2.png';
+ import EditIcon from '../../assets/icons/edit.png';
+-import ViewIcon from '../../assets/icons/view/2.png';
+ 
+ export type TPreviewToolType = 'view' | 'edit' | 'delete';
+ 
+@@ -21,16 +20,7 @@ export const PREVIEW_BLOCK_NAMES: ReadonlySet<string> = new Set([
+     'diagram',
+ ]);
+ 
+-const DIAGRAM_ONLY: ReadonlySet<string> = new Set(['diagram']);
+-
+ const ICONS: IPreviewToolIcon[] = [
+-    {
+-        type: 'view',
+-        tooltip: 'View diagram',
+-        icon: ViewIcon,
+-        blocks: DIAGRAM_ONLY,
+-        requiresRender: true,
+-    },
+     {
+         type: 'edit',
+         tooltip: 'Edit block',
+diff --git a/src/ui/previewToolBar/index.ts b/src/ui/previewToolBar/index.ts
+index 988aa4e..f65b296 100644
+--- a/src/ui/previewToolBar/index.ts
++++ b/src/ui/previewToolBar/index.ts
+@@ -57,13 +57,22 @@ export class PreviewToolBar extends BaseFloat {
+         const handler = throttle((event: Event) => {
+             if (!isMouseEvent(event))
+                 return;
++            if (
++                !this.muya.domNode.isConnected
++                || this.muya.domNode.closest('[aria-hidden="true"]')
++            ) {
++                this.hide();
++                return;
++            }
+ 
+             const { x, y } = event;
+             const eles = [...document.elementsFromPoint(x, y)];
+             const container = [...eles].find(
+                 ele =>
+                     ele[BLOCK_DOM_PROPERTY]
++                    && this.muya.domNode.contains(ele)
+                     && PREVIEW_BLOCK_NAMES.has((ele[BLOCK_DOM_PROPERTY] as TPreviewBlock).blockName),
++
+             );
+             if (container && !(container[BLOCK_DOM_PROPERTY] as TPreviewBlock).active) {
+                 const block = container[BLOCK_DOM_PROPERTY] as TPreviewBlock;
+diff --git a/src/ui/tableChessboard/__tests__/tableChessboard.spec.ts b/src/ui/tableChessboard/__tests__/tableChessboard.spec.ts
+index 0962944..e1e1a86 100644
+--- a/src/ui/tableChessboard/__tests__/tableChessboard.spec.ts
++++ b/src/ui/tableChessboard/__tests__/tableChessboard.spec.ts
+@@ -110,12 +110,15 @@ describe('tableChessboard — muya-table-picker subscription + grid pick', () =>
+ 
+         expect(picker.status).toBe(true);
+         const cells = picker.floatBox!.querySelectorAll('span.mu-table-picker-cell');
+-        // Default checker grid is 6 rows × 8 columns.
+-        expect(cells.length).toBe(6 * 8);
+-        // The footer row/column inputs and the OK button are present.
++        // Keep the picker narrow like Typora while still offering ten rows.
++        expect(cells.length).toBe(10 * 6);
++        // A new table starts from a useful 3 x 3 selection. The footer can
++        // still accept larger dimensions without adding a redundant OK button.
+         expect(picker.floatBox!.querySelector('input.row-input')).not.toBeNull();
+         expect(picker.floatBox!.querySelector('input.column-input')).not.toBeNull();
+-        expect(picker.floatBox!.querySelector('.footer button')).not.toBeNull();
++        expect((picker.floatBox!.querySelector('input.row-input') as HTMLInputElement).value).toBe('3');
++        expect((picker.floatBox!.querySelector('input.column-input') as HTMLInputElement).value).toBe('3');
++        expect(picker.floatBox!.querySelector('.footer button')).toBeNull();
+     });
+ 
+     it('invokes the dispatched callback with the hovered `(row, column)` on cell click and hides', async () => {
+@@ -142,6 +145,24 @@ describe('tableChessboard — muya-table-picker subscription + grid pick', () =>
+         expect(picker.status).toBe(false);
+     });
+ 
++    it('accepts manually entered dimensions with Enter', async () => {
++        const reference = stubReference();
++        const cb = vi.fn();
++        eventCenter.emit('muya-table-picker', { row: -1, column: -1 }, reference, cb);
++        await nextTick();
++
++        const rowInput = picker.floatBox!.querySelector('input.row-input') as HTMLInputElement;
++        rowInput.value = '12';
++        rowInput.dispatchEvent(new KeyboardEvent('keyup', { key: '1', bubbles: true }));
++        await nextTick();
++        const columnInput = picker.floatBox!.querySelector('input.column-input') as HTMLInputElement;
++        columnInput.value = '7';
++        columnInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
++
++        expect(cb).toHaveBeenCalledWith(11, 6);
++        expect(picker.status).toBe(false);
++    });
++
+     it('toggles closed when the event is re-dispatched while already shown', async () => {
+         const reference = stubReference();
+         eventCenter.emit('muya-table-picker', { row: -1, column: -1 }, reference, () => {});
+diff --git a/src/ui/tableChessboard/index.css b/src/ui/tableChessboard/index.css
+index 32ffd2f..842d3c0 100644
+--- a/src/ui/tableChessboard/index.css
++++ b/src/ui/tableChessboard/index.css
+@@ -1,7 +1,7 @@
+ .mu-table-picker {
+     box-sizing: border-box;
+-    width: 153px;
+-    padding: 10px;
++    width: 184px;
++    padding: 12px;
+ 
+     font-size: 12px;
+ }
+@@ -9,7 +9,8 @@
+ .mu-table-picker .checker {
+     display: flex;
+     flex-direction: column;
+-    margin-bottom: 5px;
++    align-items: center;
++    margin-bottom: 10px;
+ }
+ 
+ .mu-table-picker-row {
+@@ -18,12 +19,13 @@
+ 
+ .mu-table-picker-cell {
+     box-sizing: border-box;
+-    width: 16px;
+-    height: 16px;
+-    margin-right: 1px;
+-    margin-bottom: 1px;
++    width: 19px;
++    height: 19px;
++    margin-right: 3px;
++    margin-bottom: 3px;
+ 
+     border: 1px solid var(--editor-color-10);
++    border-radius: 1px;
+     cursor: pointer;
+ }
+ 
+@@ -40,7 +42,8 @@
+ }
+ 
+ .mu-table-picker-cell.selected {
+-    background: var(--selection-color);
++    background: color-mix(in srgb, var(--selection-color) 72%, transparent);
++    border-color: var(--selection-color);
+ }
+ 
+ .mu-table-picker-header .selected {
+@@ -53,8 +56,10 @@
+ 
+ .mu-table-picker .footer {
+     display: flex;
+-    justify-content: space-around;
+-    padding: 10px 0 0;
++    align-items: center;
++    justify-content: center;
++    gap: 8px;
++    padding: 11px 0 0;
+ 
+     color: var(--editor-color);
+     text-align: center;
+@@ -64,28 +69,27 @@
+ 
+ .mu-table-picker .footer input {
+     box-sizing: border-box;
+-    width: 30px;
+-    height: 20px;
+-    padding: 0;
++    width: 38px;
++    height: 28px;
++    padding: 0 4px;
+ 
+     color: var(--editor-color);
+     text-align: center;
+ 
+-    background: var(--float-border-color);
+-    border: none;
+-    border-radius: 3px;
++    appearance: textfield;
++    background: transparent;
++    border: 1px solid var(--float-border-color);
++    border-radius: 2px;
+     outline: none;
+ }
+ 
+-.mu-table-picker .footer button {
+-    height: 20px;
+-
+-    color: #fff;
+-    line-height: 20px;
++.mu-table-picker .footer input::-webkit-inner-spin-button,
++.mu-table-picker .footer input::-webkit-outer-spin-button {
++    margin: 0;
++    appearance: none;
++}
+ 
+-    background: var(--theme-color);
+-    border: none;
+-    border-radius: 3px;
+-    outline: none;
+-    cursor: pointer;
++.mu-table-picker .footer input:focus {
++    border-color: var(--theme-color);
++    box-shadow: 0 0 0 1px var(--theme-color);
+ }
+diff --git a/src/ui/tableChessboard/index.ts b/src/ui/tableChessboard/index.ts
+index 252d9a1..e4a3ab7 100644
+--- a/src/ui/tableChessboard/index.ts
++++ b/src/ui/tableChessboard/index.ts
+@@ -28,8 +28,8 @@ class TablePicker extends BaseFloat {
+         const name = 'mu-table-picker';
+         super(muya, name);
+         this._checkerCount = {
+-            row: 6,
+-            column: 8,
++            row: 10,
++            column: 6,
+         };
+         this._oldVNode = null;
+         this._current = null;
+@@ -108,9 +108,13 @@ class TablePicker extends BaseFloat {
+         const tableFooter = h('div.footer', [
+             h('input.row-input', {
+                 props: {
+-                    type: 'text',
++                    type: 'number',
++                    min: 1,
+                     value: +this._select!.row + 1,
+                 },
++                attrs: {
++                    'aria-label': 'Rows',
++                },
+                 on: {
+                     keyup: (event: KeyboardEvent) => {
+                         this._keyupHandler(event, 'row');
+@@ -120,26 +124,19 @@ class TablePicker extends BaseFloat {
+             'x',
+             h('input.column-input', {
+                 props: {
+-                    type: 'text',
++                    type: 'number',
++                    min: 1,
+                     value: +this._select!.column + 1,
+                 },
++                attrs: {
++                    'aria-label': 'Columns',
++                },
+                 on: {
+                     keyup: (event: KeyboardEvent) => {
+                         this._keyupHandler(event, 'column');
+                     },
+                 },
+             }),
+-            h(
+-                'button',
+-                {
+-                    on: {
+-                        click: (_) => {
+-                            this.selectItem();
+-                        },
+-                    },
+-                },
+-                'OK',
+-            ),
+         ]);
+ 
+         const vnode = h('div', [h('div.checker', tableRows), tableFooter]);
+@@ -155,12 +152,16 @@ class TablePicker extends BaseFloat {
+     private _keyupHandler(event: KeyboardEvent, type: 'row' | 'column') {
+         let number = +this._select![type];
+         const value = isHTMLInputElement(event.target) ? +event.target.value : Number.NaN;
++        if (event.key === EVENT_KEYS.Enter) {
++            if (!Number.isNaN(value))
++                this._select![type] = Math.max(value - 1, 0);
++            this.selectItem();
++            return;
++        }
+         if (event.key === EVENT_KEYS.ArrowUp)
+             number++;
+         else if (event.key === EVENT_KEYS.ArrowDown)
+             number--;
+-        else if (event.key === EVENT_KEYS.Enter)
+-            this.selectItem();
+         else if (!Number.isNaN(value))
+             number = value - 1;
+ 
+@@ -175,7 +176,9 @@ class TablePicker extends BaseFloat {
+         this._current = current;
+         // Clone so footer-input edits mutating `_select` never corrupt the
+         // immutable `_current` start position (ICheckerCount is flat).
+-        this._select = { ...current };
++        this._select = current.row >= 0 && current.column >= 0
++            ? { ...current }
++            : { row: 2, column: 2 };
+         super.show(reference, cb);
+     }
+ 
+diff --git a/src/ui/tableColumnToolbar/index.css b/src/ui/tableColumnToolbar/index.css
+index c7ee8ea..96c553c 100644
+--- a/src/ui/tableColumnToolbar/index.css
++++ b/src/ui/tableColumnToolbar/index.css
+@@ -1,93 +1,70 @@
+ .mu-float-wrapper.mu-table-column-tools-container {
+     overflow: visible;
+ 
+-    border-radius: 2px;
++    background: transparent;
++    border: 0 !important;
++    border-radius: 0;
++    box-shadow: none;
+ }
+ 
+ .mu-table-column-tools {
+-    width: 160px;
+-    height: 24px;
+-}
+-
+-.mu-table-column-tools ul,
+-.mu-table-column-tools li {
+-    margin: 0;
+-    padding: 0;
+-}
+-
+-.mu-table-column-tools ul {
+-    display: flex;
+-    padding: 0 5px;
+-}
+-
+-.mu-table-column-tools li.item {
+-    position: relative;
+-
+     display: flex;
+     align-items: center;
+-    justify-content: space-around;
+-    width: 24px;
+-    height: 24px;
+-
+-    list-style: none;
+-    cursor: pointer;
+-}
++    justify-content: space-between;
++    height: 22px;
+ 
+-.mu-table-column-tools li.item:hover {
+-    background: var(--float-hover-color);
+-}
+-
+-.mu-table-column-tools li.item:last-of-type {
+-    margin-left: 6px;
++    pointer-events: none;
+ }
+ 
+-.mu-table-column-tools li.item:last-of-type::before {
+-    position: absolute;
+-    top: 5px;
+-    left: -3px;
+-
+-    width: 1px;
+-    height: 14px;
+-
+-    background: var(--editor-color-10);
+-
+-    content: '';
+-}
++.mu-table-tools-group {
++    display: inline-flex;
++    align-items: center;
++    height: 22px;
++    overflow: hidden;
+ 
+-.mu-table-column-tools li.item .icon-wrapper {
+-    display: flex;
+-    width: 14px;
+-    height: 14px;
++    background: var(--float-bg-color);
++    border: 1px solid var(--float-border-color);
++    border-radius: 4px;
++    box-shadow: var(--float-shadow);
++    pointer-events: auto;
+ }
+ 
+-.mu-table-column-tools li.item .icon-wrapper i.icon {
+-    position: relative;
+-
+-    display: inline-block;
+-    width: 100%;
+-    height: 100%;
+-    overflow: hidden;
++.mu-table-tool-button {
++    display: inline-flex;
++    align-items: center;
++    justify-content: center;
++    width: 22px;
++    height: 22px;
++    padding: 0;
+ 
+     color: var(--icon-color);
+ 
+-    transition: all 0.25s ease-in-out;
++    background: transparent;
++    border: 0;
++    border-radius: 0;
++    outline: none;
++    cursor: pointer;
+ }
+ 
+-.mu-table-column-tools li.item .icon-wrapper i.icon > i[class^='icon-'] {
+-    position: relative;
+-    left: -14px;
+-
+-    display: inline-block;
+-    width: 100%;
+-    height: 100%;
++.mu-table-tool-button + .mu-table-tool-button {
++    border-left: 1px solid var(--float-border-color);
++}
+ 
+-    filter: drop-shadow(14px 0 currentcolor);
++.mu-table-tool-button:hover {
++    color: var(--editor-color);
++    background: var(--float-hover-color);
+ }
+ 
+-.mu-table-column-tools li.item.active .icon-wrapper i.icon {
++.mu-table-tool-button.active {
+     color: var(--theme-color);
++    background: var(--selection-color);
+ }
+ 
+-.mu-table-column-tools li.item.delete .icon-wrapper i.icon {
++.mu-table-tool-remove {
+     color: var(--delete-color);
+ }
++
++.mu-table-tool-button svg {
++    flex: 0 0 auto;
++    pointer-events: none;
++}
+diff --git a/src/ui/tableColumnToolbar/index.ts b/src/ui/tableColumnToolbar/index.ts
+index ab0ed44..3e20810 100644
+--- a/src/ui/tableColumnToolbar/index.ts
++++ b/src/ui/tableColumnToolbar/index.ts
+@@ -1,200 +1,212 @@
+-import type { VNode } from 'snabbdom';
+ import type CellBlock from '../../block/gfm/table/cell';
++import type Table from '../../block/gfm/table';
+ import type { Muya } from '../../index';
+-import type { TableColumnToolIcon } from './config';
+-import { BLOCK_DOM_PROPERTY } from '../../config';
+-import { isMouseEvent, throttle } from '../../utils';
+-import { h, patch } from '../../utils/snabbdom';
++import {
++    AlignCenter,
++    AlignLeft,
++    AlignRight,
++    EllipsisVertical,
++    Table2,
++    Trash2,
++    createElement as createLucideElement,
++} from 'lucide';
++import { EVENT_KEYS } from '../../config';
++import { isHTMLElement, isKeyboardEvent } from '../../utils';
+ import BaseFloat from '../baseFloat';
+-import icons from './config';
+ 
+ import './index.css';
+ 
+-const OFFSET = 27;
+-
+ const defaultOptions = {
+-    placement: 'top' as const,
++    placement: 'top-start' as const,
+     offsetOptions: {
+-        mainAxis: 0,
++        mainAxis: 2,
+         crossAxis: 0,
+         alignmentAxis: 0,
+     },
+     showArrow: false,
+ };
+ 
+-export class TableColumnToolbar extends BaseFloat {
+-    private _oldVNode: VNode | null = null;
+-    private _block: CellBlock | null = null;
+-    private _icons: TableColumnToolIcon[] = icons;
+-    private _toolsContainer: HTMLDivElement = document.createElement('div');
++type TableToolAction
++    = | 'resize'
++        | 'align-left'
++        | 'align-center'
++        | 'align-right'
++        | 'more'
++        | 'remove';
++
++const TOOLS = [
++    { action: 'resize', title: '调整表格尺寸', icon: Table2, side: 'left' },
++    { action: 'align-left', title: '左对齐当前列', icon: AlignLeft, side: 'left' },
++    { action: 'align-center', title: '居中对齐当前列', icon: AlignCenter, side: 'left' },
++    { action: 'align-right', title: '右对齐当前列', icon: AlignRight, side: 'left' },
++    { action: 'more', title: '更多表格操作', icon: EllipsisVertical, side: 'right' },
++    { action: 'remove', title: '删除表格', icon: Trash2, side: 'right' },
++] as const;
+ 
++export class TableColumnToolbar extends BaseFloat {
+     static pluginName = 'tableColumnTools';
+     public override capturesContentKeydown = true;
+ 
++    private _block: CellBlock | null = null;
++    private _table: Table | null = null;
++    private readonly _buttons = new Map<TableToolAction, HTMLButtonElement>();
++    private readonly _leftGroup = document.createElement('div');
++    private readonly _rightGroup = document.createElement('div');
++
+     constructor(muya: Muya, options = {}) {
+         const name = 'mu-table-column-tools';
+         const opts = Object.assign({}, defaultOptions, options);
+         super(muya, name, opts);
+-        this.options = opts;
+-        this.container!.appendChild(this._toolsContainer);
+         this.floatBox!.classList.add('mu-table-column-tools-container');
++        this._leftGroup.className = 'mu-table-tools-group mu-table-tools-left';
++        this._rightGroup.className = 'mu-table-tools-group mu-table-tools-right';
++        this.container!.append(this._leftGroup, this._rightGroup);
++        this.render();
+         this.listen();
+     }
+ 
+     override listen() {
+-        const { eventCenter } = this.muya;
+-        super.listen();
++        const { eventCenter, domNode } = this.muya;
+ 
+-        const handler = throttle((event: Event) => {
+-            if (!isMouseEvent(event))
++        eventCenter.subscribe('selection-change', ({ anchorBlock }) => {
++            const cell = anchorBlock?.closestBlock?.('table.cell') as CellBlock | null;
++            if (!cell?.parent || !cell.table.parent) {
++                this.hide();
+                 return;
+-
+-            const { x, y } = event;
+-            const eles = [...document.elementsFromPoint(x, y)];
+-
+-            // Never show (or keep) the column tools while the inline format
+-            // picker is up — check before the hover guard below, which would
+-            // otherwise keep them alive behind the picker.
+-            const { ui } = this.muya;
+-            for (const { name, status } of ui.shownFloat) {
+-                if (name === 'mu-format-picker' && status)
+-                    return this.hide();
+             }
++            this._showForCell(cell);
++        });
+ 
+-            // The toolbar overhangs narrow columns, so (x, y + OFFSET) can
+-            // land on a neighbour while the pointer is on the toolbar. Keep
+-            // the current anchor until the pointer leaves it (#5574).
+-            const topmost = document.elementFromPoint(x, y);
+-            if (this.status && topmost && this.floatBox?.contains(topmost))
++        eventCenter.attachDOMEvent(document, 'pointerdown', (event) => {
++            if (!isHTMLElement(event.target))
+                 return;
+-
+-            const bellowEles = [...document.elementsFromPoint(x, y + OFFSET)];
+-            const hasTableCell = (eles: Element[]) => {
+-                return eles.some(
+-                    ele =>
+-                        ele[BLOCK_DOM_PROPERTY]
+-                        && ele[BLOCK_DOM_PROPERTY].blockName === 'table.cell',
+-                );
+-            };
+-
+-            if (!hasTableCell(eles) && hasTableCell(bellowEles)) {
+-                const tableCellEle = bellowEles.find(
+-                    ele =>
+-                        ele[BLOCK_DOM_PROPERTY]
+-                        && ele[BLOCK_DOM_PROPERTY].blockName === 'table.cell',
+-                );
+-                const cellBlock = tableCellEle![BLOCK_DOM_PROPERTY];
+-                this._block = cellBlock as CellBlock;
+-                this.show(tableCellEle!);
+-                this.render();
+-            }
+-            else {
++            if (this.floatBox?.contains(event.target) || this._table?.domNode?.contains(event.target))
++                return;
++            this.hide();
++        });
++        eventCenter.attachDOMEvent(domNode, 'keydown', (event) => {
++            if (isKeyboardEvent(event) && event.key === EVENT_KEYS.Escape)
+                 this.hide();
+-            }
+-        }, 300);
+-
+-        eventCenter.attachDOMEvent(document.body, 'mousemove', handler);
++        });
++        eventCenter.attachDOMEvent(this.floatBox!, 'mousedown', (event) => {
++            event.preventDefault();
++            event.stopPropagation();
++        });
++        eventCenter.attachDOMEvent(this.floatBox!, 'click', (event) => {
++            event.stopPropagation();
++        });
+     }
+ 
+     render() {
+-        const { _icons: icons, _oldVNode: oldVNode, _toolsContainer: toolsContainer, _block: block } = this;
+-        const { i18n } = this.muya;
+-        const children = icons.map((i) => {
+-            const iconWrapperSelector = 'div.icon-wrapper';
+-            const icon = h(
+-                'i.icon',
+-                h(
+-                    'i.icon-inner',
+-                    {
+-                        style: {
+-                            'background': `url(${i.icon}) no-repeat`,
+-                            'background-size': '100%',
+-                        },
+-                    },
+-                    '',
+-                ),
+-            );
+-            const iconWrapper = h(iconWrapperSelector, icon);
+-
+-            let itemSelector = `li.item.${i.type}`;
+-            if (block?.align === i.type)
+-                itemSelector += '.active';
+-
+-            if (i.type === 'remove')
+-                itemSelector += '.delete';
+-
+-            return h(
+-                itemSelector,
+-                {
+-                    attrs: {
+-                        title: `${i18n.t(i.tooltip)}`,
+-                    },
+-                    on: {
+-                        click: (event) => {
+-                            this.selectItem(event, i);
+-                        },
+-                    },
+-                },
+-                [iconWrapper],
+-            );
+-        });
++        for (const tool of TOOLS) {
++            const button = document.createElement('button');
++            button.type = 'button';
++            button.className = `mu-table-tool-button mu-table-tool-${tool.action}`;
++            button.title = tool.title;
++            button.setAttribute('aria-label', tool.title);
++            const icon = createLucideElement(tool.icon, {
++                width: '12',
++                height: '12',
++                'stroke-width': '1.8',
++                'aria-hidden': 'true',
++            });
++            button.appendChild(icon);
++            button.addEventListener('click', event => this._runAction(event, tool.action));
++            this._buttons.set(tool.action, button);
++            (tool.side === 'left' ? this._leftGroup : this._rightGroup).appendChild(button);
++        }
++    }
+ 
+-        const vnode = h('ul', children);
++    override hide() {
++        this._table?.domNode?.classList.remove('mu-table-tools-active');
++        this._block = null;
++        this._table = null;
++        super.hide();
++    }
+ 
+-        if (oldVNode)
+-            patch(oldVNode, vnode);
+-        else
+-            patch(toolsContainer, vnode);
++    private _showForCell(block: CellBlock) {
++        if (
++            !this.muya.domNode.isConnected
++            || this.muya.domNode.closest('[aria-hidden="true"]')
++        ) {
++            this.hide();
++            return;
++        }
+ 
+-        this._oldVNode = vnode;
++        const table = block.table;
++        const tableNode = table.domNode;
++        if (!tableNode)
++            return;
++        const tableSurface
++            = tableNode.querySelector<HTMLElement>(':scope > .mu-table-inner') ?? tableNode;
++
++        if (this._table !== table)
++            this._table?.domNode?.classList.remove('mu-table-tools-active');
++        this._block = block;
++        this._table = table;
++        tableNode.classList.add('mu-table-tools-active');
++        this.container!.style.width = `${Math.max(180, tableSurface.getBoundingClientRect().width)}px`;
++        this._updateAlignment();
++        this.show(tableSurface);
+     }
+ 
+-    selectItem(event: Event, item: TableColumnToolIcon) {
++    private _updateAlignment() {
++        const align = this._block?.align ?? 'none';
++        for (const action of ['align-left', 'align-center', 'align-right'] as const) {
++            const active = align === action.slice('align-'.length);
++            const button = this._buttons.get(action);
++            button?.classList.toggle('active', active);
++            button?.setAttribute('aria-pressed', String(active));
++        }
++    }
++
++    private _runAction(event: MouseEvent, action: TableToolAction) {
+         event.preventDefault();
+         event.stopPropagation();
+-
+-        const { _block: block } = this;
+-        // The toolbar stays open while the document changes under it. Once an
+-        // Undo has removed the table, its cells are detached — and a detached
+-        // cell still has its row as a parent, so only `outMostBlock` tells
+-        // them apart.
+-        if (!block?.outMostBlock)
++        const block = this._block;
++        const table = this._table;
++        if (!block?.outMostBlock || !table?.parent)
+             return this.hide();
+ 
+-        const offset = block.parent!.offset(block);
+-        const { table, row } = block;
+-        const columnCount = row.offset(block);
+-
+-        switch (item.type) {
+-            case 'remove': {
+-                // removeColumn returns a content block to re-anchor the caret
+-                // on (inside the table
+-                // if columns remain, outside the table if the whole table was
+-                // removed). Without this setCursor the caret stays in the
+-                // detached cell.
+-                const cursorBlock = block.table.removeColumn(offset);
+-                if (cursorBlock)
+-                    cursorBlock.setCursor(0, 0);
+-
+-                return this.hide();
++        const column = block.columnOffset;
++        switch (action) {
++            case 'resize': {
++                const button = this._buttons.get(action)!;
++                this.muya.eventCenter.emit(
++                    'muya-table-picker',
++                    { row: table.rowCount - 1, column: table.columnCount - 1 },
++                    button,
++                    (row: number, columnCount: number) => {
++                        if (!table.parent)
++                            return;
++                        this.hide();
++                        table.resize(row + 1, columnCount + 1)?.setCursor(0, 0, true);
++                    },
++                );
++                break;
+             }
+-
+-            case 'insert left':
+-                // fall through
+-            case 'insert right': {
+-                const offset
+-                    = item.type === 'insert left' ? columnCount : columnCount + 1;
+-                const cursorBlock = table.insertColumn(offset);
+-                if (cursorBlock)
+-                    cursorBlock.setCursor(0, 0);
+-
+-                return this.hide();
++            case 'align-left':
++            case 'align-center':
++            case 'align-right':
++                table.alignColumn(column, action.slice('align-'.length));
++                this._updateAlignment();
++                break;
++            case 'more': {
++                const button = this._buttons.get(action)!;
++                const rect = button.getBoundingClientRect();
++                block.domNode?.dispatchEvent(new MouseEvent('contextmenu', {
++                    bubbles: true,
++                    cancelable: true,
++                    clientX: rect.right,
++                    clientY: rect.bottom + 4,
++                }));
++                break;
++            }
++            case 'remove': {
++                this.hide();
++                table.removeTable()?.setCursor(0, 0, true);
++                break;
+             }
+-
+-            default:
+-                block.table.alignColumn(offset, item.type);
+-
+-                return this.render();
+         }
+     }
+ }
+diff --git a/src/ui/tableDragBar/index.ts b/src/ui/tableDragBar/index.ts
+index f1e0645..5df51e6 100644
+--- a/src/ui/tableDragBar/index.ts
++++ b/src/ui/tableDragBar/index.ts
+@@ -182,6 +182,13 @@ export class TableDragBar extends BaseFloat {
+         const handler = throttle((event: Event) => {
+             if (!isMouseEvent(event))
+                 return;
++            if (
++                !this.muya.domNode.isConnected
++                || this.muya.domNode.closest('[aria-hidden="true"]')
++            ) {
++                this.hide();
++                return;
++            }
+ 
+             const { x, y } = event;
+             const els = [...document.elementsFromPoint(x, y)];
+@@ -205,6 +212,10 @@ export class TableDragBar extends BaseFloat {
+                         ele[BLOCK_DOM_PROPERTY]
+                         && ele[BLOCK_DOM_PROPERTY].blockName === 'table.cell',
+                 );
++                if (!tableCellEl || !this.muya.domNode.contains(tableCellEl)) {
++                    this.hide();
++                    return;
++                }
+                 const cellBlock = tableCellEl![BLOCK_DOM_PROPERTY] as TableBodyCell;
+                 const barType = hasTableCell(aboveEls) ? 'bottom' : 'right';
+ 
+@@ -214,7 +225,7 @@ export class TableDragBar extends BaseFloat {
+                 );
+                 this._barType = barType;
+                 this._block = cellBlock;
+-                this.show(tableCellEl!);
++                this.show(tableCellEl);
+                 this._render(barType);
+             }
+             else {
+diff --git a/src/ui/utils/fileIcons.ts a/src/ui/utils/fileIcons.ts
+deleted file mode 100644
+index 49110e6..0000000
+--- a/src/ui/utils/fileIcons.ts
++++ /dev/null
+@@ -1,16 +0,0 @@
+-import fileIcons from '@marktext/file-icons';
+-import '@marktext/file-icons/build/index.css';
+-
+-fileIcons.getClassByName = function (name: string) {
+-    const icon = fileIcons.matchName(name);
+-
+-    return icon ? icon.getClass(0, false) : null;
+-};
+-
+-fileIcons.getClassByLanguage = function (lang: string) {
+-    const icon = fileIcons.matchLanguage(lang);
+-
+-    return icon ? icon.getClass(0, false) : null;
+-};
+-
+-export default fileIcons;
+diff --git a/src/utils/__tests__/image.spec.ts b/src/utils/__tests__/image.spec.ts
+index 7e5c764..729473c 100644
+--- a/src/utils/__tests__/image.spec.ts
++++ b/src/utils/__tests__/image.spec.ts
+@@ -1,4 +1,4 @@
+-// @vitest-environment happy-dom
++// @vitest-environment jsdom
+ 
+ import { afterEach, describe, expect, it, vi } from 'vitest';
+ import { checkImageContentType, getImageSrc, loadImage, usesDefaultObjectSize } from '../image';
+@@ -85,7 +85,8 @@ describe('checkImageContentType (#3837)', () => {
+ 
+ describe('loadImage — undetermined content-type still attempts the load (#3837)', () => {
+     // Drive the <img> load deterministically: setting `src` fires onload/onerror.
+-    function stubImage(succeeds: boolean) {
++    function stubImageSequence(results: boolean[]) {
++        let attemptIndex = 0;
+         class FakeImage {
+             width = 10;
+             height = 10;
+@@ -98,12 +99,19 @@ describe('loadImage — undetermined content-type still attempts the load (#3837
+ 
+             set src(v: string) {
+                 this._src = v;
++                const succeeds = results[attemptIndex++] ?? false;
+                 queueMicrotask(() =>
+                     succeeds ? this.onload?.() : this.onerror?.(new Error('load failed')),
+                 );
+             }
+         }
+         vi.stubGlobal('Image', FakeImage);
++
++        return () => attemptIndex;
++    }
++
++    function stubImage(succeeds: boolean) {
++        return stubImageSequence([succeeds]);
+     }
+ 
+     afterEach(() => {
+@@ -129,9 +137,53 @@ describe('loadImage — undetermined content-type still attempts the load (#3837
+         stubImage(true);
+         await expect(loadImage(sameOrigin('/page'), true)).rejects.toBe('not an image.');
+     });
++
++    it('retries a remote image once after a transient load failure', async () => {
++        const attempts = stubImageSequence([false, true]);
++
++        await expect(loadImage('https://example.com/image.png')).resolves.toMatchObject({
++            width: 10,
++            height: 10,
++        });
++        expect(attempts()).toBe(2);
++    });
++
++    it('stops after two failed remote image attempts', async () => {
++        const attempts = stubImageSequence([false, false]);
++
++        await expect(loadImage('https://example.com/missing.png')).rejects.toThrow('load failed');
++        expect(attempts()).toBe(2);
++    });
++
++    it('does not retry a failed local image', async () => {
++        const attempts = stubImageSequence([false, true]);
++
++        await expect(loadImage('file:///tmp/missing.png')).rejects.toThrow('load failed');
++        expect(attempts()).toBe(1);
++    });
+ });
+ 
+ describe('getImageSrc — relative local image paths anchored to window.DIRNAME', () => {
++    it('uses the embedder resolver before the legacy file URL fallback', () => {
++        const resolveImageSrc = vi.fn((src: string) =>
++            `http://asset.localhost/${encodeURIComponent(src)}`,
++        );
++
++        expect(getImageSrc('assets/foo.png', resolveImageSrc)).toEqual({
++            isUnknownType: false,
++            src: 'http://asset.localhost/assets%2Ffoo.png',
++        });
++        expect(resolveImageSrc).toHaveBeenCalledWith('assets/foo.png');
++    });
++
++    it('keeps the built-in resolver when the embedder declines the source', () => {
++        withDirname(DIRNAME, () => {
++            expect(getImageSrc('assets/foo.png', () => '').src).toBe(
++                'file:///home/user/docs/assets/foo.png',
++            );
++        });
++    });
++
+     it('resolves a relative path against the document directory', () => {
+         withDirname(DIRNAME, () => {
+             expect(getImageSrc('assets/foo.png')).toEqual({
+diff --git a/src/utils/__tests__/normalizePastedHtml.spec.ts b/src/utils/__tests__/normalizePastedHtml.spec.ts
+index 169e7d3..e7310fb 100644
+--- a/src/utils/__tests__/normalizePastedHtml.spec.ts
++++ b/src/utils/__tests__/normalizePastedHtml.spec.ts
+@@ -51,3 +51,55 @@ describe('normalizePastedHTML — bare URL link normalization', () => {
+         expect(markdown).toContain(`[${url}](${url})`);
+     });
+ });
++
++describe('normalizePastedHTML — empty anchor normalization', () => {
++    it('removes empty heading permalink anchors', async () => {
++        const out = await normalizePastedHTML(
++            '<h2>用户权限<a href="https://example.com/doc#permissions"></a></h2>',
++        );
++        const markdown = new HtmlToMarkdown({ bulletListMarker: '-' }).generate(out);
++
++        expect(markdown).toBe('## 用户权限');
++        expect(markdown).not.toContain('[](');
++    });
++
++    it('preserves linked images', async () => {
++        const out = await normalizePastedHTML(
++            '<a href="https://example.com/full"><img src="https://example.com/thumb.png" alt="截图"></a>',
++        );
++        const markdown = new HtmlToMarkdown({ bulletListMarker: '-' }).generate(out);
++
++        expect(out).toContain('<a href="https://example.com/full">');
++        expect(markdown).toContain('[![截图](https://example.com/thumb.png)](https://example.com/full)');
++    });
++});
++
++describe('normalizePastedHTML — lazy image normalization', () => {
++    it('promotes a Blog Garden data-src image to a Markdown image', async () => {
++        const url = 'https://img2024.cnblogs.com/blog/3798513/202608/inline-01.png';
++        const out = await normalizePastedHTML(
++            `<img alt="inline-01.png" loading="lazy" data-src="${url}" class="lazyload">`,
++        );
++        const markdown = new HtmlToMarkdown({ bulletListMarker: '-' }).generate(out);
++
++        expect(out).toContain(`src="${url}"`);
++        expect(out).not.toContain('data-src');
++        expect(markdown).toBe(`![inline-01.png](${url})`);
++    });
++
++    it('keeps an ordinary src image unchanged', async () => {
++        const url = 'https://example.com/image.png';
++        const out = await normalizePastedHTML(`<img alt="截图" src="${url}">`);
++        const markdown = new HtmlToMarkdown({ bulletListMarker: '-' }).generate(out);
++
++        expect(markdown).toBe(`![截图](${url})`);
++    });
++
++    it('does not promote an unsafe lazy image URL', async () => {
++        const out = await normalizePastedHTML(
++            '<img alt="bad" class="lazyload" data-src="javascript:alert(1)">',
++        );
++
++        expect(out).not.toContain('javascript:');
++    });
++});
+diff --git b/src/utils/diagram/mermaidCompat.ts b/src/utils/diagram/mermaidCompat.ts
+new file mode 100644
+index 0000000..990260e
+--- /dev/null
++++ b/src/utils/diagram/mermaidCompat.ts
+@@ -0,0 +1,351 @@
++type MermaidBox = {
++    x: number;
++    y: number;
++    width: number;
++    height: number;
++};
++
++type MermaidPoint = {
++    x: number;
++    y: number;
++};
++
++export type MermaidDiagramSize = 'wide' | 'balanced' | 'portrait' | 'class';
++
++type MermaidSvgForSizing = Pick<SVGSVGElement, 'classList'>;
++
++let mermaidRenderQueue = Promise.resolve();
++
++function firstMermaidStatement(source: string): string {
++    let inFrontmatter = false;
++    for (const line of source.split(/\r?\n/)) {
++        const trimmed = line.trim();
++        if (trimmed === '---') {
++            inFrontmatter = !inFrontmatter;
++            continue;
++        }
++        if (inFrontmatter || !trimmed || trimmed.startsWith('%%'))
++            continue;
++        return trimmed;
++    }
++    return '';
++}
++
++export function shouldUseTyporaFlowchartRendering(source: string): boolean {
++    if (!/^(?:flowchart|graph)\s+(?:TB|TD|BT|LR|RL)\b/i.test(firstMermaidStatement(source)))
++        return false;
++
++    const subgraphCount = source.match(/^\s*subgraph\b/gim)?.length ?? 0;
++    const lineCount = source.split(/\r?\n/).length;
++    return subgraphCount >= 3 && lineCount >= 40;
++}
++
++export function shouldInheritDisconnectedSubgraphDirection(source: string): boolean {
++    if (!/^(?:flowchart|graph)\s+(?:TB|TD)\b/i.test(firstMermaidStatement(source)))
++        return false;
++    if (/^\s*direction\s+(?:TB|TD|BT|LR|RL)\b/im.test(source))
++        return false;
++
++    let subgraphDepth = 0;
++    let subgraphCount = 0;
++    for (const line of source.split(/\r?\n/)) {
++        const trimmed = line.trim();
++        if (/^subgraph\b/i.test(trimmed)) {
++            subgraphDepth += 1;
++            subgraphCount += 1;
++            continue;
++        }
++        if (/^end\s*$/i.test(trimmed)) {
++            subgraphDepth = Math.max(0, subgraphDepth - 1);
++            continue;
++        }
++        if (
++            subgraphDepth === 0
++            && /(?:-->|---|-.->|==>)/.test(trimmed)
++        ) return false;
++    }
++    return subgraphCount >= 2;
++}
++
++export function createMermaidRenderConfig<TTheme extends string>(theme: TTheme, source = '') {
++    const typoraFlowchart = shouldUseTyporaFlowchartRendering(source);
++    const inheritDisconnectedSubgraphs = shouldInheritDisconnectedSubgraphDirection(source);
++    return {
++        startOnLoad: false,
++        securityLevel: 'strict' as const,
++        theme,
++        htmlLabels: false,
++        flowchart: {
++            // WebView2 can misplace large subgraphs when foreignObject labels
++            // participate in Dagre measurement, so keep stable SVG labels.
++            htmlLabels: false,
++            curve: typoraFlowchart ? 'basis' as const : 'linear' as const,
++            ...(inheritDisconnectedSubgraphs ? { inheritDir: true } : {}),
++        },
++        class: { htmlLabels: false },
++    };
++}
++
++function transformPoint(matrix: DOMMatrix, point: MermaidPoint): MermaidPoint {
++    return {
++        x: matrix.a * point.x + matrix.c * point.y + matrix.e,
++        y: matrix.b * point.x + matrix.d * point.y + matrix.f,
++    };
++}
++
++function clusterBoundsInPathSpace(
++    rect: SVGRectElement,
++    path: SVGPathElement,
++): MermaidBox | null {
++    const clusterMatrix = rect.getCTM();
++    const pathMatrix = path.getCTM();
++    if (!clusterMatrix || !pathMatrix)
++        return null;
++
++    let inversePathMatrix: DOMMatrix;
++    let box: DOMRect | SVGRect;
++    try {
++        inversePathMatrix = pathMatrix.inverse();
++        box = rect.getBBox();
++    }
++    catch {
++        return null;
++    }
++
++    const corners = [
++        { x: box.x, y: box.y },
++        { x: box.x + box.width, y: box.y },
++        { x: box.x, y: box.y + box.height },
++        { x: box.x + box.width, y: box.y + box.height },
++    ].map(point => transformPoint(
++        inversePathMatrix,
++        transformPoint(clusterMatrix, point),
++    ));
++    const left = Math.min(...corners.map(point => point.x));
++    const top = Math.min(...corners.map(point => point.y));
++    const right = Math.max(...corners.map(point => point.x));
++    const bottom = Math.max(...corners.map(point => point.y));
++    return { x: left, y: top, width: right - left, height: bottom - top };
++}
++
++function distanceFromBoxBoundary(point: MermaidPoint, box: MermaidBox): number {
++    const right = box.x + box.width;
++    const bottom = box.y + box.height;
++    const outsideX = Math.max(box.x - point.x, 0, point.x - right);
++    const outsideY = Math.max(box.y - point.y, 0, point.y - bottom);
++    if (outsideX > 0 || outsideY > 0)
++        return Math.hypot(outsideX, outsideY);
++    return Math.min(point.x - box.x, right - point.x, point.y - box.y, bottom - point.y);
++}
++
++function lineToBoxBoundary(
++    start: MermaidPoint,
++    box: MermaidBox,
++): MermaidPoint | null {
++    const right = box.x + box.width;
++    const bottom = box.y + box.height;
++    const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
++    const dx = center.x - start.x;
++    const dy = center.y - start.y;
++    const candidates: Array<{ point: MermaidPoint; t: number }> = [];
++    const epsilon = 0.001;
++
++    if (Math.abs(dx) > epsilon) {
++        for (const x of [box.x, right]) {
++            const t = (x - start.x) / dx;
++            const y = start.y + t * dy;
++            if (t > 0 && t <= 1 && y >= box.y - epsilon && y <= bottom + epsilon)
++                candidates.push({ point: { x, y }, t });
++        }
++    }
++    if (Math.abs(dy) > epsilon) {
++        for (const y of [box.y, bottom]) {
++            const t = (y - start.y) / dy;
++            const x = start.x + t * dx;
++            if (t > 0 && t <= 1 && x >= box.x - epsilon && x <= right + epsilon)
++                candidates.push({ point: { x, y }, t });
++        }
++    }
++    candidates.sort((a, b) => a.t - b.t);
++    const intersection = candidates[0]?.point;
++    if (!intersection)
++        return null;
++
++    // Mermaid's pointEnd marker reaches roughly four units beyond the path.
++    const length = Math.hypot(intersection.x - start.x, intersection.y - start.y);
++    if (length <= 4)
++        return intersection;
++    return {
++        x: intersection.x - (intersection.x - start.x) * 4 / length,
++        y: intersection.y - (intersection.y - start.y) * 4 / length,
++    };
++}
++
++function escapeRegExp(value: string): string {
++    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
++}
++
++/**
++ * Mermaid 11 can move a nested cluster after Dagre has routed its incoming
++ * edges in WebView2. Repair only visibly detached endpoints on large,
++ * multi-cluster flowcharts; correctly routed diagrams remain byte-identical.
++ */
++export function repairDisconnectedMermaidClusterEdges(
++    target: HTMLElement,
++    source: string,
++): number {
++    if (!shouldUseTyporaFlowchartRendering(source))
++        return 0;
++    const svg = target.querySelector<SVGSVGElement>('svg');
++    if (!svg?.id)
++        return 0;
++
++    let repairCount = 0;
++    const idPrefix = `${svg.id}-`;
++    for (const cluster of svg.querySelectorAll<SVGGElement>('g.cluster')) {
++        const rect = cluster.querySelector<SVGRectElement>(':scope > rect');
++        if (!rect)
++            continue;
++        const clusterKey = cluster.id.startsWith(idPrefix)
++            ? cluster.id.slice(idPrefix.length)
++            : cluster.id;
++        const incomingEdgePattern = new RegExp(`_${escapeRegExp(clusterKey)}_\\d+$`);
++
++        for (const path of svg.querySelectorAll<SVGPathElement>('path.flowchart-link')) {
++            if (
++                path.dataset.otterdiveClusterEdgeRepaired === 'true'
++                || !path.getAttribute('marker-end')
++                || !incomingEdgePattern.test(path.id)
++            ) continue;
++            const bounds = clusterBoundsInPathSpace(rect, path);
++            if (!bounds)
++                continue;
++            const pathLength = path.getTotalLength();
++            const start = path.getPointAtLength(0);
++            const end = path.getPointAtLength(pathLength);
++            if (distanceFromBoxBoundary(end, bounds) <= 12)
++                continue;
++            const repairedEnd = lineToBoxBoundary(start, bounds);
++            const pathData = path.getAttribute('d');
++            if (!repairedEnd || !pathData)
++                continue;
++            path.setAttribute('d', `${pathData}L${repairedEnd.x},${repairedEnd.y}`);
++            path.dataset.otterdiveClusterEdgeRepaired = 'true';
++            repairCount += 1;
++        }
++    }
++    return repairCount;
++}
++
++export function classifyMermaidDiagramSize(
++    svg: MermaidSvgForSizing,
++    width: number,
++    height: number,
++): MermaidDiagramSize {
++    if (svg.classList.contains('classDiagram'))
++        return 'class';
++
++    if (svg.classList.contains('erDiagram'))
++        return 'wide';
++
++    const ratio = height > 0 ? width / height : 1;
++    return ratio >= 1.2 ? 'wide' : ratio >= 0.75 ? 'balanced' : 'portrait';
++}
++
++export function mergeMermaidClassTextBounds(
++    nativeBox: MermaidBox,
++    textBoxes: readonly MermaidBox[],
++): MermaidBox {
++    if (textBoxes.length === 0)
++        return nativeBox;
++    const y = Math.min(...textBoxes.map(box => box.y));
++    const bottom = Math.max(...textBoxes.map(box => box.y + box.height));
++    return {
++        x: nativeBox.x,
++        y,
++        width: Math.max(nativeBox.width, ...textBoxes.map(box => box.width)),
++        height: Math.max(nativeBox.height, bottom - y),
++    };
++}
++
++function translateY(element: SVGGraphicsElement): number {
++    return element.transform.baseVal.consolidate()?.matrix.f ?? 0;
++}
++
++function measureDirectLabelBoxes(
++    group: SVGGElement,
++    getBBox: SVGGraphicsElement['getBBox'],
++    offsetY = 0,
++): MermaidBox[] {
++    return [...group.querySelectorAll<SVGGElement>(':scope > g.label')].map((label) => {
++        const box = getBBox.call(label);
++        return {
++            x: box.x,
++            y: offsetY + translateY(label) + box.y,
++            width: box.width,
++            height: box.height,
++        };
++    });
++}
++
++async function withMermaidClassBBoxFix<T>(run: () => Promise<T>): Promise<T> {
++    if (
++        typeof SVGGraphicsElement === 'undefined'
++        || typeof SVGGElement === 'undefined'
++        || typeof SVGGraphicsElement.prototype.getBBox !== 'function'
++    )
++        return run();
++
++    // WebView2 can return a stale parent bbox immediately after Mermaid moves
++    // class member groups. Measure each text row so Dagre receives the full height.
++    const prototype = SVGGraphicsElement.prototype;
++    const nativeGetBBox = prototype.getBBox;
++    prototype.getBBox = function patchedGetBBox(this: SVGGraphicsElement): DOMRect {
++        if (
++            this instanceof SVGGElement
++            && this.matches('.members-group, .methods-group')
++        ) {
++            const nativeBox = nativeGetBBox.call(this);
++            const measured = mergeMermaidClassTextBounds(
++                nativeBox,
++                measureDirectLabelBoxes(this, nativeGetBBox),
++            );
++            return DOMRect.fromRect(measured);
++        }
++        if (
++            this instanceof SVGGElement
++            && this.querySelector(':scope > .label-group')
++            && this.querySelector(':scope > .members-group')
++        ) {
++            const nativeBox = nativeGetBBox.call(this);
++            const textBoxes = [...this.children]
++                .filter((child): child is SVGGElement =>
++                    child instanceof SVGGElement
++                    && child.matches('.annotation-group, .label-group, .members-group, .methods-group'),
++                )
++                .flatMap(group =>
++                    measureDirectLabelBoxes(group, nativeGetBBox, translateY(group)),
++                );
++            const measured = mergeMermaidClassTextBounds(nativeBox, textBoxes);
++            return DOMRect.fromRect(measured);
++        }
++        return nativeGetBBox.call(this);
++    };
++
++    try {
++        return await run();
++    }
++    finally {
++        prototype.getBBox = nativeGetBBox;
++    }
++}
++
++/**
++ * Mermaid configuration and SVG measurement are global. Serialize every run
++ * so editor previews and exports cannot overwrite each other's render state.
++ */
++export function runMermaidWithCompatibility<T>(run: () => Promise<T>): Promise<T> {
++    const task = mermaidRenderQueue.then(() => withMermaidClassBBoxFix(run));
++    mermaidRenderQueue = task.then(() => undefined, () => undefined);
++    return task;
++}
+diff --git b/src/utils/equationReferences.ts b/src/utils/equationReferences.ts
+new file mode 100644
+index 0000000..3df0033
+--- /dev/null
++++ b/src/utils/equationReferences.ts
+@@ -0,0 +1,62 @@
++/** Basic labelled display equations; source text is never rewritten. */
++export function collectEquationLabels(markdown: string): Record<string, string> {
++    const labels: Record<string, string> = Object.create(null);
++    let fence = '';
++    let mathFence = false;
++    let math = false;
++    let source = '';
++    let equation = 0;
++    const recordEquation = () => {
++        equation += 1;
++        const tag = /\\tag\*?\{([^{}]+)\}/.exec(source)?.[1] ?? String(equation);
++        for (const match of source.matchAll(/\\label\{([^{}]+)\}/g)) {
++            if (!Object.hasOwn(labels, match[1])) labels[match[1]] = tag;
++        }
++    };
++    const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
++    if (lines[0] === '---' || lines[0] === '+++') {
++        const end = lines.indexOf(lines[0], 1);
++        if (end > 0) lines.splice(0, end + 1);
++    }
++    for (const line of lines) {
++        const codeFence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
++        if (fence) {
++            if (codeFence && codeFence[1][0] === fence[0] && codeFence[1].length >= fence.length && !codeFence[2].trim()) {
++                if (mathFence) recordEquation();
++                fence = '';
++                source = '';
++            } else if (mathFence) source += `${line}\n`;
++            continue;
++        }
++        if (!math && codeFence) {
++            fence = codeFence[1];
++            mathFence = codeFence[2].trim() === 'math';
++            source = '';
++            continue;
++        }
++        if (/^\s*\$\$\s*$/.test(line)) {
++            if (math) {
++                recordEquation();
++            }
++            source = '';
++            math = !math;
++        } else if (math) source += `${line}\n`;
++    }
++    return { ...labels };
++}
++
++function safeText(value: string) {
++    return value.replace(/[\\{}%$&#_^~]/g, '');
++}
++
++export function prepareEquationTex(tex: string, labels: Record<string, string>, displayMode: boolean) {
++    const ownLabel = /\\label\{([^{}]+)\}/.exec(tex)?.[1];
++    let result = tex.replace(/\\label\{[^{}]+\}/g, '').replace(/\\(eqref|ref)\{([^{}]+)\}/g, (_, kind: string, label: string) => {
++        const value = Object.hasOwn(labels, label) ? safeText(labels[label]) : '??';
++        return `\\text{${kind === 'eqref' && value !== '??' ? `(${value})` : value}}`;
++    });
++    if (displayMode && ownLabel && Object.hasOwn(labels, ownLabel) && !/\\tag\*?\{/.test(result)) {
++        result += `\\tag{${safeText(labels[ownLabel])}}`;
++    }
++    return result;
++}
+diff --git a/src/utils/image.ts b/src/utils/image.ts
+index dbe4ddd..5b67661 100644
+--- a/src/utils/image.ts
++++ b/src/utils/image.ts
+@@ -89,7 +89,8 @@ function localPathToFileUrl(src: string): string {
+     return `file://${normalized}`;
+ }
+ 
+-export function getImageSrc(src: string) {
++export function getImageSrc(src: string, resolveImageSrc?: (src: string) => string) {
++
+     const EXT_REG = /\.(?:jpeg|jpg|png|gif|svg|webp)(?=\?|$)/i;
+     // http[s] (domain or IPv4 or localhost or IPv6) [port] /not-white-space
+     const URL_REG
+@@ -97,6 +98,13 @@ export function getImageSrc(src: string) {
+     const DATA_URL_REG
+         = /^data:image\/[\w+-]+(?:;[\w-]+=[\w-]+|;base64)*,[a-zA-Z0-9+/]+={0,2}$/;
+     const imageExtension = EXT_REG.test(src);
++    const resolvedSrc = resolveImageSrc?.(src);
++    if (resolvedSrc) {
++        return {
++            isUnknownType: !imageExtension,
++            src: resolvedSrc,
++        };
++    }
+     // An already-`file://` src must not be re-prefixed (avoids `file://file://`).
+     const isFileUrl = /^file:\/\//i.test(src);
+     const isUrl = URL_REG.test(src) || (imageExtension && isFileUrl);
+@@ -185,8 +193,14 @@ export async function loadImage(url: string, detectContentType = false): Promise
+             return Promise.reject('not an image.');
+     }
+ 
+-    return new Promise((resolve, reject) => {
++    const attempt = () => new Promise<{
++        url: string;
++        width: number;
++        height: number;
++    }>((resolve, reject) => {
+         const image = new Image();
++        image.referrerPolicy = 'no-referrer';
++        image.decoding = 'async';
+         image.onload = () => {
+             resolve({
+                 url,
+@@ -200,6 +214,20 @@ export async function loadImage(url: string, detectContentType = false): Promise
+         };
+         image.src = url;
+     });
++
++    try {
++        return await attempt();
++    }
++    catch (error) {
++        // A transient WebView/CDN failure should not leave a pasted remote
++        // image permanently broken until an unrelated editor re-render. Retry
++        // remote sources once; local files and data URLs retain their existing
++        // single-attempt behavior.
++        if (!/^https?:\/\//i.test(url))
++            throw error;
++
++        return attempt();
++    }
+ }
+ 
+ // Only a same-origin URL can have its Content-Type read from the renderer: a
+diff --git a/src/utils/marked/extensions/math.ts b/src/utils/marked/extensions/math.ts
+index 6a2379a..13f8fea 100644
+--- a/src/utils/marked/extensions/math.ts
++++ b/src/utils/marked/extensions/math.ts
+@@ -1,5 +1,6 @@
+ import type { Token } from 'marked';
+ import katex from 'katex';
++import { prepareEquationTex } from '../../equationReferences';
+ import 'katex/dist/contrib/mhchem.mjs';
+ 
+ // marked resolves a token's renderer by looking its `type` up among the
+@@ -41,6 +42,7 @@ export interface IMathToken {
+ interface IOptions {
+     throwOnError?: boolean;
+     useKatexRender?: boolean;
++    equationLabels?: Record<string, string>;
+ }
+ 
+ // Kept in lockstep with the editor's `inline_math` rule
+@@ -190,11 +192,12 @@ function markDisplayMath(token: Token) {
+ 
+ function createRenderer(options: IOptions, newlineAfter: boolean) {
+     return (token: IMathToken) => {
+-        const { useKatexRender, ...otherOpts } = options;
++        const { useKatexRender, equationLabels, ...otherOpts } = options;
+         const { type, text, displayMode, marker = '$', closeMarker = marker, mathStyle } = token;
++
+         if (useKatexRender) {
+             return (
+-                katex.renderToString(text, {
++                katex.renderToString(prepareEquationTex(text, equationLabels ?? {}, displayMode), {
+                     ...otherOpts,
+                     displayMode,
+                 }) + (newlineAfter ? '\n' : '')
+diff --git a/src/utils/marked/getClipboardHtml.ts b/src/utils/marked/getClipboardHtml.ts
+index ad3255c..2d78288 100644
+--- a/src/utils/marked/getClipboardHtml.ts
++++ b/src/utils/marked/getClipboardHtml.ts
+@@ -8,6 +8,7 @@ import inlineDiffExtension from './extensions/inlineDiff';
+ import markExtension from './extensions/mark';
+ import mathExtension, { doubleBackslashMathExtension, gfmMathExtension, singleBackslashMathExtension } from './extensions/math';
+ import multilineBlockquoteExtension from './extensions/multilineBlockquote';
++
+ import superSubScriptExtension from './extensions/superSubscript';
+ import fm, { frontMatterRender } from './frontMatter';
+ import { DEFAULT_OPTIONS } from './options';
+diff --git a/src/utils/marked/getHighlightHtml.ts b/src/utils/marked/getHighlightHtml.ts
+index fd9990a..7c3e3dd 100644
+--- a/src/utils/marked/getHighlightHtml.ts
++++ b/src/utils/marked/getHighlightHtml.ts
+@@ -9,10 +9,12 @@ import inlineDiffExtension from './extensions/inlineDiff';
+ import markExtension from './extensions/mark';
+ import mathExtension, { doubleBackslashMathExtension, gfmMathExtension, singleBackslashMathExtension } from './extensions/math';
+ import multilineBlockquoteExtension from './extensions/multilineBlockquote';
++
+ import superSubScriptExtension from './extensions/superSubscript';
+ import fm, { frontMatterRender } from './frontMatter';
+ import { DEFAULT_OPTIONS } from './options';
+ import walkTokens from './walkTokens';
++import { collectEquationLabels } from '../equationReferences';
+ 
+ const DIAGRAM_TYPE = [
+     'mermaid',
+@@ -59,12 +61,31 @@ export function getHighlightHtml(src: string, options: ILexOption = {}) {
+     marked.use(cjkEmStrongExtension());
+ 
+     marked.use(emojiExtension({ isRenderEmoji: true }));
++    if (options.toc) {
++        marked.use({ renderer: {
++            paragraph(token) {
++                return /^\[toc\]$/i.test(token.raw.trim())
++                    ? '<p class="otterdive-toc-marker">[TOC]</p>\n'
++                    : false;
++            },
++        } });
++    }
++    if (options.alerts) {
++        marked.use({ renderer: {
++            blockquote(token) {
++                const first = token.tokens[0];
++                if (first?.type !== 'paragraph' || !/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\s|$)/i.test(first.raw)) return false;
++                return `<blockquote class="otterdive-alert-marker">\n${this.parser.parse(token.tokens)}</blockquote>\n`;
++            },
++        } });
++    }
+ 
+     if (texMathDollars) {
+         marked.use(
+             mathExtension({
+                 throwOnError: false,
+                 useKatexRender: true,
++                equationLabels: collectEquationLabels(src),
+             }),
+         );
+     }
+diff --git a/src/utils/marked/types.ts b/src/utils/marked/types.ts
+index 405b61a..b80da7d 100644
+--- a/src/utils/marked/types.ts
++++ b/src/utils/marked/types.ts
+@@ -12,6 +12,9 @@ export interface ILexOption {
+     highlightSyntax?: boolean;
+     inlineDiff?: boolean;
+     multilineBlockquote?: boolean;
++    toc?: boolean;
++    alerts?: boolean;
++
+ }
+ 
+ export type Heading = Tokens.Heading & {
+diff --git a/src/utils/paste.ts b/src/utils/paste.ts
+index c71febe..2952b21 100644
+--- a/src/utils/paste.ts
++++ b/src/utils/paste.ts
+@@ -76,12 +76,34 @@ export async function normalizePastedHTML(
+     // Prevent XSS and sanitize HTML.
+     const sanitizedHtml = sanitize(
+         html,
+-        PREVIEW_DOMPURIFY_CONFIG,
++        {
++            ...PREVIEW_DOMPURIFY_CONFIG,
++            // Keep only the common lazy-image source attributes long enough
++            // to promote them to a standard `src`. The final sanitize pass
++            // below removes them and validates the promoted URL as an image
++            // source.
++            ADD_ATTR: ['data-src', 'data-original', 'data-lazy-src'],
++        },
+         false,
+     ) as string;
+     const tempWrapper = document.createElement('div');
+     tempWrapper.innerHTML = sanitizedHtml;
+ 
++    // Documentation sites commonly omit `src` until their lazy-loader runs.
++    // Clipboard HTML can therefore contain only `data-src`, which Turndown
++    // cannot recognize as an image. Promote the deferred source before the
++    // HTML-to-Markdown conversion.
++    for (const image of Array.from(tempWrapper.querySelectorAll('img'))) {
++        const lazySource = [
++            image.getAttribute('data-src'),
++            image.getAttribute('data-original'),
++            image.getAttribute('data-lazy-src'),
++        ].find(value => value?.trim());
++
++        if (lazySource)
++            image.setAttribute('src', lazySource.trim());
++    }
++
+     // Special process for turndown.js, needed for Number app on macOS.
+     const tables = Array.from(tempWrapper.querySelectorAll('table'));
+ 
+@@ -120,7 +142,16 @@ export async function normalizePastedHTML(
+ 
+     for (const link of links) {
+         const href = link.getAttribute('href');
+-        const text = link.textContent;
++        const text = link.textContent ?? '';
++
++        // Documentation sites often append an empty permalink anchor to each
++        // heading. Turndown serializes it as `[](url)`, which becomes a long,
++        // visible link in the WYSIWYG editor. Drop only anchors with no visible
++        // content while preserving linked images and other media.
++        if (!text.trim() && !link.querySelector('img, picture, video, audio')) {
++            link.remove();
++            continue;
++        }
+ 
+         // Only unlink a bare URL (text === href). muyajs guards with
+         // `URL_REG.test(href)` so a non-URL link whose text happens to equal its
+@@ -148,7 +179,9 @@ export async function normalizePastedHTML(
+         }
+     }
+ 
+-    return tempWrapper.innerHTML;
++    // Validate promoted image URLs using DOMPurify's normal `src` handling and
++    // strip the temporary lazy-loading attributes from the returned HTML.
++    return sanitize(tempWrapper.innerHTML, PREVIEW_DOMPURIFY_CONFIG, false) as string;
+ }
+ 
+ // Sniffs whether `text` looks like a single HTML `<table>` blob and nothing
+diff --git a/src/utils/prism/loadLanguage.ts b/src/utils/prism/loadLanguage.ts
+index 7622165..f73d365 100644
+--- a/src/utils/prism/loadLanguage.ts
++++ b/src/utils/prism/loadLanguage.ts
+@@ -92,7 +92,7 @@ function initLoadLanguage(Prism: IPrismLike) {
+             }
+             delete Prism.languages[lang];
+             await import(
+-                `../../../node_modules/prismjs/components/prism-${lang}.js`,
++                `../../../../../node_modules/prismjs/components/prism-${lang}.js`,
+             );
+             loadedLanguages.add(lang);
+             statuses.push({ lang, status: 'loaded' });
+diff --git a/src/utils/slug.ts b/src/utils/slug.ts
+index 14617ba..884fcb8 100644
+--- a/src/utils/slug.ts
++++ b/src/utils/slug.ts
+@@ -1,4 +1,5 @@
+ // Unicode-aware like GitHub, so CJK and accented headings keep an anchor (#5292).
++
+ export function generateGithubSlug(text: string): string {
+     return text
+         .trim()
+@@ -6,4 +7,5 @@ export function generateGithubSlug(text: string): string {
+         .replace(/[^\p{L}\p{M}\p{N}\p{Pc}\s-]/gu, '')
+         .replace(/\s+/g, '-')
+         .replace(/-+/g, '-');
++
+ }

@@ -167,25 +167,23 @@ import {
   markdownPdfFileName,
   printMarkdownDocument,
 } from "./markdownPrint";
-import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
-import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
-import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
-import "monaco-editor/esm/vs/basic-languages/monaco.contribution";
+import * as monaco from "monaco-editor/editor";
+import editorWorker from "monaco-editor/editor/editor.worker?worker";
+import jsonWorker from "monaco-editor/languages/features/json/json.worker?worker";
+import cssWorker from "monaco-editor/languages/features/css/css.worker?worker";
+import htmlWorker from "monaco-editor/languages/features/html/html.worker?worker";
+import tsWorker from "monaco-editor/languages/features/typescript/ts.worker?worker";
+import "monaco-editor/languages/definitions/register.all";
 import {
   conf as markdownConfiguration,
   language as markdownTokens,
-} from "monaco-editor/esm/vs/basic-languages/markdown/markdown";
-import "monaco-editor/esm/vs/editor/contrib/linesOperations/browser/linesOperations";
-import "monaco-editor/esm/vs/editor/contrib/bracketMatching/browser/bracketMatching";
-import "monaco-editor/esm/vs/editor/contrib/wordHighlighter/browser/wordHighlighter";
-import "monaco-editor/esm/vs/editor/contrib/format/browser/formatActions";
-import "monaco-editor/esm/vs/language/css/monaco.contribution";
-import "monaco-editor/esm/vs/language/html/monaco.contribution";
-import "monaco-editor/esm/vs/language/json/monaco.contribution";
-import "monaco-editor/esm/vs/language/typescript/monaco.contribution";
+} from "monaco-editor/languages/definitions/markdown/markdown";
+// Language workers load these contributions too; register their services before creating an editor.
+import "monaco-editor/features/register.all";
+import "monaco-editor/languages/features/css/register";
+import "monaco-editor/languages/features/html/register";
+import "monaco-editor/languages/features/json/register";
+import "monaco-editor/languages/features/typescript/register";
 import "./styles.css";
 
 type EncodingLabel =
@@ -1434,7 +1432,7 @@ function bootstrap() {
     autoSurround: "languageDefined",
     dragAndDrop: true,
     links: true,
-    hover: { enabled: true, delay: 300 },
+    hover: { enabled: "on", delay: 300 },
     parameterHints: { enabled: true, cycle: true },
     suggest: { preview: true, showWords: true, selectionMode: "always" },
     tabCompletion: "on",
@@ -10065,8 +10063,8 @@ async function formatDocument(doc: OpenDocument, target = editor) {
   const version = model.getVersionId();
   try {
     // onLanguage registers these providers asynchronously after a language switch.
-    if (language === "html") await import("monaco-editor/esm/vs/language/html/htmlMode");
-    if (["css", "scss", "less"].includes(language)) await import("monaco-editor/esm/vs/language/css/cssMode");
+    if (language === "html") await import("monaco-editor/languages/features/html/htmlMode");
+    if (["css", "scss", "less"].includes(language)) await import("monaco-editor/languages/features/css/cssMode");
     const action = target.getAction("editor.action.formatDocument");
     if (["html", "css", "scss", "less"].includes(language)) {
       const deadline = performance.now() + 3000;

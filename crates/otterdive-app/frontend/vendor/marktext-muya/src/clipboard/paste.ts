@@ -278,8 +278,15 @@ function listMarkersMatch(a: TState, b: TState): boolean {
         return a.meta.delimiter === b.meta.delimiter;
     if (a.name === 'bullet-list' && b.name === 'bullet-list')
         return a.meta.marker === b.meta.marker;
-    if (a.name === 'task-list' && b.name === 'task-list')
-        return a.meta.marker === b.meta.marker;
+    if (a.name === 'task-list' && b.name === 'task-list') {
+        // Ordered and unordered task lists are never the same list.
+        if (!!a.meta.ordered !== !!b.meta.ordered)
+            return false;
+
+        return a.meta.ordered && b.meta.ordered
+            ? a.meta.delimiter === b.meta.delimiter
+            : ('marker' in a.meta && 'marker' in b.meta && a.meta.marker === b.meta.marker);
+    }
 
     return false;
 }
@@ -393,18 +400,24 @@ function applyParsedPaste(
 
     const {
         footnote,
-        math,
-        isGitlabCompatibilityEnabled,
+        texMathDollars,
+        texMathGfm,
+        texMathSingleBackslash,
+        texMathDoubleBackslash,
         trimUnnecessaryCodeBlockEmptyLines,
         frontMatter,
+        multilineBlockquote,
     } = muya.options;
 
     const states = new MarkdownToState({
         footnote,
-        math,
-        isGitlabCompatibilityEnabled,
+        texMathDollars,
+        texMathGfm,
+        texMathSingleBackslash,
+        texMathDoubleBackslash,
         trimUnnecessaryCodeBlockEmptyLines,
         frontMatter,
+        multilineBlockquote,
     }).generate(markdown);
 
     if (states.length === 0)

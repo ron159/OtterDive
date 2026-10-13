@@ -5,8 +5,11 @@ import Prism from 'prismjs';
 import cjkEmStrongExtension from './extensions/cjkEmStrong';
 import emojiExtension from './extensions/emoji';
 import footnoteExtension from './extensions/footnote';
-import mathExtension from './extensions/math';
+import inlineDiffExtension from './extensions/inlineDiff';
 import markExtension from './extensions/mark';
+import mathExtension, { doubleBackslashMathExtension, gfmMathExtension, singleBackslashMathExtension } from './extensions/math';
+import multilineBlockquoteExtension from './extensions/multilineBlockquote';
+
 import superSubScriptExtension from './extensions/superSubscript';
 import fm, { frontMatterRender } from './frontMatter';
 import { DEFAULT_OPTIONS } from './options';
@@ -39,7 +42,7 @@ function highlight(code: string, lang: string) {
 
 export function getHighlightHtml(src: string, options: ILexOption = {}) {
     options = Object.assign({}, DEFAULT_OPTIONS, options);
-    const { footnote, frontMatter, math, isGitlabCompatibilityEnabled, superSubScript }
+    const { footnote, frontMatter, texMathDollars, texMathGfm, texMathSingleBackslash, texMathDoubleBackslash, superSubScript, highlightSyntax, inlineDiff, multilineBlockquote }
         = options;
 
     // Build a fresh Marked instance per call. `Marked.use({ walkTokens })`
@@ -49,7 +52,7 @@ export function getHighlightHtml(src: string, options: ILexOption = {}) {
     const marked = new Marked(markedHighlight({ highlight }));
 
     marked.use({
-        walkTokens: walkTokens({ math, isGitlabCompatibilityEnabled }),
+        walkTokens: walkTokens({ texMathDollars, texMathGfm }),
     });
 
     // Treat CJK characters as punctuation for emphasis/strong flanking so
@@ -58,7 +61,6 @@ export function getHighlightHtml(src: string, options: ILexOption = {}) {
     marked.use(cjkEmStrongExtension());
 
     marked.use(emojiExtension({ isRenderEmoji: true }));
-    if (options.highlight) marked.use(markExtension());
     if (options.toc) {
         marked.use({ renderer: {
             paragraph(token) {
@@ -78,7 +80,7 @@ export function getHighlightHtml(src: string, options: ILexOption = {}) {
         } });
     }
 
-    if (math) {
+    if (texMathDollars) {
         marked.use(
             mathExtension({
                 throwOnError: false,
@@ -88,8 +90,43 @@ export function getHighlightHtml(src: string, options: ILexOption = {}) {
         );
     }
 
+    if (texMathGfm) {
+        marked.use(
+            gfmMathExtension({
+                throwOnError: false,
+                useKatexRender: true,
+            }),
+        );
+    }
+
+    if (texMathSingleBackslash) {
+        marked.use(
+            singleBackslashMathExtension({
+                throwOnError: false,
+                useKatexRender: true,
+            }),
+        );
+    }
+
+    if (texMathDoubleBackslash) {
+        marked.use(
+            doubleBackslashMathExtension({
+                throwOnError: false,
+                useKatexRender: true,
+            }),
+        );
+    }
+
     if (superSubScript)
         marked.use(superSubScriptExtension());
+
+    if (highlightSyntax)
+        marked.use(markExtension());
+
+    if (inlineDiff)
+        marked.use(inlineDiffExtension());
+
+    marked.use(multilineBlockquoteExtension(multilineBlockquote === true));
 
     if (footnote)
         marked.use(footnoteExtension());

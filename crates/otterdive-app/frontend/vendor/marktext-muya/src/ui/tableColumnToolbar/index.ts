@@ -165,8 +165,8 @@ export class TableColumnToolbar extends BaseFloat {
         event.stopPropagation();
         const block = this._block;
         const table = this._table;
-        if (!block?.parent || !table?.parent)
-            return;
+        if (!block?.outMostBlock || !table?.parent)
+            return this.hide();
 
         const column = block.columnOffset;
         switch (action) {

@@ -1,15 +1,45 @@
 import DeleteIcon from '../../assets/icons/delete/2.png';
 import EditIcon from '../../assets/icons/edit.png';
 
-export default [
+export type TPreviewToolType = 'view' | 'edit' | 'delete';
+
+export interface IPreviewToolIcon {
+    type: TPreviewToolType;
+    tooltip: string;
+    icon: string;
+    blocks?: ReadonlySet<string>;
+    requiresRender?: boolean;
+}
+
+// A diagram's `diagram-preview` attachment and `diagram-container` child are
+// hit before the `figure` by `elementsFromPoint`, so this has to be an exact
+// match — a substring test would anchor the toolbar to the inner node.
+export const PREVIEW_BLOCK_NAMES: ReadonlySet<string> = new Set([
+    'html-block',
+    'math-block',
+    'diagram',
+]);
+
+const ICONS: IPreviewToolIcon[] = [
     {
         type: 'edit',
-        tooltip: 'edit',
+        tooltip: 'Edit block',
         icon: EditIcon,
     },
     {
         type: 'delete',
-        tooltip: 'delete block',
+        tooltip: 'Delete block',
         icon: DeleteIcon,
     },
 ];
+
+export function previewToolBarItems(
+    blockName: string,
+    hasRenderedMedia: boolean,
+): IPreviewToolIcon[] {
+    return ICONS.filter(
+        icon =>
+            (icon.blocks?.has(blockName) ?? true)
+            && (!icon.requiresRender || hasRenderedMedia),
+    );
+}

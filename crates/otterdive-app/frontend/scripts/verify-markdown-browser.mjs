@@ -36,8 +36,8 @@ try {
     const editor = await import("/src/markdownEditor.ts");
     const print = await import("/src/markdownPrint.ts");
     const diagram = await import("/src/markdownDiagramExport.ts");
-    const monaco = await import("/node_modules/.vite/deps/monaco-editor_esm_vs_editor_editor__api.js");
-    const markdownLanguage = await import("/node_modules/monaco-editor/esm/vs/basic-languages/markdown/markdown.js");
+    const monaco = await import("/node_modules/.vite/deps/monaco-editor_editor.js");
+    const markdownLanguage = await import("/node_modules/monaco-editor/esm/vs/languages/definitions/markdown/markdown.js");
     const { default: EditorWorker } = await import("/node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker");
     window.MonacoEnvironment = { getWorker: () => new EditorWorker() };
     monaco.languages.register({ id: "markdown" });
@@ -128,6 +128,55 @@ try {
   assert.equal(functional.disabledDecorations, 0);
   if (artifactDirectory) await page.screenshot({ path: join(artifactDirectory, "markdown-live.png") });
 
+  const security = await page.evaluate(async () => {
+    const html = window.qa.editor.renderMarkdownPreviewHtml(
+      '<img src="data:," onerror="void(0)">\n\n<a href="javascript:void(0)">link</a>\n\n<script>void(0)</script>',
+      { darkMode: false },
+    );
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const { default: katex } = await import("/node_modules/katex/dist/katex.mjs");
+    const math = katex.renderToString("\\href{https://example.invalid}{x}", Object.create({ trust: true }));
+    const formula = new DOMParser().parseFromString(math, "text/html");
+    return {
+      unsafeMarkupRemoved: !parsed.querySelector('script, [onerror], a[href^="javascript:"]'),
+      inheritedMathTrustIgnored: !formula.querySelector("a[href]"),
+    };
+  });
+  assert.equal(security.unsafeMarkupRemoved, true);
+  assert.equal(security.inheritedMathTrustIgnored, true);
+  console.log("security", JSON.stringify(security));
+
+  const diagrams = await page.evaluate(async () => {
+    const root = document.querySelector("#preview");
+    root.style.display = "block";
+    const samples = [
+      ["mermaid", "flowchart TD\n A[开始] --> B[结束]"],
+      ["mermaid", "sequenceDiagram\n Alice->>Bob: Hello\n Bob-->>Alice: World"],
+      ["mermaid", "classDiagram\n Animal <|-- Duck\n Animal : +int age"],
+      ["vega-lite", JSON.stringify({
+        data: { values: [{ category: "甲", value: 2 }, { category: "乙", value: 5 }] },
+        mark: "bar",
+        encoding: { x: { field: "category", type: "nominal" }, y: { field: "value", type: "quantitative" } },
+      })],
+    ];
+    root.innerHTML = window.qa.editor.renderMarkdownPreviewHtml(
+      samples.map(([language, source]) => `\`\`\`${language}\n${source}\n\`\`\``).join("\n\n"),
+      { darkMode: false },
+    );
+    await window.qa.editor.renderMarkdownPreviewDiagrams(root, { darkMode: false, plantumlServer: "" });
+    const result = {
+      rendered: root.querySelectorAll("svg").length,
+      errors: [...root.querySelectorAll("[data-diagram-error]")].map((element) => element.dataset.diagramError),
+      labelsPresent: ["开始", "结束", "Alice", "Bob", "Animal", "Duck", "甲", "乙"].every((label) => root.textContent.includes(label)),
+    };
+    root.style.display = "none";
+    return result;
+  });
+  assert.equal(diagrams.rendered, 4);
+  assert.equal(diagrams.labelsPresent, true);
+  assert.deepEqual(diagrams.errors, []);
+  console.log("diagrams", JSON.stringify(diagrams));
+
   await page.evaluate(async () => { window.qa.mount("第一段中文内容。\n\n第二段用于输入。\n\n第三段用于检查。", { focusMode: true }); await window.qa.frame(); window.qa.caret(1, 4); });
   await page.keyboard.insertText("测试输入");
   await page.waitForFunction(() => {
@@ -195,6 +244,77 @@ try {
   assert.equal(cursor.retainedDom, true);
   assert.deepEqual(cursor.readback, cursor.expected);
   console.log("cursor", JSON.stringify(cursor));
+
+  const selectionSearch = await page.evaluate(async () => {
+    const { qa } = window;
+    const options = { matchCase: false, wholeWord: false, regex: false, selectionOnly: true };
+    const select = (index, start, end) => {
+      const blocks = [];
+      qa.bridge.muya.editor.scrollPage.depthFirstTraverse((node) => { if (node.isContent()) blocks.push(node); });
+      blocks[index].setCursor(start, end, true);
+      if (!qa.bridge.captureSearchSelection()) throw new Error("Failed to capture search selection");
+    };
+    qa.mount("word selected\n\nword outside\n");
+    select(0, 0, 4);
+    const initial = qa.bridge.search("word", options).total;
+    qa.bridge.setWritingOptions({ extensions: { highlight: false } });
+    qa.bridge.setWritingOptions({ extensions: { highlight: true } });
+    const repeatedRender = qa.bridge.muya.editor.searchModule.matches.length;
+    qa.bridge.replace("CHANGED", true, false);
+    await qa.frame();
+    const longer = qa.bridge.getMarkdown();
+    qa.bridge.setWritingOptions({ extensions: { highlight: false } });
+    const longerMatches = qa.bridge.search("CHANGED", options).total;
+    qa.bridge.replace("x", true, false);
+    await qa.frame();
+    const shorter = qa.bridge.getMarkdown();
+    const outsideMatches = qa.bridge.search("outside", options).total;
+    const fullDocument = qa.bridge.search("word", { ...options, selectionOnly: false }).total;
+
+    qa.mount("word tail word\n");
+    select(0, 4, 0);
+    qa.bridge.search("word", options);
+    qa.bridge.setWritingOptions({ extensions: { math: false } });
+    qa.bridge.replace("", true, false);
+    await qa.frame();
+    const deleted = qa.bridge.getMarkdown();
+    const collapsedRange = qa.bridge.search("word", options).total;
+
+    qa.mount("$$\nx\n$$\n\nword selected\n\nword outside\n");
+    select(1, 0, 4);
+    qa.bridge.search("word", options);
+    qa.bridge.setWritingOptions({ extensions: { math: false } });
+    const reparsed = qa.bridge.muya.editor.searchModule.matches.length;
+    qa.bridge.replace("REPLACED", true, false);
+    await qa.frame();
+    const afterParse = qa.bridge.getMarkdown();
+
+    qa.mount("word selected\n\nword outside\n");
+    select(0, 0, 4);
+    qa.bridge.search("(word)", { ...options, regex: true });
+    qa.bridge.setWritingOptions({ extensions: { highlight: false } });
+    qa.bridge.replace("$1-long", true, true);
+    await qa.frame();
+    const regex = qa.bridge.getMarkdown();
+    qa.bridge.clearSearch();
+    const cleared = qa.bridge.search("word", options).total;
+    return { initial, repeatedRender, longer, longerMatches, shorter, outsideMatches,
+      fullDocument, deleted, collapsedRange, reparsed, afterParse, regex, cleared };
+  });
+  assert.equal(selectionSearch.initial, 1);
+  assert.equal(selectionSearch.repeatedRender, 1);
+  assert.equal(selectionSearch.longer, "CHANGED selected\n\nword outside\n");
+  assert.equal(selectionSearch.longerMatches, 1);
+  assert.equal(selectionSearch.shorter, "x selected\n\nword outside\n");
+  assert.equal(selectionSearch.outsideMatches, 0);
+  assert.equal(selectionSearch.fullDocument, 1);
+  assert.equal(selectionSearch.deleted, " tail word\n");
+  assert.equal(selectionSearch.collapsedRange, 0);
+  assert.equal(selectionSearch.reparsed, 1);
+  assert.equal(selectionSearch.afterParse, "$$\nx\n$$\n\nREPLACED selected\n\nword outside\n");
+  assert.equal(selectionSearch.regex, "word-long selected\n\nword outside\n");
+  assert.equal(selectionSearch.cleared, 0);
+  console.log("selectionSearch", JSON.stringify(selectionSearch));
 
   const exports = await page.evaluate(async (markdown) => {
     const { qa } = window;
@@ -318,7 +438,7 @@ try {
   }
   assert.deepEqual(networkRequests, [], "PlantUML disabled and data images must not issue external network requests");
   assert.deepEqual(errors, [], "Browser must not emit uncaught errors");
-  const report = { timestamp: new Date().toISOString(), browser: await browser.version(), fixture: "isolated modules, warm imports, 100 Chinese characters/paragraph", functional, editing, typewriter, cursor, exports, samples, errors, externalNetworkRequests: networkRequests };
+  const report = { timestamp: new Date().toISOString(), browser: await browser.version(), fixture: "isolated modules, warm imports, 100 Chinese characters/paragraph", functional, security, diagrams, editing, typewriter, cursor, selectionSearch, exports, samples, errors, externalNetworkRequests: networkRequests };
   if (process.env.MARKDOWN_QA_OUTPUT) await writeFile(process.env.MARKDOWN_QA_OUTPUT, `${JSON.stringify(report, null, 2)}\n`);
   console.log("Markdown browser QA passed");
 } finally {
