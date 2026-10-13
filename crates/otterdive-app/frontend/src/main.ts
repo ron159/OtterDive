@@ -6,6 +6,7 @@ import { mountWorkbenchSettings, syncWorkbenchSettings } from "./workbenchSettin
 import { bindMarkdownDiagramActions } from "./markdownDiagramActions";
 import { resolveMarkdownResource, relativeMarkdownResource, splitMarkdownLink } from "./markdownPaths";
 import { writingStats } from "./writingStats";
+import { THEME_PRESETS, resolveThemePalette, matchingThemePreset, normalizeThemeColor, normalizeThemeOverrides, customEditorThemeColors, type ThemeMode, type ThemeColorKey, type ThemePalette, type ThemeOverrides } from "./themePresets";
 import { mapScrollPosition } from "./scrollSync";
 import { sourceSelectionToMarkdownCursor, markdownCursorToSourceSelection, captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, type MarkdownCursor, type MarkdownScrollAnchor } from "./markdownNavigation";
 import { documentOutlineLayout, restoreOutlinePreferences, outlineHeadingSelector, outlineHeadingOffset, retainedOutlineNavigation } from "./documentOutline";
@@ -77,6 +78,7 @@ import {
   LoaderCircle,
   Map,
   Maximize2,
+  MessageSquare,
   Minus,
   Moon,
   MonitorCog,
@@ -101,6 +103,7 @@ import {
   Settings,
   ShieldCheck,
   Sigma,
+  Star,
   Sun,
   Table2,
   Type,
@@ -296,6 +299,7 @@ interface OpenDocument extends DocumentDto {
   saving?: boolean;
   id: number;
   draftId?: string;
+  creationIntent?: "default" | "explicit";
   skipSessionRestore?: boolean;
   origin: DocumentOrigin;
   model: monaco.editor.ITextModel | null;
@@ -310,6 +314,7 @@ interface OpenDocument extends DocumentDto {
 
 interface ClosedDocumentSnapshot extends DocumentDto {
   draftId?: string;
+  creationIntent?: "default" | "explicit";
   dirty: boolean;
   savedText: string;
   languageOverride?: string;
@@ -352,6 +357,7 @@ interface FormatWorkerResponse {
 
 interface DraftDocumentSnapshot {
   id: string;
+  creationIntent?: "default" | "explicit";
   title: string;
   text: string;
   encoding: EncodingLabel;
@@ -507,11 +513,7 @@ type SearchScope = "current" | "open" | "workspace";
 type WorkspaceSearchStatus = "idle" | "searching" | "previewing" | "applying" | "error";
 type WorkspaceSearchAction = "search" | "preview" | "apply";
 type RenderWhitespaceMode = "none" | "selection" | "all";
-type ThemeMode = "light" | "dark";
 type ThemePreference = "system" | ThemeMode;
-type ThemeColorKey = "background" | "surface" | "input" | "editor" | "text" | "accent";
-type ThemePalette = Record<ThemeColorKey, string>;
-type ThemeOverrides = Record<ThemeMode, Partial<ThemePalette>>;
 type SettingsSection = "markdown" | "appearance" | "editor" | "keybindings" | "workspace" | "system" | "search" | "about";
 type AppUpdateStatus = "idle" | "checking" | "latest" | "available" | "installing" | "failed" | "unsupported";
 type HorizontalResizeState = {
@@ -806,25 +808,6 @@ const MIN_WORKSPACE_EDITOR_WIDTH = 320;
 const EXPLORER_RESIZE_WIDTH = 6;
 const DEFAULT_BOTTOM_RESULTS_HEIGHT = 280;
 const MIN_BOTTOM_RESULTS_HEIGHT = 160;
-
-const DEFAULT_THEME_PALETTES: Record<ThemeMode, ThemePalette> = {
-  light: {
-    background: "#E8EEF6",
-    surface: "#FFFFFF",
-    input: "#F5F8FC",
-    editor: "#FFFFFF",
-    text: "#111827",
-    accent: "#3238D8",
-  },
-  dark: {
-    background: "#121722",
-    surface: "#1D2431",
-    input: "#202838",
-    editor: "#151B26",
-    text: "#EDF2FB",
-    accent: "#858BFF",
-  },
-};
 
 const THEME_COLOR_CONTROLS: Record<ThemeColorKey, string> = {
   background: "settingsThemeBackground",
@@ -1208,6 +1191,7 @@ const lucideIcons: Record<string, IconNode> = {
   LoaderCircle,
   Map,
   Maximize2,
+  MessageSquare,
   Minus,
   Moon,
   MonitorCog,
@@ -1232,6 +1216,7 @@ const lucideIcons: Record<string, IconNode> = {
   Settings,
   ShieldCheck,
   Sigma,
+  Star,
   Sun,
   Table2,
   Type,
@@ -1407,18 +1392,7 @@ function bootstrap() {
   defineThemes();
   renderIconSlots();
 
-  const initial = createDocument({
-    title: "Untitled-1.txt",
-    path: null,
-    text: "",
-    encoding: "UTF-8",
-    lineEnding: "LF",
-    fileSize: 0,
-    readOnly: false,
-    readOnlyReason: null,
-    language: "plaintext",
-    largeFile: false,
-  });
+  const initial = createDefaultUntitledDocument();
   state.documents.push(initial);
   state.activeId = initial.id;
   applyShellFontSettings();
@@ -1576,7 +1550,7 @@ function bootstrap() {
   void initializeAppUpdate();
   // First paint can run before grid tracks resolve; force layout so Monaco is not 0×0.
   requestEditorLayout();
-  void restoreSession()
+  void restoreSession(initial)
     .then(async () => {
       await restoreRecoverySnapshots();
       applyWorkbenchAppearance();
@@ -2349,12 +2323,25 @@ function bindActions() {
   $("recentButton").addEventListener("click", () => toggleMenu("recentMenu"));
   $("settingsButton").addEventListener("click", openSettingsPage);
   $("settingsCloseButton").addEventListener("click", closeSettingsPage);
+  document.querySelectorAll<HTMLAnchorElement>(".about-link").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      if (!isTauriRuntime) return;
+      event.preventDefault();
+      void invoke("open_project_link", { url: link.href }).catch((error) => {
+        void showWorkbenchError(`无法打开项目页面：${String(error)}`);
+      });
+    });
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach((button) => {
     button.addEventListener("click", () => selectSettingsSection(button.dataset.settingsSection as SettingsSection));
   });
   $("settingsThemeSystem").addEventListener("click", () => setThemePreference("system"));
   $("settingsThemeLight").addEventListener("click", () => setThemePreference("light"));
   $("settingsThemeDark").addEventListener("click", () => setThemePreference("dark"));
+  $("settingsThemePresets").addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-theme-preset]");
+    if (button?.dataset.themePreset) setThemePreset(button.dataset.themePreset);
+  });
   for (const [key, id] of Object.entries(THEME_COLOR_CONTROLS) as Array<[ThemeColorKey, string]>) {
     $<HTMLInputElement>(id).addEventListener("input", (event) => {
       setThemeColor(key, (event.currentTarget as HTMLInputElement).value);
@@ -2371,12 +2358,12 @@ function bindActions() {
   bindFontDropdown("settingsEditorFontPresetButton", "settingsEditorFontPresetMenu", (value) => setFontPreset("editor", value));
   bindCustomFontInput("settingsShellFontCustom", "shell");
   bindCustomFontInput("settingsEditorFontCustom", "editor");
-  bindSegmentedSetting("settingsWordWrapControl", (value) => setWordWrap(value === "on"));
+  $("settingsWordWrapControl").addEventListener("click", () => setWordWrap(!state.wordWrap));
   $<HTMLInputElement>("settingsAutoSaveDelayInput").addEventListener("change", (event) => {
     setAutoSaveDelaySeconds((event.currentTarget as HTMLInputElement).valueAsNumber);
   });
-  bindSegmentedSetting("settingsMinimapControl", (value) => setMinimap(value === "on"));
-  bindSegmentedSetting("settingsCaretAnimationControl", (value) => setSmoothCaretAnimation(value === "on"));
+  $("settingsMinimapControl").addEventListener("click", () => setMinimap(!state.minimap));
+  $("settingsCaretAnimationControl").addEventListener("click", () => setSmoothCaretAnimation(!state.smoothCaretAnimation));
   bindSegmentedSetting("settingsWhitespaceControl", (value) => setWhitespace(value as RenderWhitespaceMode));
   bindSegmentedSetting("settingsKeymapProfileControl", (value) => setKeymapProfile(value));
   bindSegmentedSetting("settingsMarkdownWidthControl", (value) => setMarkdownContentWidth(value));
@@ -3324,13 +3311,15 @@ function setThemeColor(key: ThemeColorKey, value: string) {
 
 function resetCurrentThemeColors() {
   state.themeOverrides[currentThemeMode()] = {};
-  applyThemePalette();
-  defineThemes();
-  monaco.editor.setTheme(state.workbench.highContrast ? (state.darkMode ? "hc-black" : "hc-light") : state.darkMode ? "otterdive-dark" : "otterdive-light");
-  markdownEditor?.updateAppearance(state.darkMode, state.fontSize, resolveEditorFontStack());
-  if (isMarkdownPreviewEnabled()) void renderMarkdownPreview();
-  renderSettingsMenu();
-  scheduleSessionSave();
+  applyResolvedTheme(state.darkMode);
+}
+
+function setThemePreset(id: string) {
+  const mode = currentThemeMode();
+  const preset = THEME_PRESETS.find((item) => item.id === id && item.mode === mode);
+  if (!preset) return;
+  state.themeOverrides[mode] = id === `default-${mode}` ? {} : { ...preset.palette };
+  applyResolvedTheme(state.darkMode);
 }
 
 function setShellFontSize(size: number) {
@@ -4101,6 +4090,7 @@ function createDocument(
   options: {
     deferModel?: boolean;
     draftId?: string;
+    creationIntent?: "default" | "explicit";
     dirty?: boolean;
     savedText?: string;
     origin?: DocumentOrigin;
@@ -4114,6 +4104,7 @@ function createDocument(
     id: nextId++,
     sourceEncoding: dto.encoding,
     draftId: dto.path ? undefined : options.draftId ?? createDraftId(),
+    creationIntent: options.creationIntent,
     origin: options.origin ?? "standalone",
     model: null,
     dirty: options.dirty ?? false,
@@ -4323,7 +4314,7 @@ function createUntitledDocument() {
     readOnlyReason: null,
     language: "plaintext",
     largeFile: false,
-  });
+  }, { creationIntent: "explicit" });
 }
 
 function createUntitledMarkdownDocument() {
@@ -4338,7 +4329,31 @@ function createUntitledMarkdownDocument() {
     readOnlyReason: null,
     language: "markdown",
     largeFile: false,
-  });
+  }, { creationIntent: "explicit" });
+}
+
+function createDefaultUntitledDocument() {
+  const doc = state.doubleClickDocumentType === "md"
+    ? createUntitledMarkdownDocument()
+    : createUntitledDocument();
+  doc.creationIntent = "default";
+  return doc;
+}
+
+function updateStartupDocumentType(initial: OpenDocument) {
+  const index = state.documents.indexOf(initial);
+  const language = state.doubleClickDocumentType === "md" ? "markdown" : "plaintext";
+  if (index < 0 || initial.path || initial.dirty || initial.languageOverride || documentText(initial) !== "" || initial.language === language) {
+    return initial;
+  }
+  const replacement = createDefaultUntitledDocument();
+  state.documents[index] = replacement;
+  if (state.activeId === initial.id) {
+    state.activeId = replacement.id;
+    editor.setModel(ensureDocumentModel(replacement));
+  }
+  initial.model?.dispose();
+  return replacement;
 }
 
 async function openDocument() {
@@ -4919,7 +4934,7 @@ async function closeWorkspace() {
     cancelDocumentSizeUpdate(doc.id);
     doc.model?.dispose();
   });
-  if (state.documents.length === 0) state.documents.push(createUntitledDocument());
+  if (state.documents.length === 0) state.documents.push(createDefaultUntitledDocument());
   if (!state.documents.some((doc) => doc.id === state.activeId)) {
     state.activeId = state.documents[0].id;
   }
@@ -4972,7 +4987,7 @@ async function closeDocument(id: number, confirmClose = true): Promise<boolean> 
   state.documents.splice(index, 1);
   cancelDocumentSizeUpdate(doc.id);
   doc.model?.dispose();
-  if (state.documents.length === 0) state.documents.push(createUntitledDocument());
+  if (state.documents.length === 0) state.documents.push(createDefaultUntitledDocument());
   if (state.activeId === id) activateDocument(state.documents[Math.max(0, index - 1)].id);
   else renderAll();
   if (state.searchScope === "open" && state.searchQuery) {
@@ -4997,6 +5012,7 @@ function rememberClosedDocument(doc: OpenDocument) {
     languageOverride: doc.languageOverride,
     largeFile: doc.largeFile,
     draftId: doc.draftId,
+    creationIntent: doc.creationIntent,
     dirty: doc.dirty,
     savedText: doc.savedText,
     origin: doc.origin,
@@ -5020,6 +5036,7 @@ async function reopenClosedDocument() {
   }
   const doc = createDocument(snapshot, {
     draftId: snapshot.draftId,
+    creationIntent: snapshot.creationIntent,
     dirty: snapshot.dirty,
     savedText: snapshot.savedText,
     origin: snapshot.origin,
@@ -6961,11 +6978,12 @@ function syncDocumentThemeState() {
 }
 
 function resolvedThemePalette(mode: ThemeMode): ThemePalette {
-  return { ...DEFAULT_THEME_PALETTES[mode], ...state.themeOverrides[mode] };
+  return resolveThemePalette(mode, state.themeOverrides);
 }
 
 function applyThemePalette() {
   const palette = resolvedThemePalette(currentThemeMode());
+  document.body.dataset.customTheme = String(Object.keys(state.themeOverrides[currentThemeMode()]).length > 0);
   const style = document.body.style;
   style.setProperty("--bg", palette.background);
   style.setProperty("--surface", palette.surface);
@@ -6975,23 +6993,32 @@ function applyThemePalette() {
   style.setProperty("--primary", palette.accent);
 }
 
-function normalizeThemeColor(value: unknown): string | null {
-  if (typeof value !== "string" || !/^#[0-9a-f]{6}$/i.test(value)) return null;
-  return value.toUpperCase();
-}
-
-function normalizeThemeOverrides(value: unknown): ThemeOverrides {
-  const normalized: ThemeOverrides = { light: {}, dark: {} };
-  if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
-  for (const mode of ["light", "dark"] as const) {
-    const source = (value as Partial<Record<ThemeMode, unknown>>)[mode];
-    if (!source || typeof source !== "object" || Array.isArray(source)) continue;
-    for (const key of Object.keys(DEFAULT_THEME_PALETTES[mode]) as ThemeColorKey[]) {
-      const color = normalizeThemeColor((source as Partial<ThemePalette>)[key]);
-      if (color) normalized[mode][key] = color;
-    }
+function renderThemePresets() {
+  const mode = currentThemeMode();
+  const container = $("settingsThemePresets");
+  if (container.dataset.mode !== mode) {
+    container.dataset.mode = mode;
+    container.replaceChildren(...THEME_PRESETS.filter((preset) => preset.mode === mode).map((preset) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "theme-preset-card";
+      button.dataset.themePreset = preset.id;
+      button.innerHTML = `<span class="theme-preset-swatches" aria-hidden="true"><i></i><i></i><i></i></span><strong>${preset.name}</strong><small>${preset.description}</small><em aria-hidden="true">当前</em>`;
+      const swatches = button.querySelectorAll<HTMLElement>("i");
+      [preset.palette.editor, preset.palette.text, preset.palette.accent].forEach((color, index) => {
+        swatches[index].style.backgroundColor = color;
+      });
+      return button;
+    }));
   }
-  return normalized;
+  const selected = matchingThemePreset(mode, resolvedThemePalette(mode));
+  container.querySelectorAll<HTMLButtonElement>("[data-theme-preset]").forEach((button) => {
+    const active = button.dataset.themePreset === selected?.id;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const modeLabel = mode === "dark" ? "深色" : "亮色";
+  $("settingsThemePresetStatus").textContent = `当前${modeLabel}配色：${selected?.name ?? "自定义"}。亮色与深色分别保存，跟随系统时自动切换。`;
 }
 
 function applyShellFontSettings() {
@@ -7657,6 +7684,7 @@ function renderSettingsMenu() {
   $("settingsThemeSystem").classList.toggle("active", state.themePreference === "system");
   $("settingsThemeLight").classList.toggle("active", state.themePreference === "light");
   $("settingsThemeDark").classList.toggle("active", state.themePreference === "dark");
+  renderThemePresets();
   const palette = resolvedThemePalette(currentThemeMode());
   for (const [key, id] of Object.entries(THEME_COLOR_CONTROLS) as Array<[ThemeColorKey, string]>) {
     $<HTMLInputElement>(id).value = palette[key];
@@ -7676,9 +7704,9 @@ function renderSettingsMenu() {
   $("settingsEditorFontPresetWrap").classList.toggle("hidden", state.editorFontMode !== "preset");
   setFontInputValue("settingsShellFontCustom", state.shellFontCustom, state.shellFontMode === "custom");
   setFontInputValue("settingsEditorFontCustom", state.editorFontCustom, state.editorFontMode === "custom");
-  setSegmentedValue("settingsWordWrapControl", state.wordWrap ? "on" : "off");
-  setSegmentedValue("settingsMinimapControl", state.minimap ? "on" : "off");
-  setSegmentedValue("settingsCaretAnimationControl", state.smoothCaretAnimation ? "on" : "off");
+  $("settingsWordWrapControl").setAttribute("aria-checked", String(state.wordWrap));
+  $("settingsMinimapControl").setAttribute("aria-checked", String(state.minimap));
+  $("settingsCaretAnimationControl").setAttribute("aria-checked", String(state.smoothCaretAnimation));
   setSegmentedValue("settingsWhitespaceControl", state.renderWhitespace);
   setSegmentedValue("settingsKeymapProfileControl", state.keymapProfile);
   setSegmentedValue("settingsMarkdownWidthControl", state.markdownContentWidth);
@@ -7688,24 +7716,14 @@ function renderSettingsMenu() {
   setSegmentedValue("settingsModeControl", state.mode === "workspace" && state.workspace ? "workspace" : "single");
   renderAppUpdateStatus();
   $("keymapProfileDetail").textContent = keymapProfileDetail();
-  const integrationStatus = $("settingsShellIntegrationStatus");
-  const integrationButton = $<HTMLButtonElement>("settingsShellIntegrationButton");
-  $("settingsShellIntegrationDetail").textContent = state.shellIntegration.detail;
-  integrationStatus.textContent = !state.shellIntegrationLoaded
-    ? "检测中"
-    : state.shellIntegrationBusy
-      ? "处理中"
-      : state.shellIntegration.supported
-        ? state.shellIntegration.enabled ? "已开启" : "未开启"
-        : "不支持";
-  integrationStatus.classList.toggle("enabled", state.shellIntegration.enabled && !state.shellIntegrationBusy);
-  integrationStatus.classList.toggle("unsupported", state.shellIntegrationLoaded && !state.shellIntegration.supported);
-  integrationButton.textContent = state.shellIntegrationBusy
-    ? "处理中"
-    : state.shellIntegration.enabled ? "关闭" : "开启";
-  integrationButton.disabled =
-    !state.shellIntegrationLoaded || state.shellIntegrationBusy || !state.shellIntegration.supported;
-  integrationButton.setAttribute("aria-pressed", String(state.shellIntegration.enabled));
+  renderSystemIntegrationControl(
+    "settingsShellIntegrationDetail",
+    "settingsShellIntegrationStatus",
+    "settingsShellIntegrationButton",
+    state.shellIntegration,
+    state.shellIntegrationLoaded,
+    state.shellIntegrationBusy,
+  );
   renderSystemIntegrationControl(
     "settingsDefaultAppDetail",
     "settingsDefaultAppStatus",
@@ -7737,9 +7755,9 @@ function renderSystemIntegrationControl(
         : "不支持";
   statusElement.classList.toggle("enabled", status.enabled && !busy);
   statusElement.classList.toggle("unsupported", loaded && !status.supported);
-  button.textContent = busy ? "处理中" : status.enabled ? "关闭" : "开启";
   button.disabled = !loaded || busy || !status.supported;
-  button.setAttribute("aria-pressed", String(status.enabled));
+  button.setAttribute("aria-checked", String(status.enabled));
+  button.setAttribute("aria-busy", String(busy));
 }
 
 function setSegmentedValue(id: string, value: string) {
@@ -10686,7 +10704,7 @@ function renderCommandSelection() {
   });
 }
 
-async function restoreSession() {
+async function restoreSession(initialDocument: OpenDocument) {
   const restorePerformanceMark = startOpenPerformance(0);
   let raw: string | null = null;
   let migratedLegacySession = false;
@@ -10769,6 +10787,7 @@ async function restoreSession() {
     state.doubleClickDocumentType = isDoubleClickDocumentType(snapshot.doubleClickDocumentType)
       ? snapshot.doubleClickDocumentType
       : "txt";
+    initialDocument = updateStartupDocumentType(initialDocument);
     state.missingFileBehavior = snapshot.missingFileBehavior === "close" ? "close" : "keep";
     state.wordWrap = snapshot.wordWrap ?? state.wordWrap;
     state.minimap = snapshot.minimap ?? state.minimap;
@@ -10816,7 +10835,18 @@ async function restoreSession() {
         : restoredFiles[0];
     let restoredDraftCount = 0;
     for (const draft of snapshot.draftDocuments ?? []) {
-      const doc = createDraftDocument(draft, true);
+      const isDefaultBlankDraft = restoredFiles.length === 0 && snapshot.draftDocuments?.length === 1
+        && draft.creationIntent !== "explicit"
+        && !draft.dirty && !draft.text && !draft.savedText && !draft.languageOverride
+        && !snapshot.documentLanguageOverrides?.[`draft:${draft.id}`]
+        && ((draft.language === "plaintext" && /^Untitled-[1-9]\d*\.txt$/i.test(draft.title))
+          || (draft.language === "markdown" && /^Untitled-[1-9]\d*\.md$/i.test(draft.title)));
+      const doc = createDraftDocument(isDefaultBlankDraft ? {
+        ...draft,
+        creationIntent: "default",
+        title: draft.title.replace(/\.(?:txt|md)$/i, `.${state.doubleClickDocumentType}`),
+        language: state.doubleClickDocumentType === "md" ? "markdown" : "plaintext",
+      } : draft, true);
       doc.origin = snapshot.documentOrigins?.[documentSessionKey(doc)] ?? "standalone";
       doc.viewState = snapshot.documentViews?.[documentSessionKey(doc)];
       state.documents.push(doc);
@@ -10840,7 +10870,8 @@ async function restoreSession() {
       }
     }
 
-    const placeholder = state.documents.find((doc) => !doc.path && doc.title === "Untitled-1.txt" && !doc.dirty);
+    const placeholder = state.documents.find((doc) => doc === initialDocument
+      && !doc.path && !doc.dirty && !doc.languageOverride && documentText(doc) === "");
     const initialActive = snapshot.activePath
       ? state.documents.find((doc) => doc.path
         && normalizePathForCompare(doc.path) === normalizePathForCompare(snapshot.activePath!))
@@ -11008,6 +11039,8 @@ function createDraftDocument(snapshot: Partial<DraftDocumentSnapshot>, deferMode
     {
       deferModel,
       draftId: snapshot.id || createDraftId(),
+      creationIntent: snapshot.creationIntent === "default" || snapshot.creationIntent === "explicit"
+        ? snapshot.creationIntent : undefined,
       dirty: snapshot.dirty ?? text !== (snapshot.savedText ?? ""),
       savedText: snapshot.savedText ?? "",
       languageOverride: snapshot.languageOverride,
@@ -11088,6 +11121,7 @@ function draftDocumentSnapshots() {
     .filter((doc) => !doc.path && !doc.skipSessionRestore)
     .map((doc): DraftDocumentSnapshot => ({
       id: ensureDraftId(doc),
+      creationIntent: doc.creationIntent,
       title: doc.title,
       text: documentText(doc),
       encoding: doc.encoding,
@@ -11498,6 +11532,7 @@ function defineThemes() {
       "editor.lineHighlightBorder": "#00000000",
       "editorIndentGuide.background1": "#dfe4ec",
       "editorIndentGuide.activeBackground1": "#aeb8c7",
+      ...(Object.keys(state.themeOverrides.light).length ? customEditorThemeColors(light) : {}),
     },
   });
   monaco.editor.defineTheme("otterdive-dark", {
@@ -11543,6 +11578,7 @@ function defineThemes() {
       "editor.lineHighlightBorder": "#00000000",
       "editorIndentGuide.background1": "#2c3442",
       "editorIndentGuide.activeBackground1": "#596579",
+      ...(Object.keys(state.themeOverrides.dark).length ? customEditorThemeColors(dark) : {}),
     },
   });
 }

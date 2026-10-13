@@ -680,6 +680,7 @@ pub fn run() {
             rename_file,
             delete_workspace_entry,
             reveal_workspace_entry,
+            open_project_link,
             search_workspace,
             crate::stream_search::start_workspace_search,
             crate::stream_search::cancel_workspace_search,
@@ -1045,6 +1046,13 @@ async fn reveal_workspace_entry(request: WorkspacePathRequest) -> Result<(), Str
     })
     .await
     .map_err(|err| format!("打开资源管理器任务失败：{err}"))?
+}
+
+#[tauri::command]
+async fn open_project_link(url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::project_links::open_project_link(&url))
+        .await
+        .map_err(|error| format!("打开项目页面失败：{error}"))?
 }
 
 #[tauri::command]

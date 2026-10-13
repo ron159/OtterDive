@@ -81,7 +81,7 @@ function harness(options = {}) {
     withBusy: async (_, task) => task(), Blob,
     cancelDocumentSizeUpdate() {}, applyDetectedDocumentLanguage() {},
     rememberClosedDocument() {}, disposeMarkdownEditor() {}, scheduleAutoSave() {},
-    createUntitledDocument: () => ({ id: 2, path: null, text: '', dirty: false }),
+    createDefaultUntitledDocument: () => ({ id: 2, path: null, text: '', dirty: false }),
     activateDocument: id => { context.state.activeId = id; },
     pathMatchesTarget: (path, target, isDir) => path === target || (isDir && path.startsWith(target + '/')),
   };

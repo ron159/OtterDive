@@ -7,6 +7,7 @@ mod analyse;
 mod app;
 mod file_revision;
 mod pdf_export;
+mod project_links;
 mod session_store;
 mod shell_integration;
 mod stream_search;
