@@ -310,11 +310,15 @@
                   </button>
                 </div>
                 <input class="hidden" id="currentReplaceInput" autocomplete="off" aria-label="替换为" placeholder="替换为" />
-                <div class="current-find-options">
-                  <label title="匹配大小写"><input type="checkbox" id="currentMatchCaseInput" /><span>Aa</span></label>
-                  <label title="全词匹配"><input type="checkbox" id="currentWholeWordInput" /><span>W</span></label>
-                  <label title="正则表达式"><input type="checkbox" id="currentRegexInput" /><span>.*</span></label>
-                  <label title="搜索全部打开文件"><input type="checkbox" id="currentAllOpenFilesInput" aria-label="搜索全部打开文件" /><span class="icon-slot" data-icon="Files"></span></label>
+                <div class="current-find-options" role="group" aria-label="搜索选项">
+                  <label title="匹配大小写"><input type="checkbox" id="currentMatchCaseInput" aria-label="匹配大小写" /><span aria-hidden="true">Aa</span></label>
+                  <label title="全词匹配"><input type="checkbox" id="currentWholeWordInput" aria-label="全词匹配" /><span aria-hidden="true">W</span></label>
+                  <label title="正则表达式"><input type="checkbox" id="currentRegexInput" aria-label="正则表达式" /><span aria-hidden="true">.*</span></label>
+                  <label title="扩展模式：识别查找和替换文本中的 \n、\t 等转义"><input type="checkbox" id="currentExtendedInput" aria-label="扩展模式" /><span aria-hidden="true">\n</span></label>
+                  <label title="仅选区：在所选文本范围内查找"><input type="checkbox" id="currentSelectionInput" aria-label="仅选区" /><span class="icon-slot" data-icon="SquareDashedMousePointer" aria-hidden="true"></span></label>
+                  <label title="循环查找"><input type="checkbox" id="currentWrapInput" aria-label="循环查找" checked /><span class="icon-slot" data-icon="Repeat2" aria-hidden="true"></span></label>
+                  <label title="反向查找"><input type="checkbox" id="currentReverseInput" aria-label="反向查找" /><span class="icon-slot" data-icon="ArrowUpFromLine" aria-hidden="true"></span></label>
+                  <label title="搜索全部打开文件"><input type="checkbox" id="currentAllOpenFilesInput" aria-label="搜索全部打开文件" /><span class="icon-slot" data-icon="Files" aria-hidden="true"></span></label>
                 </div>
                 <span class="current-find-count" id="currentFindCount">0 个结果</span>
                 <div class="current-find-actions">
@@ -325,12 +329,6 @@
                   <button class="hidden" id="currentReplaceAllButton" aria-label="全部替换" title="全部替换"><span class="icon-slot" data-icon="ReplaceAll"></span></button>
                   <button id="closeCurrentFindButton" aria-label="关闭当前文件查找" title="关闭当前文件查找"><span class="icon-slot" data-icon="X"></span></button>
                 </div>
-              </div>
-              <div class="current-find-advanced">
-                <label title="识别查找和替换文本中的换行、制表符等转义"><input type="checkbox" id="currentExtendedInput" />扩展（\n、\t）</label>
-                <label><input type="checkbox" id="currentSelectionInput" />仅选区</label>
-                <label><input type="checkbox" id="currentWrapInput" checked />循环查找</label>
-                <label><input type="checkbox" id="currentReverseInput" />反向查找</label>
               </div>
               <div class="current-find-history-menu hidden" id="currentFindHistoryMenu" role="listbox" aria-label="搜索历史"></div>
             </div>

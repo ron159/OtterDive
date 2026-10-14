@@ -6140,18 +6140,6 @@ body[data-custom-theme="true"] {
   display: none;
 }
 
-.current-find-advanced {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  padding: 0 10px 6px;
-  color: var(--text-2);
-  font-size: 11px;
-}
-
-.current-find-advanced label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
-.current-find-advanced label:has(input:disabled) { opacity: 0.48; cursor: not-allowed; }
-
 .current-find-query {
   width: 320px;
   min-width: 220px;
@@ -6281,6 +6269,7 @@ body[data-custom-theme="true"] {
 
 .current-find-options label,
 .current-find-actions button {
+  position: relative;
   width: 30px;
   height: 30px;
   flex: 0 0 30px;
@@ -6294,7 +6283,7 @@ body[data-custom-theme="true"] {
   cursor: pointer;
 }
 
-.current-find-options label:hover,
+.current-find-options label:not(:has(input:disabled)):hover,
 .current-find-actions button:hover {
   color: var(--text);
   border-color: var(--line-soft);
@@ -6305,6 +6294,16 @@ body[data-custom-theme="true"] {
   color: var(--primary);
   border-color: var(--primary-3);
   background: var(--primary-2);
+}
+
+.current-find-options label:has(input:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.current-find-options label:has(input:disabled) {
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 
 .current-find-options input {

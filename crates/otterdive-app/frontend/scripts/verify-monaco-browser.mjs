@@ -89,6 +89,61 @@ try {
   await page.keyboard.press("Escape");
 
   await page.evaluate(() => {
+    qaEditor.getModel().setValue("needle alpha\nneedle beta\noutside needle\n");
+    qaEditor.setSelection(new qaMonaco.Selection(1, 1, 1, 7));
+    qaEditor.focus();
+  });
+  await page.locator("#findButton").click();
+  await page.locator("#currentFindInput").fill("needle");
+  const waitForMatchTotal = (total) => page.waitForFunction((expected) => {
+    const text = document.querySelector("#currentFindCount").textContent;
+    return text === `${expected} 个结果` || text.endsWith(`/${expected}`);
+  }, total);
+  await waitForMatchTotal(3);
+  const options = page.getByRole("group", { name: "搜索选项", exact: true });
+  assert.equal(await options.getByRole("checkbox").count(), 8);
+  assert.ok(await page.locator("#currentFindDock").evaluate((dock) => dock.getBoundingClientRect().height <= 44));
+  for (const name of ["仅选区", "循环查找", "反向查找"]) {
+    assert.equal(await options.getByRole("checkbox", { name, exact: true }).locator("..").locator("svg").count(), 1);
+  }
+  await options.getByRole("checkbox", { name: "仅选区", exact: true }).locator("..").click();
+  await waitForMatchTotal(1);
+  await page.locator("#currentFindInput").fill("");
+  await options.getByRole("checkbox", { name: "搜索全部打开文件", exact: true }).locator("..").click();
+  assert.equal(await options.getByRole("checkbox", { name: "仅选区", exact: true }).isDisabled(), true);
+  assert.equal(await options.getByRole("checkbox", { name: "仅选区", exact: true }).locator("..").getAttribute("title"), "多文件搜索不使用当前选区");
+  await options.getByRole("checkbox", { name: "搜索全部打开文件", exact: true }).locator("..").click();
+  assert.equal(await options.getByRole("checkbox", { name: "仅选区", exact: true }).isDisabled(), false);
+  await options.getByRole("checkbox", { name: "仅选区", exact: true }).locator("..").click();
+
+  await page.evaluate(() => qaEditor.getModel().setValue("one\nneedle\noutside needle\n"));
+  await page.locator("#currentFindInput").fill("one\\nneedle");
+  await options.getByRole("checkbox", { name: "扩展模式", exact: true }).locator("..").click();
+  await waitForMatchTotal(1);
+  await options.getByRole("checkbox", { name: "正则表达式", exact: true }).locator("..").click();
+  assert.equal(await options.getByRole("checkbox", { name: "扩展模式", exact: true }).isChecked(), false);
+  await options.getByRole("checkbox", { name: "扩展模式", exact: true }).locator("..").click();
+  assert.equal(await options.getByRole("checkbox", { name: "正则表达式", exact: true }).isChecked(), false);
+  await options.getByRole("checkbox", { name: "扩展模式", exact: true }).locator("..").click();
+
+  for (const [name, mirroredId] of [["循环查找", "wrapSearchInput"], ["反向查找", "reverseSearchInput"]]) {
+    const input = options.getByRole("checkbox", { name, exact: true });
+    const checked = await input.isChecked();
+    const before = await input.locator("..").evaluate((label) => getComputedStyle(label).backgroundColor);
+    await input.focus();
+    await page.keyboard.press("Space");
+    assert.equal(await input.isChecked(), !checked);
+    assert.equal(await page.locator(`#${mirroredId}`).isChecked(), !checked);
+    const after = await input.locator("..").evaluate((label) => getComputedStyle(label).backgroundColor);
+    assert.notEqual(after, before, `${name} needs a visible selected state`);
+    assert.equal(await input.locator("..").evaluate((label) => getComputedStyle(label).outlineStyle), "solid");
+    await page.keyboard.press("Space");
+  }
+  checks.push("Compact search icons preserve selection scope, escaped search, exclusive modes, disabled scope and keyboard state");
+  if (artifactDirectory) await page.screenshot({ path: join(artifactDirectory, "search-option-icons.png") });
+  await page.keyboard.press("Escape");
+
+  await page.evaluate(() => {
     const model = qaEditor.getModel();
     qaMonaco.editor.setModelLanguage(model, "json");
     model.setValue('{"value": }');

@@ -23,6 +23,7 @@ import {
   AlignRight,
   ArrowDown,
   ArrowUp,
+  ArrowUpFromLine,
   BetweenVerticalEnd,
   BetweenVerticalStart,
   Binary,
@@ -93,6 +94,7 @@ import {
   RefreshCw,
   Replace,
   ReplaceAll,
+  Repeat2,
   Quote,
   Save,
   SaveAll,
@@ -103,6 +105,7 @@ import {
   Settings,
   ShieldCheck,
   Sigma,
+  SquareDashedMousePointer,
   Star,
   Sun,
   Table2,
@@ -1134,6 +1137,7 @@ const lucideIcons: Record<string, IconNode> = {
   AlignRight,
   ArrowDown,
   ArrowUp,
+  ArrowUpFromLine,
   BetweenVerticalEnd,
   BetweenVerticalStart,
   Binary,
@@ -1204,6 +1208,7 @@ const lucideIcons: Record<string, IconNode> = {
   RefreshCw,
   Replace,
   ReplaceAll,
+  Repeat2,
   Quote,
   Save,
   SaveAll,
@@ -1214,6 +1219,7 @@ const lucideIcons: Record<string, IconNode> = {
   Settings,
   ShieldCheck,
   Sigma,
+  SquareDashedMousePointer,
   Star,
   Sun,
   Table2,
@@ -9573,7 +9579,12 @@ function renderSearchScopeControls() {
   $("currentFindCount").classList.toggle("multi-file", allOpenFiles);
   const selectionInput = $<HTMLInputElement>("searchSelectionInput");
   selectionInput.disabled = allOpenFiles;
-  $<HTMLInputElement>("currentSelectionInput").disabled = allOpenFiles;
+  const currentSelectionInput = $<HTMLInputElement>("currentSelectionInput");
+  currentSelectionInput.disabled = allOpenFiles;
+  const currentSelectionLabel = currentSelectionInput.closest("label");
+  if (currentSelectionLabel) currentSelectionLabel.title = allOpenFiles
+    ? "多文件搜索不使用当前选区"
+    : "仅选区：在所选文本范围内查找";
   const selectionLabel = selectionInput.closest("label");
   selectionLabel?.classList.toggle("scope-disabled", allOpenFiles);
   if (selectionLabel) selectionLabel.title = allOpenFiles ? "多文件搜索不使用当前选区" : "选取范围内";
