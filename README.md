@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3b82f6.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2563eb.svg" alt="Windows, macOS and Linux" />
   <img src="https://img.shields.io/badge/Tauri-2-24c8db.svg" alt="Tauri 2" />
-  <img src="https://img.shields.io/badge/Monaco-0.53-007acc.svg" alt="Monaco Editor" />
+  <img src="https://img.shields.io/badge/Monaco-0.57.0-007acc.svg" alt="Monaco Editor" />
 </p>
 
 OtterDive 是一个面向文本、日志、Markdown 和代码的本地优先桌面工具。它把快速打开与编辑、工作区搜索、Regex、Analyse 规则分析和结构化结果浏览放进同一个工作流：潜入大量文本，再把真正相关的内容带回表面。
@@ -35,7 +35,7 @@ OtterDive 是一个面向文本、日志、Markdown 和代码的本地优先桌�
 - 💾 **会话恢复**：恢复临时文档、打开标签、窗口位置、工作区、搜索历史、Analyse 配置和编辑设置。
 - 🎨 **一致的桌面体验**：提供自绘标题栏、亮色与深色主题、文件类型图标和可调整的编辑器外观。
 
-大文件与普通文件使用同一份完整文档进行查找、行号跳转和分析，不分页、不截断长行。工作区搜索分批返回并支持取消，不再默认跳过大文件或限制为 50,000 条 / 32 MiB 结果。搜索结果历史保留最近五次。
+大文件与普通文件使用同一份完整文档进行查找、行号跳转和分析，不分页、不截断长行。工作区搜索分批返回并支持取消，不再默认跳过大文件或限制为 50,000 条 / 32 MiB 结果。工作区替换仍跳过超过 20 MiB 的文件。实际处理能力与性能仍受可用内存、文件大小和搜索结果量影响。搜索结果历史保留最近五次。
 
 ## 当前状态
 

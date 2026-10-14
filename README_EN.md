@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3b82f6.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2563eb.svg" alt="Windows, macOS and Linux" />
   <img src="https://img.shields.io/badge/Tauri-2-24c8db.svg" alt="Tauri 2" />
-  <img src="https://img.shields.io/badge/Monaco-0.53-007acc.svg" alt="Monaco Editor" />
+  <img src="https://img.shields.io/badge/Monaco-0.57.0-007acc.svg" alt="Monaco Editor" />
 </p>
 
 OtterDive is a local-first desktop tool for text, logs, Markdown, and source code. It brings fast opening and editing, workspace search, regular expressions, Analyse rule processing, and structured result browsing into one workflow: dive into large bodies of text and bring the relevant content back to the surface.
@@ -24,7 +24,7 @@ Large logs, cross-file searches, and complex rule analysis often force you to ju
 ## ✨ Feature Highlights
 
 - 📂 **Files and workspaces**: Open content in single-file or workspace mode by selecting or dragging files and folders.
-- ✍️ **Monaco editing experience**: Detect dozens of languages by file name and extension, with syntax highlighting, completion, folding, bracket matching, and multiple cursors; files above 20 MiB use a dedicated read-only viewer with on-demand pages and navigation by original line number.
+- ✍️ **Monaco editing experience**: Detect dozens of languages by file name and extension, with syntax highlighting, completion, folding, bracket matching, and multiple cursors; large files load in full and display continuously, with reading and decoding performed in the background. Files above 20 MiB remain read-only for editing protection.
 - 🧹 **Local code formatting**: Format JavaScript, TypeScript, JSX, TSX, JSON, JSONC, Markdown, TOML, Python, and Dockerfile content with bundled dprint WASM plugins, plus dedicated SQL formatting, without runtime network access.
 - ⌨️ **Familiar keybindings**: Choose the built-in VS Code or Notepad++ profile, browse commands by group, and customize bindings.
 - 📝 **Complete Markdown workflow**: Use instant editing, source and split-preview modes, outlines, tables, task lists, math, remote images, Mermaid, PlantUML, and Vega diagrams.
@@ -35,7 +35,7 @@ Large logs, cross-file searches, and complex rule analysis often force you to ju
 - 💾 **Session restoration**: Restore drafts, open tabs, window placement, workspaces, search history, Analyse settings, and editor preferences.
 - 🎨 **Consistent desktop experience**: Use custom window chrome, light and dark themes, file-type icons, and configurable editor appearance.
 
-In large-file mode, editor search covers the current page; use Analyse for full-file rule processing. The first jump to a distant line builds a sparse index on demand. Very long lines preview their first 64 KiB. Workspace search skips files above 20 MiB and retains up to 50,000 matches or 32 MiB of result text per run, explicitly reporting cancellation, limits and skipped files. Result history keeps the five most recent searches.
+Large and small files use the complete document for search, line navigation, and analysis, without the former pagination or 64 KiB long-line preview truncation. Workspace search returns results in batches, supports cancellation, and no longer skips files above 20 MiB by default or applies the former 50,000-match / 32 MiB result limits. Workspace replacement still skips files above 20 MiB. Practical capacity and performance depend on available memory, file size, and search result volume. Search result history retains the five most recent searches.
 
 ## Project Status
 
