@@ -43,8 +43,6 @@
 .workbench-css-label span { color: var(--text-3); font-size: 12px; }
 .workbench-css-label textarea { resize: vertical; padding: 10px; min-height: 100px; font: 13px var(--editor-font); background: var(--input-surface); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
 .settings-panel > h3 { margin: 20px 0 10px; font-size: 13px; color: var(--text-2); }
-.workbench-menu-row { display: flex; min-height: 32px; padding: 7px 12px; text-align: start; }
-.app-menu { max-height: min(78vh, 760px); overflow-y: auto; }
 .workbench-dialog {
   width: min(1100px, 92vw); max-height: 90vh; padding: 22px; border: 1px solid var(--line); border-radius: 12px;
   background: var(--surface); color: var(--text); box-shadow: var(--shadow); font: var(--ui-font-size) var(--font);
@@ -2846,7 +2844,8 @@ body.dark .markdown-preview .token.variable {
 .app-menu {
   right: auto;
   width: 268px;
-  max-height: none;
+  max-height: min(78vh, 760px);
+  overflow-y: auto;
   border-radius: 10px;
 }
 
@@ -3141,6 +3140,12 @@ body.dark .markdown-preview .token.variable {
 }
 
 .menu-row strong {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.5;
+  padding-block: 1px;
   font-weight: 400;
 }
 

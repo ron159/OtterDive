@@ -7663,6 +7663,7 @@ function renderLanguageList(filter = "") {
   for (const [id, label, hint] of options) {
     const row = document.createElement("button");
     row.className = `menu-row ${id === current ? "active" : ""}`;
+    row.title = label;
     row.innerHTML = `<span>${id === current ? "●" : ""}</span><strong>${label}</strong><small>${hint}</small>`;
     row.addEventListener("click", () => setLanguage(id));
     languageList.appendChild(row);
@@ -12102,7 +12103,9 @@ function bindWorkbenchActions() {
     appCommands.set(id, item);
     const button = document.createElement("button");
     button.type = "button"; button.className = "menu-row workbench-menu-row"; button.setAttribute("role", "menuitem");
-    button.dataset.workbenchCommand = id; button.textContent = title;
+    button.dataset.workbenchCommand = id;
+    button.title = title;
+    button.innerHTML = `<span class="icon-slot" aria-hidden="true"></span><strong>${escapeHtml(title)}</strong><small></small>`;
     button.addEventListener("click", () => void executeAppCommand(item).catch(showWorkbenchError));
     document.querySelector(`#${menu} .menu-list`)?.append(button);
   }
