@@ -60,6 +60,8 @@ export const VSCODE_KEYMAP: KeybindingMap = {
   "search.workspaceFind": ["Ctrl+Shift+F"],
   "search.workspaceReplace": ["Ctrl+Shift+H"],
   "navigation.goToLine": ["Ctrl+G"],
+  "navigation.back": ["Alt+ArrowLeft"],
+  "navigation.forward": ["Alt+ArrowRight"],
   "navigation.quickOpen": ["Ctrl+P"],
   "navigation.commandPalette": ["Ctrl+Shift+P", "F1"],
   "navigation.focusExplorer": ["Ctrl+Shift+E"],
@@ -94,6 +96,8 @@ export const VSCODE_KEYMAP: KeybindingMap = {
 };
 
 export const NOTEPAD_PLUS_PLUS_KEYMAP: KeybindingMap = {
+  "navigation.back": ["Alt+ArrowLeft"],
+  "navigation.forward": ["Alt+ArrowRight"],
   "file.new": ["Ctrl+N"],
   "file.open": ["Ctrl+O"],
   "file.openFolder": ["Ctrl+Alt+O"],

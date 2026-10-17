@@ -191,9 +191,16 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let compare_other = macos_menu_item(app, "file.compareOther", "与其他文件比较…", None)?;
     let log_viewer = macos_menu_item(app, "file.logViewer", "分块阅读与日志尾随…", None)?;
     let print = macos_menu_item(app, "file.print", "系统打印…", Some("CmdOrCtrl+P"))?;
+    let export_bundle =
+        macos_menu_item(app, "file.exportBundle", "打包导出 Markdown 与附件…", None)?;
+    let new_template = macos_menu_item(app, "file.newFromTemplate", "从模板新建…", None)?;
+    let save_template =
+        macos_menu_item(app, "markdown.saveTemplate", "将当前文档保存为模板…", None)?;
+    let manage_templates =
+        macos_menu_item(app, "markdown.manageTemplates", "管理模板与片段…", None)?;
     let close_document = macos_menu_item(app, "file.close", "关闭当前标签", Some("CmdOrCtrl+W"))?;
     let file_menu = SubmenuBuilder::new(app, "文件")
-        .items(&[&new_document, &new_markdown])
+        .items(&[&new_document, &new_markdown, &new_template])
         .separator()
         .items(&[
             &open_document,
@@ -218,14 +225,17 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &export_html,
             &export_docx,
             &export_epub,
+            &export_bundle,
             &print,
         ])
+        .items(&[&save_template, &manage_templates])
         .separator()
         .item(&close_document)
         .build()?;
 
     let uppercase = macos_menu_item(app, "edit.uppercase", "转为大写", None)?;
     let lowercase = macos_menu_item(app, "edit.lowercase", "转为小写", None)?;
+    let insert_template = macos_menu_item(app, "markdown.insertTemplate", "插入模板片段…", None)?;
     let format_document = macos_menu_item(
         app,
         "edit.format_document",
@@ -242,6 +252,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .select_all_with_text("全选")
         .separator()
         .items(&[&uppercase, &lowercase, &format_document])
+        .item(&insert_template)
         .build()?;
 
     let find = macos_menu_item(app, "search.find", "查找…", Some("CmdOrCtrl+F"))?;
@@ -302,6 +313,8 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let markdown_insert_toc = macos_menu_item(app, "markdown.insertToc", "插入正文目录", None)?;
     let markdown_check_links = macos_menu_item(app, "markdown.checkLinks", "检查本地链接…", None)?;
+    let navigate_back = macos_menu_item(app, "navigation.back", "返回上一个文档位置", None)?;
+    let navigate_forward = macos_menu_item(app, "navigation.forward", "前往下一个文档位置", None)?;
     let view_menu = SubmenuBuilder::new(app, "视图")
         .item(&word_wrap)
         .separator()
@@ -322,6 +335,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         ])
         .separator()
         .items(&[&side_editor, &side_scroll_sync])
+        .items(&[&navigate_back, &navigate_forward])
         .separator()
         .item(&theme)
         .separator()
@@ -629,6 +643,42 @@ pub fn run() {
     });
 
     builder
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::Resized(size) = event else {
+                return;
+            };
+            if size.width == 0 || size.height == 0 {
+                return;
+            }
+            let Some(config) = window
+                .app_handle()
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|config| config.label == window.label())
+            else {
+                return;
+            };
+            let (Some(width), Some(height)) = (config.min_width, config.min_height) else {
+                return;
+            };
+            let Ok(scale_factor) = window.scale_factor() else {
+                return;
+            };
+            let minimum = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale_factor);
+            // Restored sizes can bypass native constraints and apply asynchronously.
+            if (size.width < minimum.width || size.height < minimum.height)
+                && !window.is_minimized().unwrap_or(false)
+                && !window.is_maximized().unwrap_or(false)
+                && !window.is_fullscreen().unwrap_or(false)
+            {
+                let _ = window.set_size(tauri::PhysicalSize::new(
+                    size.width.max(minimum.width),
+                    size.height.max(minimum.height),
+                ));
+            }
+        })
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 use tauri_plugin_window_state::WindowExt;
@@ -650,6 +700,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            crate::document_templates::template_list,
+            crate::document_templates::template_save,
+            crate::document_templates::template_delete,
+            crate::document_delivery::export_markdown_bundle,
+            crate::workspace_refactor::preview_workspace_move,
+            crate::workspace_refactor::apply_workspace_move,
             crate::workbench::save_snapshot,
             crate::workbench::list_snapshots,
             crate::workbench::read_snapshot,
@@ -1010,14 +1066,9 @@ async fn delete_workspace_entry(
 ) -> Result<WorkspaceMutationDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = PathBuf::from(request.root);
-        let path = workspace_existing_path(&root, &PathBuf::from(request.path))?;
-        ensure_not_workspace_root(&root, &path, "不能删除工作区根目录")?;
-        let metadata = fs::metadata(&path).map_err(|err| format!("读取文件信息失败：{err}"))?;
-        if metadata.is_dir() {
-            fs::remove_dir_all(&path).map_err(|err| format!("删除文件夹失败：{err}"))?;
-        } else {
-            fs::remove_file(&path).map_err(|err| format!("删除文件失败：{err}"))?;
-        }
+        // Keep the selected path intact so the trash helper can reject symlinks.
+        let path = PathBuf::from(request.path);
+        crate::document_delivery::trash_workspace_entry(&root, &path)?;
         Ok(WorkspaceMutationDto {
             workspace: workspace_to_dto(&root),
             path: None,

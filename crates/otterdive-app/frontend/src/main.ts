@@ -8,7 +8,7 @@ import { resolveMarkdownResource, relativeMarkdownResource, splitMarkdownLink } 
 import { writingStats } from "./writingStats";
 import { THEME_PRESETS, resolveThemePalette, matchingThemePreset, normalizeThemeColor, normalizeThemeOverrides, customEditorThemeColors, type ThemeMode, type ThemeColorKey, type ThemePalette, type ThemeOverrides } from "./themePresets";
 import { mapScrollPosition } from "./scrollSync";
-import { sourceSelectionToMarkdownCursor, markdownCursorToSourceSelection, captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, type MarkdownCursor, type MarkdownScrollAnchor } from "./markdownNavigation";
+import { sourceSelectionToMarkdownCursor, markdownCursorToSourceSelection, captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, MarkdownHistory, normalizeMarkdownLocations, type MarkdownScrollAnchor, type MarkdownDocumentLocation, type MarkdownHistoryEntry } from "./markdownNavigation";
 import { documentOutlineLayout, restoreOutlinePreferences, outlineHeadingSelector, outlineHeadingOffset, retainedOutlineNavigation } from "./documentOutline";
 import { exportResultRows, type ResultRow, type AnalysisStep } from "./resultAnalysis";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -377,6 +377,7 @@ interface SessionSnapshot {
   documentOrigins: Record<string, DocumentOrigin>;
   documentLanguageOverrides?: Record<string, string>;
   documentViews: Record<string, monaco.editor.ICodeEditorViewState>;
+  markdownLocations?: Record<string, MarkdownDocumentLocation>;
   recentFiles: string[];
   recentWorkspaces: string[];
   analyseRecentProfiles?: string[];
@@ -1087,7 +1088,12 @@ let currentSearchSelection: monaco.editor.IEditorDecorationsCollection | null = 
 let currentSearchSelectionDocumentId = 0;
 let sideScrollSync = false;
 let markdownScrollSyncing = false;
-const markdownNavigation: Array<{ id: number; path?: string | null; line: number; column: number; mode: MarkdownEditMode }> = [];
+const markdownNavigation = new MarkdownHistory();
+let markdownLocations: Record<string, MarkdownDocumentLocation> = Object.create(null);
+let pendingMarkdownLocation: { id: number; location: MarkdownDocumentLocation; revision: number } | null = null;
+let markdownLocationRevision = 0;
+let markdownNavigating = false;
+let workspaceMoveInProgress = false;
 const replaceSelections = new globalThis.Map<number, Set<number>>();
 let lastReplaceBatchId: string | null = null;
 let lastReplacePreview: ReplacePreviewDto | null = null;
@@ -1119,6 +1125,7 @@ type TextInputOptions = {
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const isTauriRuntime = "__TAURI_INTERNALS__" in window;
+const isWindowsRuntime = isTauriRuntime && /Windows/i.test(window.navigator.userAgent);
 const isMacOSRuntime =
   isTauriRuntime && /Macintosh|Mac OS X/i.test(window.navigator.userAgent);
 document.documentElement.classList.toggle("platform-macos", isMacOSRuntime);
@@ -1527,6 +1534,7 @@ function bootstrap() {
     log,
   });
   editor.onDidScrollChange(() => {
+    if (!pendingMarkdownLocation && isMarkdownLikeDocument()) scheduleSessionSave();
     scheduleOutlineActiveHeading();
     syncMarkdownPreviewScroll();
     const line = editor.getVisibleRanges()[0]?.startLineNumber;
@@ -1832,6 +1840,8 @@ function registerAppCommands() {
   const commands: AppCommand[] = [
     command("file.new", "新建文件", "文件", newDocument, { allowInInput: true }),
     command("file.newMarkdown", "新建 Markdown", "文件", newMarkdownDocument, { allowInInput: true }),
+    command("navigation.back", "返回上一个文档位置", "导航", navigateMarkdownBack, { enabled: () => markdownNavigation.canBack, allowInInput: true }),
+    command("navigation.forward", "前往下一个文档位置", "导航", navigateMarkdownForward, { enabled: () => markdownNavigation.canForward, allowInInput: true }),
     command("file.open", "打开文件", "文件", () => openDocument(), { allowInInput: true }),
     command("file.openFolder", "打开工作区", "文件", () => chooseWorkspace(), { allowInInput: true }),
     command("file.openRecent", "最近打开", "文件", () => toggleMenu("recentMenu"), { allowInInput: true }),
@@ -1993,6 +2003,7 @@ function bindKeybindings() {
   });
   $("editor").addEventListener("keydown", handleEditorKeybinding, true);
   $("markdownWysiwyg").addEventListener("keydown", handleEditorKeybinding, true);
+  $("markdownPreview").addEventListener("keydown", handleEditorKeybinding, true);
 }
 
 const NATIVE_CLIPBOARD_SHORTCUTS = new globalThis.Map([
@@ -2068,12 +2079,14 @@ function hasMatchingChordPrefix(binding: string, targetIsInput: boolean) {
 }
 
 function commandIsAvailable(item: AppCommand, targetIsInput = false) {
+  if (workspaceMoveInProgress) return false;
   if (targetIsInput && !item.allowInInput) return false;
   if (isReadingDocument(commandDocument()) && /^(?:edit\.(?:undo|redo|cut|paste|uppercase|lowercase)|editor\.format|markdown\.(?:insert|table|image))/.test(item.id)) return false;
   return (item.when?.() ?? true) && (item.enabled?.() ?? true);
 }
 
 async function executeAppCommand(item: AppCommand) {
+  if (workspaceMoveInProgress) return;
   closeMenus();
   try { await item.run(); }
   catch (error) { await showWorkbenchError(error); }
@@ -2159,7 +2172,7 @@ function bindActions() {
   });
   $("tree").addEventListener("keydown", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>(".tree-item");
-    if (button) void handleTreeItemKeydown(button, event as KeyboardEvent);
+    if (button) void handleTreeItemKeydown(button, event as KeyboardEvent).catch(showWorkbenchError);
   });
   $("newButton").addEventListener("click", newDocument);
   $("openButton").addEventListener("click", openDocument);
@@ -2431,7 +2444,10 @@ function bindActions() {
   $("treeNewFileButton").addEventListener("click", () => void createTreeEntry(false));
   $("treeNewFolderButton").addEventListener("click", () => void createTreeEntry(true));
   $("treeRenameButton").addEventListener("click", () => void renameTreeEntry());
-  $("treeDeleteButton").addEventListener("click", () => void deleteTreeEntry());
+  $("markdownBackButton").addEventListener("click", () => void executeAppCommand(appCommands.get("navigation.back")!));
+  $("markdownForwardButton").addEventListener("click", () => void executeAppCommand(appCommands.get("navigation.forward")!));
+  $("treeMoveButton").addEventListener("click", () => void moveTreeEntry().catch(showWorkbenchError));
+  $("treeDeleteButton").addEventListener("click", () => void deleteTreeEntry().catch(showWorkbenchError));
   $("treeCopyPathButton").addEventListener("click", () => void copyTreePath());
   $("treeRevealButton").addEventListener("click", () => void revealTreeEntry());
   $("treeRefreshButton").addEventListener("click", () => void refreshWorkspaceFromTreeMenu());
@@ -2968,21 +2984,30 @@ function bindCustomFontInput(id: string, target: "shell" | "editor") {
 function openSettingsPage() {
   closeMenus();
   $("commandPalette").classList.add("hidden");
+  $("workspace").inert = true;
+  $("workspace").setAttribute("aria-hidden", "true");
+  markdownEditorCache.forEach((entry) => entry.bridge.blur());
   $("settingsPage").classList.remove("hidden");
   $("app").classList.add("settings-open");
   $("settingsButton").classList.add("active");
   renderSettingsMenu();
+  $("settingsCloseButton").focus({ preventScroll: true });
   void refreshSystemIntegrationStatus();
 }
 
 function closeSettingsPage() {
+  const wasOpen = !$("settingsPage").classList.contains("hidden");
   $("settingsPage").classList.add("hidden");
   $("app").classList.remove("settings-open");
   $("settingsButton").classList.remove("active");
+  $("workspace").inert = false;
+  $("workspace").removeAttribute("aria-hidden");
+  if (wasOpen) focusActiveEditor();
 }
 
 function selectSettingsSection(section: SettingsSection) {
   if (!["appearance", "editor", "markdown", "keybindings", "workspace", "system", "search", "about"].includes(section)) return;
+  if (section === "system" && !isWindowsRuntime) return;
   state.settingsSection = section;
   renderSettingsMenu();
   $("settingsPage").querySelector<HTMLElement>(".settings-content")?.scrollTo({ top: 0 });
@@ -3162,6 +3187,7 @@ function closeAppUpdatePopover() {
 }
 
 async function refreshSystemIntegrationStatus() {
+  if (!isWindowsRuntime) return;
   await Promise.all([refreshShellIntegrationStatus(), refreshDefaultAppCandidateStatus()]);
 }
 
@@ -3188,6 +3214,7 @@ async function refreshDefaultAppCandidateStatus() {
 }
 
 async function syncSystemIntegrationPreferences() {
+  if (!isWindowsRuntime) return;
   const [contextMenu, defaultApp] = await Promise.allSettled([
     invoke<ShellIntegrationStatusDto>("set_shell_integration", { enabled: state.contextMenuEnabled }),
     invoke<ShellIntegrationStatusDto>("set_default_app_candidate", { enabled: state.defaultAppCandidateEnabled }),
@@ -3204,7 +3231,7 @@ async function syncSystemIntegrationPreferences() {
 }
 
 async function toggleShellIntegration() {
-  if (state.shellIntegrationBusy || !state.shellIntegrationLoaded || !state.shellIntegration.supported) return;
+  if (!isWindowsRuntime || state.shellIntegrationBusy || !state.shellIntegrationLoaded || !state.shellIntegration.supported) return;
   const enabled = !state.shellIntegration.enabled;
   state.shellIntegrationBusy = true;
   renderSettingsMenu();
@@ -3225,7 +3252,8 @@ async function toggleShellIntegration() {
 
 async function toggleDefaultAppCandidate() {
   if (
-    state.defaultAppCandidateBusy
+    !isWindowsRuntime
+    || state.defaultAppCandidateBusy
     || !state.defaultAppCandidateLoaded
     || !state.defaultAppCandidate.supported
   ) return;
@@ -3455,65 +3483,21 @@ function setMissingFileBehavior(value: string) {
   scheduleSessionSave();
 }
 
-let markdownModeNavigationRevision = 0;
-
 function setMarkdownEditMode(mode: MarkdownEditMode, preserveLocation = true) {
-  if (!isMarkdownEditMode(mode)) return;
-  const revision = ++markdownModeNavigationRevision;
-  if (state.markdownEditMode === mode) return;
+  if (!isMarkdownEditMode(mode) || state.markdownEditMode === mode) return;
   const doc = activeDocument();
-  const previousMode = state.markdownEditMode;
-  let cursor: MarkdownCursor | null = null;
-  let scroll: MarkdownScrollAnchor | null = null;
-  if (previousMode === "wysiwyg") {
-    syncMarkdownModelFromEditor();
-    if (preserveLocation) {
-      cursor = markdownEditor?.getCursorOffset() ?? null;
-      scroll = markdownEditor?.getScrollAnchor() ?? null;
-    }
-    markdownEditor?.hideFloatTools();
-  } else if (preserveLocation && isMarkdownLikeDocument(doc)) {
-    cursor = sourceSelectionToMarkdownCursor(editor.getSelection());
-    if (previousMode === "reading") {
-      const preview = $("markdownPreview");
-      const top = preview.getBoundingClientRect().top;
-      scroll = captureMarkdownScrollAnchor(preview.scrollTop, preview.scrollHeight - preview.clientHeight,
-        [...preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].map((heading) => heading.getBoundingClientRect().top - top + preview.scrollTop));
-    } else {
-      scroll = captureMarkdownScrollAnchor(editor.getScrollTop(), editor.getScrollHeight() - editor.getLayoutInfo().height,
-        markdownHeadingLocations(documentText(doc)).map((heading) => editor.getTopForLineNumber(heading.line)));
-    }
-    doc.viewState = editor.saveViewState() ?? undefined;
-  }
+  syncMarkdownModelFromEditor(doc);
+  const location = preserveLocation && isMarkdownLikeDocument(doc) ? currentMarkdownLocation(doc) : null;
+  markdownEditor?.hideFloatTools();
+  ++markdownLocationRevision;
+  pendingMarkdownLocation = null;
   state.markdownEditMode = mode;
-  if (mode !== "wysiwyg") attachEditorModel(activeDocument());
+  if (mode !== "wysiwyg") attachEditorModel(doc);
   closeMenus();
   renderMarkdownSurface();
   renderChrome();
   renderSettingsMenu();
-  const stillCurrent = () => revision === markdownModeNavigationRevision && state.activeId === doc.id && state.markdownEditMode === mode;
-  if (preserveLocation && isMarkdownLikeDocument(doc)) {
-    if (mode === "wysiwyg") {
-      void ensureMarkdownEditor(doc).then((bridge) => {
-        if (!bridge || !stillCurrent()) return;
-        window.requestAnimationFrame(() => {
-          if (!stillCurrent()) return;
-          if (cursor) bridge.setCursorOffset(cursor);
-          if (scroll) bridge.revealScrollAnchor(scroll);
-        });
-      }).catch((error) => log(`恢复 Markdown 编辑位置失败：${String(error)}`));
-    } else {
-      const selection = markdownCursorToSourceSelection(cursor);
-      if (selection) editor.setSelection(new monaco.Selection(selection.selectionStartLineNumber, selection.selectionStartColumn, selection.positionLineNumber, selection.positionColumn));
-      window.requestAnimationFrame(() => {
-        if (!stillCurrent()) return;
-        if (scroll) editor.setScrollTop(restoreMarkdownScrollAnchor(scroll, editor.getScrollHeight() - editor.getLayoutInfo().height,
-          markdownHeadingLocations(documentText(doc)).map((heading) => editor.getTopForLineNumber(heading.line))));
-        doc.viewState = editor.saveViewState() ?? undefined;
-        if (mode === "split") syncMarkdownPreviewScroll();
-      });
-    }
-  }
+  if (location) void restoreMarkdownLocation(doc, { ...location, mode });
   scheduleSessionSave();
   log(`Markdown 模式：${markdownEditModeLabel(mode)}`);
 }
@@ -3844,6 +3828,10 @@ function bindWindowCloseGuard() {
 
 async function requestWindowClose() {
   if (!appWindow || windowCloseInProgress) return;
+  if (workspaceMoveInProgress) {
+    await showAlert({ title: "正在维护文档链接", subtitle: "文件移动尚未完成", body: "请等待移动和链接更新完成后再关闭窗口。", okLabel: "继续等待" });
+    return;
+  }
   windowCloseInProgress = true;
   try {
     if (!(await confirmCloseAll()) || !(await flushSessionBeforeClose())) return;
@@ -4086,6 +4074,8 @@ function setBusy(message: string) {
     editor.updateOptions({ readOnly: editorBusyDepth > 0 || activeDocument().readOnly || isReadingDocument() });
   }
   markdownEditor?.setReadOnly(editorBusyDepth > 0 || activeDocument().readOnly || isReadingDocument());
+  const sideDoc = state.documents.find(doc => doc.id === sideDocumentId);
+  sideEditor?.updateOptions({ readOnly: editorBusyDepth > 0 || !sideDoc || sideDoc.readOnly || isReadingDocument(sideDoc) });
   renderChrome();
 }
 
@@ -4221,6 +4211,7 @@ function activateDocument(id: number) {
   if (!doc) return;
   sideEditorFocused = false;
   const previous = activeDocument();
+  if (previous && previous.id !== id) rememberMarkdownLocation(previous);
   if (previous?.id !== id) {
     currentSearchSelection?.clear();
     currentSearchSelectionDocumentId = 0;
@@ -4237,6 +4228,9 @@ function activateDocument(id: number) {
   ensureDocumentModel(doc);
   if (!isMarkdownLikeDocument(doc) || state.markdownEditMode !== "wysiwyg") attachEditorModel(doc);
   renderAll();
+  if (previous?.id !== id && markdownLocations[documentSessionKey(doc)]) {
+    void restoreMarkdownLocation(doc, markdownLocations[documentSessionKey(doc)]);
+  }
   scheduleSessionSave();
   scheduleLanguageDetection();
 }
@@ -4815,6 +4809,7 @@ function cancelAutoSave(documentId: number) {
 
 function scheduleAutoSave(doc: OpenDocument) {
   cancelAutoSave(doc.id);
+  if (workspaceMoveInProgress) return;
   if (state.workbench.autoSaveMode !== "afterDelay" || state.restoring || !doc.dirty || doc.readOnly || !doc.path || doc.externalRevision !== undefined) return;
   const timer = window.setTimeout(() => {
     autoSaveTimers.delete(doc.id);
@@ -4923,6 +4918,7 @@ async function closeWorkspace() {
 
   const name = state.workspace.name;
   const active = activeDocument();
+  if (active) rememberMarkdownLocation(active);
   if (active) active.viewState = editor.saveViewState() ?? undefined;
   const workspaceDocumentIds = new Set(workspaceDocuments.map((doc) => doc.id));
   workspaceDocuments.forEach((doc) => {
@@ -4981,6 +4977,7 @@ async function closeDocument(id: number, confirmClose = true): Promise<boolean> 
   if (doc.saving) { log(`文档正在保存，暂未关闭：${doc.title}`); return false; }
   const index = state.documents.indexOf(doc);
   if (index < 0) return false;
+  rememberMarkdownLocation(doc);
   rememberClosedDocument(doc);
   discardRecovery(doc);
   writingStatsCache.delete(doc.id);
@@ -5280,30 +5277,9 @@ async function renameTabFromMenu() {
         applyDocumentRename(doc, name);
         renderAll();
         scheduleSessionSave();
-      } else if (state.workspace && pathMatchesTarget(doc.path, state.workspace.root, true)) {
-        const oldPath = doc.path;
-        const result = await withBusy("重命名", () =>
-          invoke<WorkspaceMutationDto>("rename_workspace_entry", {
-            request: {
-              root: state.workspace!.root,
-              path: oldPath,
-              name,
-            },
-          }),
-        );
-        if (!result.path) throw new Error("重命名后未返回新路径");
-        updateOpenDocumentsForRename(oldPath, result.path, false);
-        state.workspace = result.workspace;
-        renderAll();
-        scheduleSessionSave();
       } else {
-        const oldPath = doc.path;
-        const nextPath = await withBusy("重命名", () =>
-          invoke<string>("rename_file", { request: { path: oldPath, name } }),
-        );
-        updateOpenDocumentsForRename(oldPath, nextPath, false);
-        renderAll();
-        scheduleSessionSave();
+        const root = state.workspace && pathMatchesTarget(doc.path, state.workspace.root, true) ? state.workspace.root : pathDirectory(doc.path);
+        if (!(await moveWorkspaceEntry(root, doc.path, joinWorkspacePath(pathDirectory(doc.path), name), false))) return;
       }
       log(`重命名为 ${name}`);
       return;
@@ -5475,6 +5451,7 @@ function updateTreeMenuState() {
   if (openLabel) openLabel.textContent = target?.isDir ? "展开/收起" : "打开";
   open.disabled = !target || target.isRoot;
   rename.disabled = !target || target.isRoot;
+  $<HTMLButtonElement>("treeMoveButton").disabled = !target || target.isRoot;
   remove.disabled = !target || target.isRoot;
 }
 
@@ -5490,6 +5467,7 @@ async function openTreeTarget() {
 }
 
 async function createTreeEntry(isDir: boolean) {
+  if (workspaceMoveInProgress) throw new Error("文件移动尚未完成，请稍后再整理目录");
   const target = treeMenuTarget;
   closeMenus();
   if (!state.workspace || !target) return;
@@ -5581,39 +5559,144 @@ async function commitInlineTreeRename(target: TreeContextTarget, name: string) {
     return;
   }
   try {
-    const result = await withBusy("重命名", () =>
-      invoke<WorkspaceMutationDto>("rename_workspace_entry", {
-        request: {
-          root: state.workspace!.root,
-          path: target.path,
-          name,
-        },
-      }),
-    );
-    if (result.path) {
-      updateOpenDocumentsForRename(target.path, result.path, target.isDir);
-      updateCollapsedDirsForRename(target.path, result.path);
-    }
-    applyWorkspaceMutation(result);
-    log(`重命名为 ${name}`);
+    const error = validateFileName(name);
+    if (error) throw new Error(error);
+    await moveWorkspaceEntry(state.workspace.root, target.path, joinWorkspacePath(pathDirectory(target.path), name), target.isDir);
+    renderWorkspace();
   } catch (error) {
     renderWorkspace();
     log(`重命名失败：${String(error)}`);
+    await showWorkbenchError(error);
   }
 }
 
+function joinWorkspacePath(parent: string, name: string) {
+  return parent.replace(/[\\/]+$/, "") + pathSeparatorFor(parent) + name;
+}
+
+async function moveTreeEntry() {
+  const target = treeMenuTarget;
+  const root = state.workspace?.root;
+  closeMenus();
+  if (!target || target.isRoot || !root) return;
+  const destination = await askTextInput({ title: "移动并维护文档链接", subtitle: "输入工作区内的目标路径，目标文件夹需要已存在", label: "目标路径（相对于工作区）", value: relativeMarkdownPath(root, target.path) });
+  if (!destination?.trim()) return;
+  await moveWorkspaceEntry(root, target.path, joinWorkspacePath(root, destination.trim()), target.isDir);
+}
+
+type WorkspaceMovePreview = {
+  token: string; root: string; path: string; destination: string; referenceCount: number;
+  changedDocuments: Array<{ path: string; destinationPath: string; referenceCount: number }>;
+};
+
+async function moveWorkspaceEntry(root: string, path: string, destination: string, isDir: boolean) {
+  if (workspaceMoveInProgress) throw new Error("另一个文件移动正在进行，请稍后重试");
+  const workspaceWasInert = $("workspace").inert;
+  $("workspace").inert = true;
+  workspaceMoveInProgress = true;
+  return withBusy("准备移动与链接更新", async () => {
+    syncMarkdownModelFromEditor(activeDocument());
+    const relevant = state.documents.filter(doc => doc.path && pathMatchesTarget(doc.path, root, true)
+      && (isMarkdownLikeDocument(doc) || pathMatchesTarget(doc.path, path, isDir)));
+    if (relevant.some(doc => doc.saving)) throw new Error("文档正在保存，请稍后重试");
+    const dirty = relevant.filter(doc => doc.dirty);
+    if (dirty.length && !(await askConfirm({ title: "先保存文档", subtitle: "移动时将同步维护工作区内的链接", body: `以下文档有未保存修改，需要先保存：\n${dirty.map(doc => doc.title).join("\n")}`, okLabel: "保存并继续", cancelLabel: "取消" }))) return false;
+    for (const doc of dirty) {
+      if (!(await saveDocument(doc, false)) || doc.dirty) return false;
+    }
+    relevant.forEach(doc => cancelAutoSave(doc.id));
+    const request = { root, path, destination };
+    const preview = await invoke<WorkspaceMovePreview>("preview_workspace_move", { request });
+    if (preview.referenceCount && !(await askConfirm({ title: "移动并更新链接", subtitle: `${preview.changedDocuments.length} 份文档 · ${preview.referenceCount} 处引用`,
+      body: `${preview.path}\n→ ${preview.destination}\n\n将同步更新：\n${preview.changedDocuments.map(doc => `${relativeMarkdownPath(root, doc.path)}（${doc.referenceCount} 处）`).join("\n")}`,
+      okLabel: "移动并更新", cancelLabel: "取消" }))) return false;
+    if (relevant.some(doc => doc.dirty || doc.saving)) throw new Error("文档在准备期间发生修改，请重新执行移动");
+    // Preserve the pre-refactor text in the existing history store before any disk mutation.
+    for (const changed of preview.changedDocuments) {
+      if (!state.workbench.historyEnabled) break;
+      const doc = state.documents.find(item => item.path && normalizePathForCompare(item.path) === normalizePathForCompare(changed.path));
+      if (doc) await preserveHistory(doc, documentText(doc), doc.title, doc.encoding);
+    }
+    const versions = new globalThis.Map(relevant.map(doc => [doc.id, { version: documentVersion(doc), encoding: doc.encoding, lineEnding: doc.lineEnding }]));
+    const result = await invoke<WorkspaceMovePreview & { warnings?: string[] }>("apply_workspace_move", { request, token: preview.token });
+    rememberMarkdownLocation(activeDocument());
+    updateOpenDocumentsForRename(path, result.destination, isDir);
+    updateCollapsedDirsForRename(path, result.destination);
+    const touched = new Set(result.changedDocuments.map(doc => normalizePathForCompare(doc.destinationPath)));
+    const warnings = [...result.warnings ?? []];
+    for (const doc of relevant) {
+      if (!doc.path) continue;
+      const changed = touched.has(normalizePathForCompare(doc.path));
+      const moved = pathMatchesTarget(doc.path, result.destination, isDir);
+      if (!changed && !moved) continue;
+      const baseline = versions.get(doc.id)!;
+      const unchanged = () => state.documents.includes(doc) && !doc.dirty && !doc.saving && documentVersion(doc) === baseline.version
+        && doc.encoding === baseline.encoding && doc.lineEnding === baseline.lineEnding;
+      const retainEdits = () => {
+        cancelAutoSave(doc.id);
+        if (state.documents.includes(doc)) scheduleRecovery(doc);
+        warnings.push(`已保留 ${doc.title} 在移动期间的新修改，请与磁盘版本比较后保存。`);
+      };
+      if (!unchanged()) {
+        retainEdits();
+        continue;
+      }
+      try {
+        let reloaded: DocumentDto | undefined;
+        let revision: FileRevision | undefined;
+        if (changed) {
+          reloaded = await invoke<DocumentDto>("open_path", { path: doc.path });
+        } else {
+          [revision] = await invoke<FileRevision[]>("file_revisions", { paths: [doc.path] });
+          if (!revision?.revision || revision.revision === "missing") throw new Error(revision?.error || "移动后文件不可读");
+        }
+        if (!unchanged()) { retainEdits(); continue; }
+        if (reloaded) {
+          applyDocumentDto(doc, reloaded, "编码已识别");
+          discardRecovery(doc);
+        } else {
+          doc.diskRevision = revision!.revision!;
+        }
+        disposeMarkdownEditor(doc.id);
+        if (changed) markdownSessions.delete(doc.id);
+      } catch (error) {
+        doc.externalRevision = undefined;
+        cancelAutoSave(doc.id);
+        warnings.push(`文件移动已完成，刷新 ${doc.title} 失败，请重新打开：${String(error)}`);
+      }
+    }
+    if (state.workspace && normalizePathForCompare(state.workspace.root) === normalizePathForCompare(root)) {
+      try { state.workspace = await invoke<WorkspaceDto>("read_workspace", { path: root }); }
+      catch (error) { warnings.push(`文件移动已完成，请手动刷新目录：${String(error)}`); }
+    }
+    renderAll();
+    const location = markdownLocations[documentSessionKey(activeDocument())];
+    if (location) await restoreMarkdownLocation(activeDocument(), location);
+    scheduleSessionSave();
+    log(`已移动至 ${result.destination}，更新 ${result.referenceCount} 处链接`);
+    for (const warning of warnings) log(warning);
+    if (warnings.length) await showAlert({ title: "文件移动已完成", subtitle: result.destination, body: warnings.join("\n"), okLabel: "知道了" });
+    return true;
+  }).finally(() => {
+    workspaceMoveInProgress = false;
+    $("workspace").inert = workspaceWasInert || !$("settingsPage").classList.contains("hidden");
+    state.documents.forEach(scheduleAutoSave);
+  });
+}
+
 async function deleteTreeEntry() {
+  if (workspaceMoveInProgress) throw new Error("文件移动尚未完成，请稍后再移到回收站");
   const target = treeMenuTarget;
   closeMenus();
   if (!state.workspace || !target || target.isRoot) return;
   if (!(await confirmDirtyDocumentsForTreeDelete(target))) return;
   const confirmed = await askConfirm({
-    title: target.isDir ? "删除文件夹" : "删除文件",
-    subtitle: "此操作不可撤销",
+    title: target.isDir ? "将文件夹移到回收站" : "将文件移到回收站",
+    subtitle: "可从系统回收站恢复",
     body: target.isDir
-      ? `将删除文件夹及其中所有内容：\n${target.path}`
-      : `将删除文件：\n${target.path}`,
-    okLabel: "删除",
+      ? `将文件夹及其中所有内容移到系统回收站：\n${target.path}`
+      : `将文件移到系统回收站：\n${target.path}`,
+    okLabel: "移到回收站",
     danger: true,
   });
   if (!confirmed) return;
@@ -5628,7 +5711,7 @@ async function deleteTreeEntry() {
   await removeOpenDocumentsForDeletedPath(target.path, target.isDir);
   removeCollapsedDirsForDeletedPath(target.path);
   applyWorkspaceMutation(result);
-  log(`已删除 ${target.name}`);
+  log(`已移到系统回收站：${target.name}`);
 }
 
 async function copyTreePath() {
@@ -5686,6 +5769,13 @@ async function confirmDirtyDocumentsForTreeDelete(target: TreeContextTarget) {
 }
 
 function updateOpenDocumentsForRename(oldPath: string, newPath: string, isDir: boolean) {
+  const renamePath = (path: string) => pathMatchesTarget(path, oldPath, isDir) ? (isDir ? replacePathPrefix(path, oldPath, newPath) : newPath) : path;
+  for (const [key, location] of Object.entries(markdownLocations)) {
+    if (!key.startsWith("file:")) continue;
+    const next = `file:${renamePath(key.slice(5))}`;
+    if (next !== key) { markdownLocations[next] = location; delete markdownLocations[key]; }
+  }
+  markdownNavigation.remap(entry => entry.path ? { ...entry, path: renamePath(entry.path), key: `file:${renamePath(entry.path)}` } : entry);
   for (const doc of state.documents) {
     if (!doc.path || !pathMatchesTarget(doc.path, oldPath, isDir)) continue;
     const nextPath = isDir ? replacePathPrefix(doc.path, oldPath, newPath) : newPath;
@@ -7097,7 +7187,7 @@ function applyEditorPerformanceProfile(doc: OpenDocument, target = editor) {
   document.documentElement.style.setProperty("--editor-font", editorFont);
   document.documentElement.style.setProperty("--editor-font-size", `${state.fontSize}px`);
   target.updateOptions({
-    readOnly: doc.readOnly || isReadingDocument(doc),
+    readOnly: editorBusyDepth > 0 || closingEditorsLocked || doc.readOnly || isReadingDocument(doc),
     lineNumbers: "on",
     readOnlyMessage: { value: doc.readOnlyReason || "当前文档只读" },
     minimap: { enabled: !large && state.minimap },
@@ -7382,7 +7472,7 @@ function reorderDocumentTabs(sourceId: number, targetId: number, placeAfter: boo
 function renderChrome() {
   const doc = commandDocument();
   const sideDoc = state.documents.find((item) => item.id === sideDocumentId);
-  if (sideEditor && sideDoc) sideEditor.updateOptions({ readOnly: sideDoc.readOnly || isReadingDocument(sideDoc) });
+  if (sideEditor && sideDoc) sideEditor.updateOptions({ readOnly: closingEditorsLocked || editorBusyDepth > 0 || sideDoc.readOnly || isReadingDocument(sideDoc) });
   setButtonLabel("wordWrapButton", "自动换行", `自动换行 ${state.wordWrap ? "已开启" : "已关闭"}`);
   $("wordWrapButton").classList.toggle("state-on", state.wordWrap);
   $("wordWrapButton").setAttribute("aria-pressed", String(state.wordWrap));
@@ -7392,6 +7482,8 @@ function renderChrome() {
   setButtonLabel("lineEndingButton", doc.lineEnding || "LF", `行尾 ${doc.lineEnding || "LF"}`);
   const markdownDocument = !isSideEditorActive() && isMarkdownLikeDocument(doc);
   $("markdownModeControl").classList.toggle("hidden", !markdownDocument);
+  $<HTMLButtonElement>("markdownBackButton").disabled = markdownNavigating || !markdownNavigation.canBack;
+  $<HTMLButtonElement>("markdownForwardButton").disabled = markdownNavigating || !markdownNavigation.canForward;
   document.querySelectorAll<HTMLButtonElement>("[data-markdown-mode]").forEach((button) => {
     const active = markdownDocument && button.dataset.markdownMode === state.markdownEditMode;
     button.classList.toggle("active", active);
@@ -7678,12 +7770,15 @@ function renderLanguageList(filter = "") {
 
 function renderSettingsMenu() {
   syncWorkbenchSettings(state.workbench);
+  if (state.settingsSection === "system" && !isWindowsRuntime) state.settingsSection = "appearance";
   const settingsOpen = !$("settingsPage").classList.contains("hidden");
   $("settingsButton").classList.toggle("active", settingsOpen);
   document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach((button) => {
+    if (button.dataset.settingsSection === "system") button.classList.toggle("hidden", !isWindowsRuntime);
     button.classList.toggle("active", button.dataset.settingsSection === state.settingsSection);
   });
   document.querySelectorAll<HTMLElement>("[data-settings-panel]").forEach((panel) => {
+    if (panel.dataset.settingsPanel === "system") panel.classList.toggle("hidden", !isWindowsRuntime);
     panel.classList.toggle("active", panel.dataset.settingsPanel === state.settingsSection);
   });
   $("settingsThemeSystem").classList.toggle("active", state.themePreference === "system");
@@ -8643,6 +8738,18 @@ function renderMarkdownOutline() {
   scheduleOutlineActiveHeading();
   list.querySelectorAll<HTMLButtonElement>("[data-outline-line]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (isReadingDocument()) {
+        const preview = $("markdownPreview");
+        const index = Number(button.dataset.outlineIndex ?? "0");
+        const heading = preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")[index];
+        if (heading) {
+          preview.scrollTop += heading.getBoundingClientRect().top - preview.getBoundingClientRect().top - markdownPreviewHeadingOffset();
+          outlineNavigation = { index, scrollTop: preview.scrollTop };
+          preview.focus({ preventScroll: true });
+          scheduleOutlineActiveHeading();
+        }
+        return;
+      }
       if (isMarkdownWysiwygActive() && markdownEditor) {
         outlineNavigation = markdownEditor.revealHeading(Number(button.dataset.outlineIndex ?? "0"));
         scheduleOutlineActiveHeading();
@@ -8804,6 +8911,9 @@ async function createMarkdownEditor(doc: OpenDocument): Promise<MarkdownEditorCa
     pane.dataset.documentId = String(doc.id);
     pane.style.zIndex = "0";
     pane.setAttribute("aria-hidden", "true");
+    pane.addEventListener("scroll", () => {
+      if (state.activeId === doc.id && !pendingMarkdownLocation) scheduleSessionSave();
+    }, true);
     $("markdownWysiwyg").append(pane);
 
     let bridge: MarkdownEditorBridge | null = null;
@@ -9200,17 +9310,7 @@ function handleMarkdownPreviewClick(event: Event) {
   if (!anchor || !$("markdownPreview").contains(anchor)) return;
   event.preventDefault();
   const href = anchor.getAttribute("href") ?? "";
-  if (href.startsWith("#")) {
-    let id = href.slice(1);
-    try {
-      id = decodeURIComponent(id);
-    } catch {
-      return;
-    }
-    $("markdownPreview").querySelector<HTMLElement>(`#${CSS.escape(id)}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
-    return;
-  }
-  openMarkdownLink(href);
+  void openMarkdownLink(href);
 }
 
 function scheduleMarkdownPreviewRender() {
@@ -9787,13 +9887,23 @@ function layoutDocumentOutline() {
   view.style.setProperty("--document-inset", `${layout.inset}px`);
 }
 
+function markdownPreviewHeadingOffset() {
+  return Math.max(outlineHeadingOffset, ($("markdownPreview").querySelector<HTMLElement>(".markdown-preview-head")?.offsetHeight ?? 0) + 8);
+}
+
 function scheduleOutlineActiveHeading() {
   if (outlineActiveFrame || !isOutlineVisible()) return;
   outlineActiveFrame = requestAnimationFrame(() => {
     outlineActiveFrame = 0;
     const rows = [...$("outlineList").querySelectorAll<HTMLButtonElement>(".outline-row")];
     let active = 0;
-    if (isMarkdownWysiwygActive()) {
+    if (isReadingDocument()) {
+      const preview = $("markdownPreview");
+      const top = preview.getBoundingClientRect().top + markdownPreviewHeadingOffset() + 1;
+      preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6").forEach((heading, index) => {
+        if (heading.getBoundingClientRect().top <= top) active = index;
+      });
+    } else if (isMarkdownWysiwygActive()) {
       const top = $("markdownWysiwyg").getBoundingClientRect().top + outlineHeadingOffset + 1;
       markdownEditor?.root.querySelectorAll<HTMLElement>(outlineHeadingSelector).forEach((heading, index) => {
         if (heading.getBoundingClientRect().top <= top) active = index;
@@ -9804,7 +9914,8 @@ function scheduleOutlineActiveHeading() {
         if (Number(row.dataset.outlineLine) <= line) active = index;
       });
     }
-    const scrollTop = isMarkdownWysiwygActive() ? markdownEditor?.root.scrollTop ?? 0 : editor.getScrollTop();
+    const scrollTop = isReadingDocument() ? $("markdownPreview").scrollTop
+      : isMarkdownWysiwygActive() ? markdownEditor?.root.scrollTop ?? 0 : editor.getScrollTop();
     outlineNavigation = retainedOutlineNavigation(outlineNavigation, scrollTop);
     if (outlineNavigation) active = outlineNavigation.index;
     rows.forEach((row, index) => {
@@ -10791,6 +10902,7 @@ async function restoreSession(initialDocument: OpenDocument) {
       : snapshot.markdownPreviewPreferenceSet
         ? snapshot.showMarkdownPreview ? "split" : "source"
         : "wysiwyg";
+    markdownLocations = normalizeMarkdownLocations(snapshot.markdownLocations);
     state.markdownContentWidth = isMarkdownContentWidth(snapshot.markdownContentWidth)
       ? snapshot.markdownContentWidth
       : "typora";
@@ -10903,6 +11015,8 @@ async function restoreSession(initialDocument: OpenDocument) {
     renderAll();
     await markAppReady();
     renderMarkdownSurface();
+    const restoredLocation = markdownLocations[documentSessionKey(firstUsableDocument)];
+    if (restoredLocation) await restoreMarkdownLocation(firstUsableDocument, restoredLocation);
     log(`会话活动文件可用：${(performance.now() - restorePerformanceMark.startedAt).toFixed(1)} ms`);
 
     const workspacePromise = restoreWorkspaceFromSnapshot(snapshot);
@@ -11163,6 +11277,7 @@ function sessionSaveDelayMs() {
 async function saveSession() {
   if (state.restoring) return;
   const activeBeforeSave = activeDocument();
+  if (activeBeforeSave) rememberMarkdownLocation(activeBeforeSave);
   if (activeBeforeSave) syncMarkdownModelFromEditor(activeBeforeSave);
   if (activeBeforeSave) syncActiveBookmarkLines(activeBeforeSave);
   const sideDoc = state.documents.find((doc) => doc.id === sideDocumentId);
@@ -11170,7 +11285,8 @@ async function saveSession() {
   if (activeBeforeSave) activeBeforeSave.viewState = editor.saveViewState() ?? undefined;
   const active = activeDocument();
   const snapshot: SessionSnapshot = {
-    version: 12,
+    version: 13,
+    markdownLocations: normalizeMarkdownLocations(markdownLocations),
     workbenchPreferences: state.workbench,
     openFiles: uniquePaths(state.documents.flatMap((doc) => (doc.path ? [doc.path] : []))),
     draftDocuments: draftDocumentSnapshots(),
@@ -11645,6 +11761,78 @@ async function pickMarkdownImagePath() {
   return state.workbench.imageCopy ? storeMarkdownImage(doc, path) : doc.path ? relativeMarkdownPath(pathDirectory(doc.path), path) : path.replace(/\\/g, "/");
 }
 
+function currentMarkdownLocation(doc = activeDocument()): MarkdownDocumentLocation {
+  if (pendingMarkdownLocation?.id === doc.id) return pendingMarkdownLocation.location;
+  const mode = state.markdownEditMode;
+  let cursor = sourceSelectionToMarkdownCursor(editor.getSelection());
+  let scroll: MarkdownScrollAnchor;
+  if (mode === "wysiwyg" && markdownEditorDocumentId === doc.id && markdownEditor) {
+    cursor = markdownEditor.getCursorOffset();
+    scroll = markdownEditor.getScrollAnchor();
+  } else if (mode === "reading") {
+    cursor = null;
+    const preview = $("markdownPreview");
+    const top = preview.getBoundingClientRect().top;
+    scroll = captureMarkdownScrollAnchor(preview.scrollTop, preview.scrollHeight - preview.clientHeight,
+      [...preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].map(heading => heading.getBoundingClientRect().top - top + preview.scrollTop));
+  } else {
+    scroll = captureMarkdownScrollAnchor(editor.getScrollTop(), editor.getScrollHeight() - editor.getLayoutInfo().height,
+      markdownHeadingLocations(documentText(doc)).map(heading => editor.getTopForLineNumber(heading.line)));
+  }
+  const position = cursor?.focus;
+  const line = position ? position.line + 1 : markdownHeadingLocations(documentText(doc))[scroll.headingIndex]?.line ?? 1;
+  return { mode, line, column: position ? position.ch + 1 : 1, cursor, scroll };
+}
+
+function rememberMarkdownLocation(doc: OpenDocument) {
+  if (state.activeId !== doc.id || !isMarkdownLikeDocument(doc)) return;
+  const key = documentSessionKey(doc);
+  const location = currentMarkdownLocation(doc);
+  delete markdownLocations[key];
+  markdownLocations[key] = location;
+}
+
+function currentMarkdownHistoryEntry(): MarkdownHistoryEntry {
+  const doc = activeDocument();
+  return { key: documentSessionKey(doc), path: doc.path, location: currentMarkdownLocation(doc) };
+}
+
+async function restoreMarkdownLocation(doc: OpenDocument, location: MarkdownDocumentLocation) {
+  const revision = ++markdownLocationRevision;
+  const mode = state.markdownEditMode;
+  pendingMarkdownLocation = { id: doc.id, location, revision };
+  const current = () => state.activeId === doc.id && state.markdownEditMode === mode && revision === markdownLocationRevision;
+  try {
+    if (mode === "wysiwyg") await ensureMarkdownEditor(doc);
+    else if (mode === "reading" || mode === "split") await renderMarkdownPreview();
+    await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+    if (!current()) return;
+    if (mode === "wysiwyg") {
+      if (location.cursor) markdownEditor?.setCursorOffset(location.cursor);
+      markdownEditor?.revealScrollAnchor(location.scroll);
+    } else {
+      const selection = markdownCursorToSourceSelection(location.cursor);
+      if (selection) editor.setSelection(new monaco.Selection(selection.selectionStartLineNumber, selection.selectionStartColumn, selection.positionLineNumber, selection.positionColumn));
+      else editor.setPosition({ lineNumber: location.line, column: location.column });
+      if (mode === "reading") {
+        const preview = $("markdownPreview");
+        const top = preview.getBoundingClientRect().top;
+        preview.scrollTop = restoreMarkdownScrollAnchor(location.scroll, preview.scrollHeight - preview.clientHeight,
+          [...preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].map(heading => heading.getBoundingClientRect().top - top + preview.scrollTop));
+      } else {
+        editor.setScrollTop(restoreMarkdownScrollAnchor(location.scroll, editor.getScrollHeight() - editor.getLayoutInfo().height,
+          markdownHeadingLocations(documentText(doc)).map(heading => editor.getTopForLineNumber(heading.line))));
+        if (mode === "split") syncMarkdownPreviewScroll();
+      }
+    }
+    scheduleOutlineActiveHeading();
+  } catch (error) {
+    log(`恢复 Markdown 阅读位置失败：${String(error)}`);
+  } finally {
+    if (pendingMarkdownLocation?.revision === revision) pendingMarkdownLocation = null;
+  }
+}
+
 async function openMarkdownLink(href: string) {
   const target = href.trim();
   if (!target) return;
@@ -11653,16 +11841,23 @@ async function openMarkdownLink(href: string) {
     return;
   }
   if (/^[a-z][a-z\d+.-]*:/i.test(target) && !/^file:/i.test(target) && !/^[a-z]:[\\/]/i.test(target)) return;
+  if (markdownNavigating) return;
+  markdownNavigating = true;
   const from = activeDocument();
-  const position = editor.getPosition() ?? { lineNumber: 1, column: 1 };
-  markdownNavigation.push({ id: from.id, path: from.path, line: position.lineNumber, column: position.column, mode: state.markdownEditMode });
-  if (markdownNavigation.length > 30) markdownNavigation.shift();
+  const origin = currentMarkdownHistoryEntry();
+  rememberMarkdownLocation(from);
   const link = splitMarkdownLink(target);
   const path = link.path ? absoluteMarkdownResourcePath(link.path, from) : from.path;
   try {
     if (path && link.path) await openPath(path, true);
+    ++markdownLocationRevision;
+    pendingMarkdownLocation = null;
     if (link.anchor) await revealMarkdownAnchor(link.anchor);
+    markdownNavigation.record(origin);
+    renderChrome();
+    scheduleSessionSave();
   } catch (error) { await showWorkbenchError(`无法打开链接 ${target}：${String(error)}`); }
+  finally { markdownNavigating = false; renderChrome(); }
 }
 
 async function revealMarkdownAnchor(anchor: string) {
@@ -11679,26 +11874,38 @@ async function revealMarkdownAnchor(anchor: string) {
   else if (isMarkdownPreviewEnabled(doc)) {
     await renderMarkdownPreview();
     const target = $("markdownPreview").querySelector<HTMLElement>(`#${CSS.escape(headings[index].id)}`);
-    target?.scrollIntoView({ block: "start" });
+    if (target) {
+      const preview = $("markdownPreview");
+      preview.scrollTop += target.getBoundingClientRect().top - preview.getBoundingClientRect().top - markdownPreviewHeadingOffset();
+    }
   }
 }
 
-async function navigateMarkdownBack() {
-  const location = markdownNavigation.pop();
-  if (!location) return;
-  if (state.documents.some((doc) => doc.id === location.id)) activateDocument(location.id);
-  else if (location.path) await openPath(location.path, true);
-  else return;
-  setMarkdownEditMode(location.mode, false);
-  editor.setPosition({ lineNumber: location.line, column: location.column }); editor.revealLineInCenter(location.line);
-  const headings = markdownHeadingLocations(documentText(activeDocument()));
-  let index = -1;
-  headings.forEach((heading, candidate) => { if (heading.line <= location.line) index = candidate; });
-  if (index >= 0) {
-    if (isMarkdownWysiwygActive()) markdownEditor?.revealHeading(index);
-    else if (isMarkdownPreviewEnabled()) $("markdownPreview").querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")[index]?.scrollIntoView({ block: "start" });
-  }
+async function navigateMarkdownHistory(direction: "back" | "forward") {
+  if (markdownNavigating) return;
+  const snapshot = markdownNavigation.snapshot();
+  const target = markdownNavigation[direction](currentMarkdownHistoryEntry());
+  if (!target) return;
+  markdownNavigating = true;
+  renderChrome();
+  try {
+    const doc = state.documents.find(item => documentSessionKey(item) === target.key);
+    if (doc) activateDocument(doc.id);
+    else if (target.path) await openPath(target.path, true);
+    else throw new Error("该临时文档已关闭");
+    setMarkdownEditMode(target.location.mode, false);
+    await restoreMarkdownLocation(activeDocument(), target.location);
+    renderChrome();
+    scheduleSessionSave();
+  } catch (error) {
+    markdownNavigation.restore(snapshot);
+    renderChrome();
+    await showWorkbenchError(error);
+  } finally { markdownNavigating = false; renderChrome(); }
 }
+
+async function navigateMarkdownBack() { await navigateMarkdownHistory("back"); }
+async function navigateMarkdownForward() { await navigateMarkdownHistory("forward"); }
 
 function absoluteMarkdownResourcePath(source: string, doc: OpenDocument) {
   return resolveMarkdownResource(source, doc.path, state.workspace?.root);
@@ -12082,7 +12289,7 @@ function workbenchEditorOptions() {
 }
 
 function saveOnFocusChange(doc: OpenDocument) {
-  if (state.workbench.autoSaveMode === "onFocusChange" && !state.restoring && !restoringRecovery && doc.dirty && !doc.readOnly && doc.path && doc.externalRevision === undefined) {
+  if (!workspaceMoveInProgress && state.workbench.autoSaveMode === "onFocusChange" && !state.restoring && !restoringRecovery && doc.dirty && !doc.readOnly && doc.path && doc.externalRevision === undefined) {
     void saveDocument(doc, false, true).catch((error) => log(`自动保存失败：${String(error)}`));
   }
 }
@@ -12096,6 +12303,11 @@ function bindWorkbenchActions() {
     ["file.exportHtml", "导出 HTML…", "文件", exportActiveMarkdownHtml, "fileMenu"],
     ["file.exportDocx", "导出 Word（Pandoc）…", "文件", () => convertWithPandoc("export", "docx"), "fileMenu"],
     ["file.exportEpub", "导出 EPUB（Pandoc）…", "文件", () => convertWithPandoc("export", "epub"), "fileMenu"],
+    ["file.exportBundle", "打包导出 Markdown 与附件…", "文件", exportActiveMarkdownBundle, "fileMenu"],
+    ["file.newFromTemplate", "从模板新建…", "文件", newDocumentFromTemplate, "fileMenu"],
+    ["markdown.insertTemplate", "插入模板片段…", "Markdown", insertDocumentTemplate, "editMenu"],
+    ["markdown.saveTemplate", "将当前文档保存为模板…", "Markdown", saveActiveDocumentTemplate, "fileMenu"],
+    ["markdown.manageTemplates", "管理模板与片段…", "Markdown", manageDocumentTemplates, "fileMenu"],
     ["file.importDocument", "导入文档（Pandoc）…", "文件", () => convertWithPandoc("import"), "fileMenu"],
     ["file.logViewer", "打开大文件 / 实时日志…", "文件", openLargeFileReader, "fileMenu"],
     ["view.sideEditor", "在右侧并排打开当前文档", "视图", openSideEditor, "viewMenu"],
@@ -12106,7 +12318,6 @@ function bindWorkbenchActions() {
     ["markdown.checkLinks", "检查 Markdown 链接", "Markdown", checkActiveMarkdownLinks, "editMenu"],
     ["markdown.localizeImages", "将远程图片保存到本地", "Markdown", localizeMarkdownImages, "editMenu"],
     ["markdown.insertToc", "插入正文目录", "Markdown", () => insertMarkdownText("\n[TOC]\n"), "editMenu"],
-    ["navigation.back", "返回上一个文档位置", "导航", navigateMarkdownBack, "viewMenu"],
     ["workspace.undoReplace", "撤销最近一次目录替换", "编辑", undoWorkspaceReplace, "editMenu"],
   ];
   for (const [id, title, category, action, menu] of entries) {
@@ -12123,12 +12334,18 @@ function bindWorkbenchActions() {
   window.addEventListener("blur", () => state.documents.forEach(saveOnFocusChange));
   editor.onDidBlurEditorWidget(() => saveOnFocusChange(activeDocument()));
   document.addEventListener("selectionchange", () => {
-    if (isMarkdownWysiwygActive() || isReadingDocument()) renderDocumentStatus();
+    if (isMarkdownWysiwygActive() || isReadingDocument()) {
+      renderDocumentStatus();
+      if (!pendingMarkdownLocation) scheduleSessionSave();
+    }
   });
   $("markdownWysiwyg").addEventListener("focusout", () => window.setTimeout(() => {
     if (!$("markdownWysiwyg").contains(document.activeElement)) saveOnFocusChange(activeDocument());
   }, 0));
-  $("markdownPreview").addEventListener("scroll", syncMarkdownSourceScroll, { passive: true });
+  $("markdownPreview").addEventListener("scroll", () => {
+    syncMarkdownSourceScroll();
+    if (!pendingMarkdownLocation && isReadingDocument()) scheduleSessionSave();
+  }, { passive: true });
 }
 
 function reportPersistenceError(key: string, label: string, error: unknown) {
@@ -12264,6 +12481,80 @@ async function openLargeFileReader() {
   if (!path) return;
   const { openLogViewer } = await import("./logViewer");
   await openLogViewer(path, workbenchEditorOptions());
+}
+
+async function newDocumentFromTemplate() {
+  closeMenus();
+  const { showDocumentTemplates } = await import("./documentTemplates");
+  await showDocumentTemplates({ mode: "new", onUse: (text, title) => {
+    const base = title.replace(/[\\/:*?"<>|\0]/g, "-").trim().replace(/[ .]+$/, "") || "新建文档";
+    const doc = createDocument({ title: `${base.replace(/\.(?:md|markdown|mdx)$/i, "")}.md`, path: null, text,
+      encoding: "UTF-8", lineEnding: "LF", fileSize: new Blob([text]).size, language: "markdown", readOnly: false, largeFile: false },
+    { dirty: true, creationIntent: "explicit" });
+    state.documents.push(doc);
+    activateDocument(doc.id);
+    scheduleRecovery(doc);
+  } });
+}
+
+async function insertDocumentTemplate() {
+  const doc = activeDocument();
+  if (isSideEditorActive()) throw new Error("请在左侧 Markdown 编辑器中插入模板片段");
+  if (!isMarkdownLikeDocument(doc) || doc.readOnly || isReadingDocument(doc)) throw new Error("请先切换到可编辑的 Markdown 文档");
+  syncMarkdownModelFromEditor(doc);
+  const version = documentVersion(doc);
+  const model = ensureDocumentModel(doc);
+  const cursor = isMarkdownWysiwygActive(doc) ? markdownEditor?.getCursorOffset() : sourceSelectionToMarkdownCursor(editor.getSelection());
+  const point = (value: { line: number; ch: number } | null | undefined) => value ? model.getOffsetAt({ lineNumber: value.line + 1, column: value.ch + 1 }) : 0;
+  const start = Math.min(point(cursor?.anchor), point(cursor?.focus));
+  const end = Math.max(point(cursor?.anchor), point(cursor?.focus));
+  closeMenus();
+  const { showDocumentTemplates } = await import("./documentTemplates");
+  await showDocumentTemplates({ mode: "insert", title: doc.title.replace(/\.[^.]+$/, ""), onUse: (text) => {
+    if (activeDocument() !== doc || doc.readOnly || isReadingDocument(doc) || documentVersion(doc) !== version) throw new Error("文档或编辑位置已变化，请重新插入模板");
+    const from = model.getPositionAt(start), to = model.getPositionAt(end);
+    const insertedText = text.replace(/\r\n|\r|\n/g, model.getEOL());
+    model.pushStackElement();
+    model.pushEditOperations([], [{ range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: insertedText }], () => null);
+    model.pushStackElement();
+    syncMarkdownEditorFromModel(doc, true);
+    const position = model.getPositionAt(start + insertedText.length);
+    editor.setPosition(position);
+    if (isMarkdownWysiwygActive(doc)) markdownEditor?.setCursorOffset({
+      anchor: { line: position.lineNumber - 1, ch: position.column - 1 }, focus: { line: position.lineNumber - 1, ch: position.column - 1 },
+    });
+    scheduleRecovery(doc);
+  } });
+}
+
+async function saveActiveDocumentTemplate() {
+  const doc = activeDocument();
+  if (!isMarkdownLikeDocument(doc)) throw new Error("请先打开 Markdown 文档");
+  syncMarkdownModelFromEditor(doc);
+  closeMenus();
+  const { saveDocumentAsTemplate } = await import("./documentTemplates");
+  await saveDocumentAsTemplate(documentText(doc), doc.title);
+}
+
+async function manageDocumentTemplates() {
+  closeMenus();
+  const { showDocumentTemplates } = await import("./documentTemplates");
+  await showDocumentTemplates({ mode: "manage" });
+}
+
+async function exportActiveMarkdownBundle() {
+  const doc = activeDocument();
+  if (!isMarkdownLikeDocument(doc)) throw new Error("请先打开 Markdown 文档");
+  syncMarkdownModelFromEditor(doc);
+  const text = documentText(doc);
+  const outputPath = await invoke<string | null>("pick_save_path", { request: { defaultDir: preferredDialogDirectory(doc), fileName: doc.title.replace(/\.[^.]+$/, "") + ".zip" } });
+  if (!outputPath) return;
+  const result = await withBusy("打包文档与附件", () => invoke<{ path: string; fileCount: number; warnings: string[] }>("export_markdown_bundle", {
+    request: { text, documentPath: doc.path ?? null, workspaceRoot: state.workspace?.root ?? null, outputPath },
+  }), { lockEditor: false });
+  log(`已打包 ${result.fileCount} 个文件：${result.path}`);
+  await showAlert({ title: "Markdown 打包完成", subtitle: result.path,
+    body: `包含 ${result.fileCount} 个文件。${result.warnings.length ? `\n\n以下资源未完整打包：\n${result.warnings.slice(0, 20).join("\n")}` : ""}`, okLabel: "知道了" });
 }
 
 async function convertWithPandoc(direction: "import" | "export", format?: "docx" | "epub") {

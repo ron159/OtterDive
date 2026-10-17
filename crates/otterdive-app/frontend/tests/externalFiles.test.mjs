@@ -23,7 +23,7 @@ function harness(options = {}) {
   let modelText = doc.text;
   const model = { getValue: () => modelText, getAlternativeVersionId: () => doc.version, isDisposed: () => !!options.disposed, pushStackElement() {} };
   const context = {
-    appReady: true, checkingExternalFiles: false, busyDepth: 0, editorBusyDepth: 0,
+    appReady: true, checkingExternalFiles: false, busyDepth: 0, editorBusyDepth: 0, workspaceMoveInProgress: false,
     closingEditorsLocked: false, closingAppWasInert: false, windowCloseConfirmed: false, windowCloseInProgress: false,
     $: () => app, activeDocument: () => context.state.documents[0], isReadingDocument: () => false,
     markdownEditor: { setReadOnly: readOnly => { calls.locks.push(['markdown', readOnly]); } },
@@ -80,7 +80,7 @@ function harness(options = {}) {
     ensureDocumentModel: () => model,
     withBusy: async (_, task) => task(), Blob,
     cancelDocumentSizeUpdate() {}, applyDetectedDocumentLanguage() {},
-    rememberClosedDocument() {}, disposeMarkdownEditor() {}, scheduleAutoSave() {},
+    rememberClosedDocument() {}, rememberMarkdownLocation() {}, disposeMarkdownEditor() {}, scheduleAutoSave() {},
     createDefaultUntitledDocument: () => ({ id: 2, path: null, text: '', dirty: false }),
     activateDocument: id => { context.state.activeId = id; },
     pathMatchesTarget: (path, target, isDir) => path === target || (isDir && path.startsWith(target + '/')),
@@ -410,6 +410,18 @@ test('native repeated close requests cannot bypass an in-flight flush', async ()
   assert.equal(h.calls.closed, 1);
   assert.equal(h.context.windowCloseConfirmed, true);
   assert.equal(h.context.windowCloseInProgress, false);
+});
+
+test('native close waits for a workspace move before starting shutdown persistence', async () => {
+  const h = harness();
+  h.context.workspaceMoveInProgress = true;
+  await h.context.requestWindowClose();
+  assert.equal(h.calls.closed, 0);
+  assert.equal(h.calls.recovery.length, 0);
+  assert.equal(h.calls.alerts[0].title, '正在维护文档链接');
+  h.context.workspaceMoveInProgress = false;
+  await h.context.requestWindowClose();
+  assert.equal(h.calls.closed, 1);
 });
 
 

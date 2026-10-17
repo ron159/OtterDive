@@ -28,6 +28,10 @@ Large logs, cross-file searches, and complex rule analysis often force you to ju
 - 🧹 **Local code formatting**: Format JavaScript, TypeScript, JSX, TSX, JSON, JSONC, Markdown, TOML, Python, and Dockerfile content with bundled dprint WASM plugins, plus dedicated SQL formatting, without runtime network access.
 - ⌨️ **Familiar keybindings**: Choose the built-in VS Code or Notepad++ profile, browse commands by group, and customize bindings.
 - 📝 **Complete Markdown workflow**: Use instant editing, source and split-preview modes, outlines, tables, task lists, math, remote images, Mermaid, PlantUML, and Vega diagrams.
+- 🗂️ **Safe document organization**: Move deleted workspace entries to the system trash. Preview and update Markdown links and image references when renaming or moving files and folders.
+- 📖 **Continuous reading**: Restore Markdown reading positions and navigate back and forward after following document links.
+- 📋 **Templates and snippets**: Create documents from templates, insert snippets, save the current document as a template, and manage local templates with title, date, and time variables.
+- 📦 **Portable document bundles**: Export the current Markdown, linked documents, images, and local attachments as a ZIP with relative links, reporting missing or out-of-scope resources.
 - 🔎 **Multi-scope search**: Search the current file, all open documents, or an entire workspace with normal, extended, and regular-expression modes, result navigation, and replacement previews. Workspace searches deliver batches and can be cancelled while keeping partial results.
 - 🧮 **Analyze search results**: Chain inclusion/exclusion filters, capture-group extraction and deduplication over current or historical results, with undo, CSV/JSON export and preserved source locations.
 - 🧩 **Analyse rule processing**: Import compatible XML profiles, run Normal, Escaped, Regex, and multiline Regex rules, and generate merged results, styles, bookmarks, HTML, and RTF output.

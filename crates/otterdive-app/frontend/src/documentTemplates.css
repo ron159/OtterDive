@@ -1,0 +1,19 @@
+.document-templates-dialog { width: min(900px, calc(100vw - 40px)); }
+.document-templates-layout { display: grid; grid-template-columns: minmax(160px, 220px) minmax(0, 1fr); gap: 16px; }
+.document-templates-list { display: flex; flex-direction: column; gap: 6px; max-height: 58vh; overflow: auto; }
+.document-templates-list button { text-align: left; overflow-wrap: anywhere; padding: 10px 12px; }
+.document-templates-list button[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-2); }
+.document-template-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.document-template-field > span { font-weight: 600; }
+.document-template-field input, .document-template-field textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; background: var(--input-surface); color: var(--text); padding: 10px 12px; font: inherit; }
+.document-template-field textarea { resize: vertical; min-height: 180px; max-height: 56vh; line-height: 1.6; font-family: var(--editor-font); white-space: pre; }
+.document-template-field input:focus-visible, .document-template-field textarea:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.document-template-hint { color: var(--text-3); font-size: 12px; line-height: 1.6; }
+.document-template-confirmation { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; }
+.document-template-confirmation[hidden] { display: none; }
+.document-template-editor { width: min(760px, calc(100vw - 40px)); }
+@media (max-width: 650px) {
+  .document-templates-layout { grid-template-columns: minmax(0, 1fr); }
+  .document-templates-list { max-height: 150px; }
+  .document-templates-dialog .workbench-dialog-actions { flex-wrap: wrap; }
+}

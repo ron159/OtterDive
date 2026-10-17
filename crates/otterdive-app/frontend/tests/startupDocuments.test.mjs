@@ -15,7 +15,20 @@ const names = new Set([
 const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
   .map(node => node.getText(ast)).join("\n");
 const js = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const navigationJs = ts.transpileModule(fs.readFileSync(new URL("../src/markdownNavigation.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replace(/^export /gm, "");
 const noop = () => {};
+
+test("startup restores the active Markdown draft reading anchor from the saved session", async () => {
+  const location = { mode: "reading", line: 42, column: 1, cursor: null, scroll: { headingIndex: 3, offsetPx: 80, fraction: 0.65, sectionFraction: 0.4 } };
+  const h = harness({ markdownEditMode: "reading", activeDraftId: "reading-draft",
+    draftDocuments: [{ id: "reading-draft", creationIntent: "explicit", title: "long.md", text: "# long\n\nbody", language: "markdown" }],
+    markdownLocations: { "reading-draft": location } });
+  await h.context.restoreSession(h.initial);
+  assert.equal(h.context.restoredReading.length, 1);
+  assert.equal(h.context.restoredReading[0].id, h.state.activeId);
+  assert.equal(h.context.restoredReading[0].location.scroll.sectionFraction, 0.4);
+  assert.equal(h.logs.some(message => message.includes("会话恢复失败")), false);
+});
 
 function harness(snapshot = {}, options = {}) {
   let nextId = 1;
@@ -25,7 +38,8 @@ function harness(snapshot = {}, options = {}) {
     themePreference: "system", collapsedDirs: new Set(),
   };
   const context = {
-    Blob, state, performance, SESSION_KEY: "session", analysePanel: null,
+    Blob, state, performance, SESSION_KEY: "session", analysePanel: null, markdownLocations: {}, restoredReading: [],
+    restoreMarkdownLocation: async (doc, location) => context.restoredReading.push({ id: doc.id, location }),
     encodings: ["UTF-8"], createDraftId: () => `generated-${nextId}`, closedDocuments: [],
     DEFAULT_ANALYSE_SETTINGS: {}, DEFAULT_BOTTOM_RESULTS_HEIGHT: 200, DEFAULT_EXPLORER_WIDTH: 240,
     $: () => ({ classList: { toggle: noop }, value: "" }),
@@ -66,10 +80,11 @@ function harness(snapshot = {}, options = {}) {
     "applySearchSnapshot", "setFindView", "persistThemePreference", "applyResolvedTheme", "applyEditorPerformanceProfile",
     "renderAll", "markAppReady", "renderMarkdownSurface", "restoreWorkspaceFromSnapshot", "restoreDocumentOrder",
     "waitForNextPaint", "scheduleLanguageDetection", "scheduleAutoSave", "restoreEditorSurface", "requestEditorLayout",
-    "discardRecovery", "closeSideEditorFor", "cancelAutoSave", "disposeMarkdownEditor",
+    "discardRecovery", "closeSideEditorFor", "cancelAutoSave", "disposeMarkdownEditor", "rememberMarkdownLocation",
     "cancelDocumentSizeUpdate", "scheduleSessionSave", "resetSearchResults", "attachEditorModel", "renderSettingsMenu",
   ]) context[name] = noop;
   vm.createContext(context);
+  vm.runInContext(navigationJs, context);
   vm.runInContext(js, context);
   const initial = context.createDefaultUntitledDocument();
   state.documents.push(initial);

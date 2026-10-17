@@ -171,6 +171,8 @@
           <button class="tool-button" id="wordWrapButton" aria-label="自动换行" title="自动换行" aria-pressed="false"><span class="icon-slot" data-icon="WrapText"></span><span data-label>自动换行</span></button>
           <button class="tool-button hidden" id="outlineButton" aria-label="文档大纲" title="文档大纲" aria-pressed="false"><span class="icon-slot" data-icon="ListTree"></span><span data-label>大纲</span></button>
           <div class="markdown-mode-control hidden" id="markdownModeControl" role="group" aria-label="Markdown 编辑模式">
+            <button class="tool-button" id="markdownBackButton" aria-label="返回上一个文档位置" title="返回上一个文档位置" disabled><span class="icon-slot" data-icon="ChevronLeft"></span></button>
+            <button class="tool-button" id="markdownForwardButton" aria-label="前往下一个文档位置" title="前往下一个文档位置" disabled><span class="icon-slot" data-icon="ChevronRight"></span></button>
             <button class="tool-button markdown-mode-button" id="markdownWysiwygButton" data-markdown-mode="wysiwyg" aria-label="Markdown 即时编辑" title="即时编辑"><span class="icon-slot" data-icon="NotebookPen"></span></button>
             <button class="tool-button markdown-mode-button" id="markdownSplitButton" data-markdown-mode="split" aria-label="Markdown 分屏预览" title="分屏预览"><span class="icon-slot" data-icon="Columns2"></span></button>
             <button class="tool-button markdown-mode-button" id="markdownSourceButton" data-markdown-mode="source" aria-label="Markdown 源码" title="源码"><span class="icon-slot" data-icon="FileCode2"></span></button>
@@ -336,7 +338,7 @@
             <div id="markdownWysiwyg" class="markdown-wysiwyg" aria-label="Markdown 即时编辑器" aria-hidden="true"></div>
           </div>
           <div class="markdown-preview-resize hidden" id="markdownPreviewResize" role="separator" aria-label="调整 Markdown 预览宽度" aria-orientation="vertical" aria-valuemin="280" tabindex="0" title="拖动调整预览宽度，双击恢复默认"></div>
-          <aside class="markdown-preview hidden" id="markdownPreview"></aside>
+          <aside class="markdown-preview hidden" id="markdownPreview" tabindex="0" aria-label="Markdown 阅读与预览"></aside>
         </section>
         </section>
       </section>
@@ -404,7 +406,7 @@
               <span class="icon-slot" data-icon="FolderTree"></span>
               <strong>工作区</strong>
             </button>
-            <button class="settings-nav-item" data-settings-section="system">
+            <button class="settings-nav-item hidden" data-settings-section="system">
               <span class="icon-slot" data-icon="MonitorCog"></span>
               <strong>系统集成</strong>
             </button>
@@ -763,7 +765,7 @@
             </div>
           </section>
 
-          <section class="settings-panel" data-settings-panel="system">
+          <section class="settings-panel hidden" data-settings-panel="system">
             <header class="settings-section-head">
               <strong>系统集成</strong>
               <span>由你决定 OtterDive 如何出现在 Windows 资源管理器中</span>
@@ -897,7 +899,8 @@
           <button class="menu-row" id="treeNewFileButton" role="menuitem"><span class="icon-slot" data-icon="FilePlus2"></span><strong>新建文件</strong><small></small></button>
           <button class="menu-row" id="treeNewFolderButton" role="menuitem"><span class="icon-slot" data-icon="FolderPlus"></span><strong>新建文件夹</strong><small></small></button>
           <button class="menu-row" id="treeRenameButton" role="menuitem"><span class="icon-slot" data-icon="Edit3"></span><strong>重命名</strong><small>F2</small></button>
-          <button class="menu-row danger" id="treeDeleteButton" role="menuitem"><span class="icon-slot" data-icon="Trash2"></span><strong>删除</strong><small>Del</small></button>
+          <button class="menu-row" id="treeMoveButton" role="menuitem"><span class="icon-slot" data-icon="FolderOpen"></span><strong>移动…</strong><small></small></button>
+          <button class="menu-row danger" id="treeDeleteButton" role="menuitem"><span class="icon-slot" data-icon="Trash2"></span><strong>移到回收站</strong><small>Del</small></button>
           <div class="menu-divider"></div>
           <button class="menu-row" id="treeCopyPathButton" role="menuitem"><span class="icon-slot" data-icon="Copy"></span><strong>复制路径</strong><small></small></button>
           <button class="menu-row" id="treeRevealButton" role="menuitem"><span class="icon-slot" data-icon="ExternalLink"></span><strong>在资源管理器中显示</strong><small></small></button>

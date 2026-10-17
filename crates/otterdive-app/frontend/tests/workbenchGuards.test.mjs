@@ -8,7 +8,7 @@ const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true)
 function harness(names, globals) {
   const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).map(node => node.getText(ast)).join("\n")
     .replace('await import("./workbenchPanels")', 'await Promise.resolve({ createSideEditor: globalThis.createSideEditor })');
-  const context = vm.createContext({ Blob, ...globals });
+  const context = vm.createContext({ Blob, editorBusyDepth: 0, closingEditorsLocked: false, ...globals });
   vm.runInContext(ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
   return context;
 }
@@ -75,6 +75,7 @@ test("workspace close clears recovery, parallel views and sessions only for its 
   const sessions = new Map([[1, {}], [2, {}]]), stats = new Map([[1, {}], [2, {}]]);
   const context = harness(["closeWorkspace"], {
     state, confirmDocumentCanClose: async () => true, activeDocument: () => workspace, editor: { saveViewState: () => ({}) },
+    rememberMarkdownLocation: noop,
     discardRecovery: doc => calls.push(`discard:${doc.id}`), closeSideEditorFor: doc => calls.push(`side:${doc.id}`),
     writingStatsCache: stats, markdownSessions: sessions, cancelAutoSave: noop, disposeMarkdownEditor: noop, cancelDocumentSizeUpdate: noop,
     $: () => ({ value: "" }), resetSearchResults: noop, isWorkspaceFindView: () => false, attachEditorModel: noop,

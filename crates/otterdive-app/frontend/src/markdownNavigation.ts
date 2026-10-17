@@ -28,6 +28,74 @@ export function markdownCursorToSourceSelection(cursor: MarkdownCursor | null): 
 
 export type MarkdownScrollAnchor = { headingIndex: number; offsetPx: number; fraction: number; sectionFraction?: number };
 
+export type MarkdownDocumentLocation = {
+  mode: "wysiwyg" | "source" | "split" | "reading";
+  line: number;
+  column: number;
+  cursor: MarkdownCursor | null;
+  scroll: MarkdownScrollAnchor;
+};
+export type MarkdownHistoryEntry = { key: string; path?: string | null; location: MarkdownDocumentLocation };
+
+export function normalizeMarkdownLocations(value: unknown): Record<string, MarkdownDocumentLocation> {
+  const result: Record<string, MarkdownDocumentLocation> = Object.create(null);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return result;
+  const finite = (number: unknown): number is number => typeof number === "number" && Number.isFinite(number);
+  const point = (raw: unknown) => {
+    const p = raw as { line?: unknown; ch?: unknown } | null;
+    return p && finite(p.line) && finite(p.ch) && p.line >= 0 && p.ch >= 0
+      ? { line: Math.floor(p.line), ch: Math.floor(p.ch) } : null;
+  };
+  for (const [key, raw] of Object.entries(value).slice(-200)) {
+    if (!raw || typeof raw !== "object" || key === "__proto__" || key.length > 4096) continue;
+    const location = raw as MarkdownDocumentLocation;
+    const s = location.scroll;
+    if (!["wysiwyg", "source", "split", "reading"].includes(location.mode)
+      || !finite(location.line) || location.line < 1 || !finite(location.column) || location.column < 1
+      || !s || !finite(s.headingIndex) || !finite(s.offsetPx) || !finite(s.fraction)) continue;
+    result[key] = {
+      mode: location.mode, line: Math.floor(location.line), column: Math.floor(location.column),
+      cursor: location.cursor ? { anchor: point(location.cursor.anchor), focus: point(location.cursor.focus) } : null,
+      scroll: { headingIndex: Math.max(-1, Math.floor(s.headingIndex)), offsetPx: Math.max(0, s.offsetPx),
+        fraction: Math.max(0, Math.min(1, s.fraction)),
+        ...(finite(s.sectionFraction) ? { sectionFraction: Math.max(0, Math.min(1, s.sectionFraction)) } : {}) },
+    };
+  }
+  return result;
+}
+
+export class MarkdownHistory {
+  private past: MarkdownHistoryEntry[] = [];
+  private future: MarkdownHistoryEntry[] = [];
+  constructor(private readonly limit = 100) {}
+  get canBack() { return this.past.length > 0; }
+  get canForward() { return this.future.length > 0; }
+  record(entry: MarkdownHistoryEntry) {
+    this.past.push(entry);
+    if (this.past.length > this.limit) this.past.shift();
+    this.future = [];
+  }
+  back(current: MarkdownHistoryEntry) {
+    const target = this.past.pop();
+    if (!target) return null;
+    this.future.push(current);
+    return target;
+  }
+  forward(current: MarkdownHistoryEntry) {
+    const target = this.future.pop();
+    if (!target) return null;
+    this.past.push(current);
+    return target;
+  }
+  snapshot() { return { past: [...this.past], future: [...this.future] }; }
+  restore(snapshot: ReturnType<MarkdownHistory["snapshot"]>) {
+    this.past = [...snapshot.past]; this.future = [...snapshot.future];
+  }
+  remap(mapper: (entry: MarkdownHistoryEntry) => MarkdownHistoryEntry) {
+    this.past = this.past.map(mapper); this.future = this.future.map(mapper);
+  }
+}
+
 export function captureMarkdownScrollAnchor(scrollTop: number, maximum: number, headings: number[]): MarkdownScrollAnchor {
   const top = Math.min(Math.max(0, maximum), Math.max(0, scrollTop));
   let headingIndex = -1;

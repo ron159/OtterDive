@@ -5,7 +5,7 @@
         "title": "OtterDive",
         "width": 1440,
         "height": 900,
-        "minWidth": 960,
+        "minWidth": 1024,
         "minHeight": 640,
         "resizable": true,
         "decorations": true,
@@ -13,7 +13,7 @@
         "hiddenTitle": true,
         "trafficLightPosition": {
           "x": 18,
-          "y": 17
+          "y": 26
         }
       }
     ]

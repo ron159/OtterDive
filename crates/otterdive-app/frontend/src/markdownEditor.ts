@@ -836,6 +836,10 @@ export class MarkdownEditorBridge {
     this.muya.focus();
   }
 
+  blur() {
+    this.muya.blur();
+  }
+
   undo() {
     this.muya.undo();
   }

@@ -2271,6 +2271,12 @@ html[data-markdown-width="full"] .markdown-preview {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
 }
 
+/* Muya mounts these tools under body, outside the covered editor workspace. */
+body:has(#app.settings-open) > :is(.mu-float-wrapper, .mu-front-button-wrapper, .mu-transformer, .mu-tooltip, .mu-shadow, .mu-line-ghost) {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 .mu-front-button[data-block-name="paragraph"],
 .mu-front-button[data-block-name="atx-heading"],
 .mu-front-button[data-block-name="setext-heading"] {
@@ -3981,6 +3987,7 @@ tbody tr.result-active {
 .settings-sidebar {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
   padding: 12px 10px;
 }
 
@@ -4024,7 +4031,9 @@ tbody tr.result-active {
 .settings-nav {
   display: grid;
   align-content: start;
+  min-height: 0;
   gap: 3px;
+  overflow-y: auto;
 }
 
 .settings-nav-item {
@@ -5104,43 +5113,6 @@ body[data-custom-theme="true"] {
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@media (max-width: 980px) {
-  .settings-page {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 12px;
-    padding: 12px;
-  }
-
-  .settings-sidebar {
-    grid-template-rows: auto auto;
-    gap: 10px;
-  }
-
-  .settings-product {
-    display: none;
-  }
-
-  .settings-nav {
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(118px, 1fr);
-    overflow-x: auto;
-    padding-bottom: 2px;
-  }
-
-  .settings-content {
-    padding: 24px 20px 34px;
-  }
-
-  .theme-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .settings-nav {
-    min-width: 0;
   }
 }
 
@@ -6865,6 +6837,67 @@ html:not(.platform-macos) .monaco-scrollable-element > .scrollbar > .slider {
 .platform-macos .settings-action:disabled {
   background: var(--macos-glass-control);
   box-shadow: none;
+}
+
+@media (forced-colors: none) {
+  .platform-macos .settings-switch {
+    width: 38px;
+    height: 18px;
+    flex-basis: 38px;
+    padding: 1px;
+    border-color: color-mix(in srgb, var(--text) 10%, transparent);
+    background: linear-gradient(180deg, #ffffff0a, #ffffff00), color-mix(in srgb, var(--text) 18%, var(--surface));
+    box-shadow: inset 0 1px 2px #00000018, inset 0 -1px 0 #ffffff12;
+    backdrop-filter: blur(12px) saturate(1.5);
+    -webkit-backdrop-filter: blur(12px) saturate(1.5);
+  }
+
+  .platform-macos .settings-switch .settings-switch-thumb {
+    width: 22px;
+    height: 14px;
+    border-color: #ffffffb3;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #fff, #fffffff0);
+    box-shadow: 0 1px 3px #00000026, inset 0 1px 0 #fff;
+    transition: transform 220ms cubic-bezier(.2, .8, .2, 1), width 160ms ease, box-shadow 180ms ease;
+  }
+
+  .platform-macos .settings-switch[aria-checked="true"] {
+    border-color: color-mix(in srgb, var(--primary) 88%, #ffffff);
+    background: linear-gradient(180deg, #ffffff16, #ffffff00), var(--primary);
+    box-shadow: inset 0 1px 0 #ffffff30, inset 0 -1px 0 #0000000d;
+  }
+
+  .platform-macos .settings-switch[aria-checked="true"] .settings-switch-thumb {
+    transform: translateX(12px);
+  }
+
+  .platform-macos .settings-switch:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--text) 24%, transparent);
+  }
+
+  .platform-macos .settings-switch[aria-checked="true"]:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--primary) 72%, #ffffff);
+  }
+
+  .platform-macos .settings-switch:active:not(:disabled) .settings-switch-thumb {
+    width: 25px;
+  }
+
+  .platform-macos .settings-switch[aria-checked="true"]:active:not(:disabled) .settings-switch-thumb {
+    transform: translateX(9px);
+  }
+
+  .platform-macos.high-contrast .settings-switch {
+    padding: 0;
+    border: 2px solid var(--text);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .platform-macos .settings-switch .settings-switch-thumb { transition: none; }
 }
 
 .platform-macos .font-select-trigger,
