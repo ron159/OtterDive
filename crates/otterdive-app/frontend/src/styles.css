@@ -33,16 +33,6 @@
   --editor-font: "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
 }
 
-.settings-row.workbench-setting { grid-template-columns: minmax(0, 1fr) minmax(80px, 240px); }
-.settings-row.workbench-setting:has(> .settings-switch) { grid-template-columns: minmax(0, 1fr) auto; }
-.workbench-setting > input:not([type="checkbox"]), .workbench-setting > select {
-  min-width: 0; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--input-surface); color: var(--text); font: inherit;
-}
-.workbench-css-label { display: grid; gap: 8px; padding: 16px; }
-.workbench-css-label span { color: var(--text-3); font-size: 12px; }
-.workbench-css-label textarea { resize: vertical; padding: 10px; min-height: 100px; font: 13px var(--editor-font); background: var(--input-surface); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
-.settings-panel > h3 { margin: 20px 0 10px; font-size: 13px; color: var(--text-2); }
 .workbench-dialog {
   width: min(1100px, 92vw); max-height: 90vh; padding: 22px; border: 1px solid var(--line); border-radius: 12px;
   background: var(--surface); color: var(--text); box-shadow: var(--shadow); font: var(--ui-font-size) var(--font);
@@ -56,7 +46,7 @@
   padding: 7px 12px; border-radius: 6px; border: 1px solid var(--line); color: var(--text); background: var(--surface-2); cursor: pointer;
 }
 .workbench-dialog button:disabled { opacity: .5; cursor: default; }
-.workbench-dialog button:focus-visible, .workbench-dialog select:focus-visible, .workbench-setting input:focus-visible, .workbench-setting select:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.workbench-dialog button:focus-visible, .workbench-dialog select:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .workbench-error { color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }
 .workbench-error:empty { display: none; }
 .persistence-notice { min-width: 0; max-width: 38%; }
@@ -4719,13 +4709,14 @@ body[data-custom-theme="true"] {
   justify-self: end;
 }
 
-.settings-row strong {
+.settings-row strong,
+.settings-row-copy > label {
   color: var(--text);
   font-size: 13px;
   font-weight: 600;
 }
 
-.settings-row span {
+.settings-row-copy > span {
   color: var(--text-3);
   font-size: 11px;
   font-weight: 400;
@@ -4808,6 +4799,8 @@ body[data-custom-theme="true"] {
 }
 
 .settings-number-control {
+  width: 110px;
+  max-width: 100%;
   height: 36px;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
@@ -4820,18 +4813,96 @@ body[data-custom-theme="true"] {
 }
 
 .settings-number-control input {
-  width: 64px;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  flex: 1;
   border: 0;
   padding: 0;
   color: var(--text);
   background: transparent;
+  font-size: 12px;
   text-align: right;
   font-variant-numeric: tabular-nums;
   outline: none;
 }
 
 .settings-number-control span {
+  flex: 0 0 auto;
   font-size: 12px;
+}
+
+.settings-field,
+.settings-textarea,
+.font-input,
+.font-select-trigger {
+  height: 36px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--input-surface);
+  font-size: 12px;
+}
+
+.settings-field,
+.settings-select-control {
+  width: 240px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-select-control {
+  position: relative;
+}
+
+.settings-select-control select {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 34px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.settings-select-control > .font-select-chevron {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+}
+
+.settings-row > .settings-textarea {
+  grid-column: 2;
+  justify-self: stretch;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 120px;
+  padding: 10px;
+  resize: vertical;
+  font: 12px/1.6 var(--editor-font);
+}
+
+.settings-field:hover:not(:disabled),
+.settings-textarea:hover:not(:disabled),
+.font-input:hover:not(:disabled),
+.settings-number-control:has(input:enabled):hover {
+  border-color: var(--primary-3);
+}
+
+.settings-field:focus-visible,
+.settings-textarea:focus-visible,
+.font-input:focus-visible,
+.font-select-trigger:focus-visible,
+.settings-number-control:has(input:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.settings-field:disabled,
+.settings-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .settings-action {
@@ -4945,17 +5016,10 @@ body[data-custom-theme="true"] {
 
 .font-select-trigger {
   width: 100%;
-  height: 32px;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 18px;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
-  color: var(--text-2);
-  background: var(--surface-2);
-  font-size: 12px;
   font-weight: 500;
   text-align: left;
   transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
@@ -4968,8 +5032,8 @@ body[data-custom-theme="true"] {
   white-space: nowrap;
 }
 
-.font-select-trigger:hover,
-.font-select-trigger[aria-expanded="true"] {
+:is(.font-select-trigger, .settings-select):hover:not(:disabled),
+.font-select-trigger[aria-expanded="true"]:not(:disabled) {
   color: var(--primary);
   border-color: var(--primary-3);
   background: var(--primary-2);
@@ -5057,13 +5121,6 @@ body[data-custom-theme="true"] {
   grid-column: 2;
   width: 100%;
   min-width: 0;
-  height: 32px;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 0 10px;
-  color: var(--text);
-  background: var(--input-surface);
-  font-size: 11px;
   outline: none;
 }
 
@@ -5122,13 +5179,11 @@ body[data-custom-theme="true"] {
     grid-template-columns: 34px minmax(0, 1fr);
   }
 
-  .settings-row.workbench-setting:not(:has(> .settings-switch)) {
-    grid-template-columns: minmax(0, 1fr) minmax(80px, 200px);
-  }
-
   .settings-row > .seg-control,
   .settings-row > .stepper,
   .settings-row > .settings-number-control,
+  .settings-row > .settings-field,
+  .settings-row > .settings-select-control,
   .settings-row > .font-control,
   .settings-row > .shell-integration-control,
   .settings-row > .settings-action {
@@ -5144,8 +5199,6 @@ body[data-custom-theme="true"] {
 @container (max-width: 480px) {
   .theme-grid { grid-template-columns: 1fr; }
   .settings-row { gap: 8px; padding: 12px; }
-  .settings-row.workbench-setting:not(:has(> .settings-switch)) { grid-template-columns: minmax(0, 1fr); }
-  .settings-row.workbench-setting > :not(.settings-row-copy):not(.settings-switch) { justify-self: stretch; }
   .font-control { grid-template-columns: minmax(0, 1fr); }
   .font-input { grid-column: 1; }
   .shell-integration-control { justify-content: flex-start; }
@@ -6902,6 +6955,8 @@ html:not(.platform-macos) .monaco-scrollable-element > .scrollbar > .slider {
 
 .platform-macos .font-select-trigger,
 .platform-macos .font-input,
+.platform-macos .settings-field,
+.platform-macos .settings-textarea,
 .platform-macos .keybinding-search,
 .platform-macos .keybinding-value {
   border-color: var(--macos-glass-stroke);
