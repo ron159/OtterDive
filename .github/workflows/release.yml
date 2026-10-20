@@ -36,7 +36,9 @@ jobs:
             rust_target: ""
             build_args: ""
             bundle_root: target/release/bundle
-          - runner: macos-26
+          # Use the standard Intel pool when hosted ARM runners are capacity constrained.
+          # The explicit Rust target keeps the distributed application ARM64.
+          - runner: macos-26-intel
             target: macos-arm64
             rust_target: aarch64-apple-darwin
             build_args: --target aarch64-apple-darwin
@@ -179,6 +181,20 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: tauri build ${{ matrix.build_args }} --features custom-protocol
+
+      - name: Verify macOS application architecture
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="${{ matrix.bundle_root }}/macos/OtterDive.app"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          architectures="$(lipo -archs "$app/Contents/MacOS/$executable")"
+          echo "macOS application architectures: $architectures"
+          if [[ "$architectures" != "arm64" ]]; then
+            echo "::error::Expected an ARM64-only macOS application, got $architectures"
+            exit 1
+          fi
 
       - name: Collect release assets
         shell: bash
