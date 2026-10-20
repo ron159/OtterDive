@@ -48,12 +48,13 @@ test("renders every ordinary search result beyond the former 400-row limit", () 
     escapeAttr: value => value,
     escapeHtml: value => value,
     highlightMatchLine: () => "preview",
+    searchResultPinButton: (index, line) => `<button data-pin-result-index="${index}" aria-label="固定第 ${line} 行用于对比"></button>`,
   });
   vm.runInContext(javascript, context);
   context.renderProgressiveSearchResults(report, list, 1);
   while (frames.length) frames.shift()();
 
-  const rows = list.children.flatMap(group => group.lastElementChild.children);
+  const rows = list.children.flatMap(group => group.lastElementChild.children.flatMap(item => item.children));
   assert.equal(rows.length, report.total);
   assert.ok(rows.every(row => row.tagName === "div" && row.attributes.role === "button" && row.tabIndex === 0));
   assert.equal(rows[0].dataset.resultIndex, "0");

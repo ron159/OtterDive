@@ -844,44 +844,12 @@ async fn reopen_path_with_encoding(request: ReopenRequest) -> Result<DocumentDto
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(request.path);
         let revision = crate::file_revision::revision(&path)?;
-        let metadata = fs::metadata(&path)
-            .map_err(|err| format!("读取文件信息失败：{}：{err}", path.display()))?;
-        let bytes =
-            fs::read(&path).map_err(|err| format!("读取文件失败：{}：{err}", path.display()))?;
-        let encoding = parse_encoding(&request.encoding);
-        let file_size = bytes.len();
-        let decoded = otterdive_core::fs::decode_owned_bytes_with_encoding(bytes, encoding);
-        let title = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Untitled")
-            .to_owned();
-        let line_ending = LineEnding::detect(&decoded.text);
+        let doc = LoadedDocument::open_with_encoding(&path, Some(parse_encoding(&request.encoding)))
+            .map_err(|err| format!("打开失败：{}：{err}", path.display()))?;
         crate::file_revision::ensure_revision(&path, &revision)?;
-        Ok(DocumentDto {
-            decode_had_errors: decoded.had_errors,
-            disk_revision: Some(revision),
-            title,
-            path: Some(path.display().to_string()),
-            language: language_from_path(Some(&path)),
-            large_file: metadata.len() > EDITABLE_FILE_LIMIT_BYTES,
-            text: decoded.text,
-            encoding: encoding_label(decoded.encoding).to_owned(),
-            line_ending: line_ending_label(line_ending).to_owned(),
-            file_size,
-            read_only: decoded.had_errors
-                || metadata.permissions().readonly()
-                || metadata.len() > EDITABLE_FILE_LIMIT_BYTES,
-            read_only_reason: if decoded.had_errors {
-                Some("解码含有无效字符，请选择正确编码重新打开；禁止覆盖原文件".to_owned())
-            } else if metadata.permissions().readonly() {
-                Some("文件系统只读".to_owned())
-            } else if metadata.len() > EDITABLE_FILE_LIMIT_BYTES {
-                Some("超过编辑保护阈值".to_owned())
-            } else {
-                None
-            },
-        })
+        let mut dto = loaded_document_to_dto(doc);
+        dto.disk_revision = Some(revision);
+        Ok(dto)
     })
     .await
     .map_err(|err| format!("编码重读失败：{err}"))?
@@ -1884,6 +1852,25 @@ pub(crate) fn line_ending_label(line_ending: LineEnding) -> &'static str {
 mod large_document_tests {
     use super::*;
     use std::io::{BufWriter, Write};
+
+    #[test]
+    fn open_and_reopen_reject_a_real_empty_zip_without_changing_it() {
+        let path = std::env::temp_dir().join(format!("otterdive-rejected-{}.txt", std::process::id()));
+        let mut zip = b"PK\x05\x06".to_vec();
+        zip.resize(22, 0); // A valid empty ZIP central-directory record.
+        std::fs::write(&path, &zip).unwrap();
+        for _ in 0..2 {
+            assert!(load_path(path.clone()).unwrap_err().contains("二进制"));
+            let error = tauri::async_runtime::block_on(reopen_path_with_encoding(ReopenRequest {
+                path: path.to_string_lossy().into_owned(),
+                encoding: "UTF-16 Little Endian".to_owned(),
+            }))
+            .unwrap_err();
+            assert!(error.contains("二进制"));
+            assert_eq!(std::fs::read(&path).unwrap(), zip);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn opening_large_document_preserves_the_complete_text() {

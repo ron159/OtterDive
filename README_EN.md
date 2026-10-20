@@ -33,13 +33,16 @@ Large logs, cross-file searches, and complex rule analysis often force you to ju
 - 📋 **Templates and snippets**: Create documents from templates, insert snippets, save the current document as a template, and manage local templates with title, date, and time variables.
 - 📦 **Portable document bundles**: Export the current Markdown, linked documents, images, and local attachments as a ZIP with relative links, reporting missing or out-of-scope resources.
 - 🔎 **Multi-scope search**: Search the current file, all open documents, or an entire workspace with normal, extended, and regular-expression modes, result navigation, and replacement previews. Workspace searches deliver batches and can be cancelled while keeping partial results.
+- 📌 **Pin a result for comparison**: Use the pin beside a result to keep one snapshot above the results, with its source and line/column. It stays visible while scrolling, switching result panes, or closing the source tab. A new pin replaces it; unpin at any time. Pins are not restored after restart.
 - 🧮 **Analyze search results**: Chain inclusion/exclusion filters, capture-group extraction and deduplication over current or historical results, with undo, CSV/JSON export and preserved source locations.
 - 🧩 **Analyse rule processing**: Import compatible XML profiles, run Normal, Escaped, Regex, and multiline Regex rules, and generate merged results, styles, bookmarks, HTML, and RTF output.
 - 🔤 **Encoding and line endings**: Detect and convert UTF-8, UTF-8 BOM, UTF-16, and ANSI encodings, with LF, CRLF, and CR support.
 - 💾 **Session restoration**: Restore drafts, open tabs, window placement, workspaces, search history, Analyse settings, and editor preferences.
 - 🎨 **Consistent desktop experience**: Use custom window chrome, light and dark themes, file-type icons, and configurable editor appearance.
 
-Large and small files use the complete document for search, line navigation, and analysis, without the former pagination or 64 KiB long-line preview truncation. Workspace search returns results in batches, supports cancellation, and no longer skips files above 20 MiB by default or applies the former 50,000-match / 32 MiB result limits. Workspace replacement still skips files above 20 MiB. Practical capacity and performance depend on available memory, file size, and search result volume. Search result history retains the five most recent searches.
+ZIP and binary files are rejected by the text editor. Both source files and decoded text are limited to 32 MiB. For larger files, use **File → Open large file / live log…** for chunked reading.
+
+Within that limit, large and small files use the complete document for search, line navigation, and analysis, without the former pagination or 64 KiB long-line preview truncation. Workspace search returns results in batches, supports cancellation, and no longer skips files above 20 MiB by default or applies the former 50,000-match / 32 MiB result limits. Workspace replacement still skips files above 20 MiB. Practical capacity and performance depend on available memory, file size, and search result volume. Search result history retains the five most recent searches.
 
 ## Project Status
 

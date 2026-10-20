@@ -11,6 +11,7 @@ import { mapScrollPosition } from "./scrollSync";
 import { sourceSelectionToMarkdownCursor, markdownCursorToSourceSelection, captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, MarkdownHistory, normalizeMarkdownLocations, type MarkdownScrollAnchor, type MarkdownDocumentLocation, type MarkdownHistoryEntry } from "./markdownNavigation";
 import { documentOutlineLayout, restoreOutlinePreferences, outlineHeadingSelector, outlineHeadingOffset, retainedOutlineNavigation } from "./documentOutline";
 import { exportResultRows, type ResultRow, type AnalysisStep } from "./resultAnalysis";
+import { pinSearchResultSnapshot, type PinnedSearchResult } from "./pinnedSearchResult";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -89,6 +90,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Pilcrow,
+  Pin,
   Printer,
   Redo2,
   RefreshCw,
@@ -901,6 +903,7 @@ const state = {
   logs: [] as string[],
   results: null as SearchReportDto | null,
   searchResultHistory: [] as SearchResultHistoryEntry<SearchReportDto, SearchScope>[],
+  pinnedSearchResult: null as PinnedSearchResult | null,
   replacePreview: null as ReplacePreviewDto | null,
   replacePreviewApplied: false,
   activeResultIndex: -1,
@@ -1210,6 +1213,7 @@ const lucideIcons: Record<string, IconNode> = {
   PanelRightClose,
   PanelRightOpen,
   Pilcrow,
+  Pin,
   Printer,
   Redo2,
   RefreshCw,
@@ -2218,6 +2222,8 @@ function bindActions() {
   $("editorArea").addEventListener("wheel", handleEditorWheelZoom, { passive: false });
   $("findResultsBody").addEventListener("wheel", handleSearchResultWheel, { passive: false });
   $("findResultsBody").addEventListener("keydown", handleSearchResultKeydown);
+  $("findResultsBody").addEventListener("click", handleSearchResultPin, true);
+  $("unpinSearchResultButton").addEventListener("click", unpinSearchResult);
   $("findCurrentButton").addEventListener("click", () => findSelectedDocuments(true));
   $("findNextButton").addEventListener("click", () => void findNextResult());
   $("findPreviousButton").addEventListener("click", () => void findPreviousResult());
@@ -3800,7 +3806,8 @@ function bindBottomResultsResize() {
 
 function bottomResultsMaxHeight() {
   const compact = window.innerWidth <= 760 || window.innerHeight <= 760;
-  return Math.max(MIN_BOTTOM_RESULTS_HEIGHT, Math.floor(window.innerHeight * (compact ? 0.32 : 0.6)));
+  const fraction = compact ? (state.pinnedSearchResult ? 0.5 : 0.32) : 0.6;
+  return Math.max(MIN_BOTTOM_RESULTS_HEIGHT, Math.floor(window.innerHeight * fraction));
 }
 
 function setBottomResultsHeight(
@@ -3808,7 +3815,8 @@ function setBottomResultsHeight(
   maxHeight = bottomResultsMaxHeight(),
   fast = false,
 ) {
-  state.bottomResultsHeight = Math.min(maxHeight, Math.max(MIN_BOTTOM_RESULTS_HEIGHT, Math.round(height)));
+  const minimum = state.pinnedSearchResult ? Math.min(260, maxHeight) : MIN_BOTTOM_RESULTS_HEIGHT;
+  state.bottomResultsHeight = Math.min(maxHeight, Math.max(minimum, Math.round(height)));
   $("app").style.setProperty("--bottom-results-height", `${state.bottomResultsHeight}px`);
   $("bottomResultsResize").setAttribute("aria-valuenow", String(state.bottomResultsHeight));
   if (!fast && !editorLayoutFrozen) {
@@ -4370,7 +4378,13 @@ async function openPath(path: string, remember = false) {
     if (remember) rememberRecentPath(path);
     return;
   }
-  const dto = await withBusy(`打开 ${fileNameFromPath(path)}`, () => invoke<DocumentDto>("open_path", { path }));
+  let dto: DocumentDto;
+  try {
+    dto = await withBusy(`打开 ${fileNameFromPath(path)}`, () => invoke<DocumentDto>("open_path", { path }), { lockEditor: false });
+  } catch (error) {
+    await showOpenFailures([{ path, error }]);
+    throw error;
+  }
   addOrReplaceDocument(dto, remember ? "standalone" : "workspace");
   if (remember) rememberRecentPath(path);
 }
@@ -4433,6 +4447,17 @@ interface OpenPathsResult {
   failed: Array<{ error: unknown; path: string }>;
 }
 
+async function showOpenFailures(failed: Array<{ error: unknown; path: string }>) {
+  if (failed.length === 0) return;
+  const details = failed.slice(0, 5).map(({ path, error }) =>
+    `${fileNameFromPath(path)}：${error instanceof Error ? error.message : String(error)}`);
+  if (failed.length > 5) details.push(`另有 ${failed.length - 5} 个文件未载入。`);
+  await showAlert({
+    title: "无法打开文件", subtitle: `${failed.length} 个文件未载入`,
+    body: details.join("\n"), okLabel: "返回编辑器",
+  });
+}
+
 async function openPaths(paths: string[], options: OpenPathsOptions): Promise<OpenPathsResult> {
   const requestedPaths = uniquePathsForOpen(paths);
   if (requestedPaths.length === 0) return { documents: [], failed: [] };
@@ -4444,6 +4469,7 @@ async function openPaths(paths: string[], options: OpenPathsOptions): Promise<Op
     ? await withBusy(
       `正在打开 ${requestedPaths.length} 个文件`,
       () => loadPathDtos(pathsToLoad, options.concurrency),
+      { lockEditor: false },
     )
     : [];
   const loadedByPath = new globalThis.Map<string, BatchResult<DocumentDto>>(
@@ -4486,6 +4512,7 @@ async function openPaths(paths: string[], options: OpenPathsOptions): Promise<Op
     ? "不可用"
     : `${metrics.heapDeltaBytes >= 0 ? "+" : "-"}${formatBytes(Math.abs(metrics.heapDeltaBytes))}`;
   log(`批量打开性能：${metrics.opened}/${metrics.total}，${metrics.durationMs.toFixed(1)} ms，长任务 ${metrics.longTaskCount} 个/${metrics.longTaskDurationMs.toFixed(1)} ms，堆变化 ${heap}${metrics.failed ? `，失败 ${metrics.failed}` : ""}`);
+  await showOpenFailures(failed);
   return { documents, failed };
 }
 
@@ -6177,6 +6204,68 @@ function handleSearchResultHorizontalScroll(event: WheelEvent) {
   resultList.scrollLeft += event.deltaX;
 }
 
+function searchResultPinButton(index: number, line: number, batchId?: number, analysis = false) {
+  const source = analysis ? `data-pin-analysis-row="${index}"`
+    : `data-pin-result-index="${index}"${batchId === undefined ? "" : ` data-pin-search-batch-id="${batchId}"`}`;
+  return `<button class="search-result-pin" type="button" ${source} aria-label="固定第 ${line} 行用于对比" title="固定此行用于对比">${iconSvg("Pin")}</button>`;
+}
+
+function handleSearchResultPin(event: MouseEvent) {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-pin-result-index], [data-pin-analysis-row]");
+  if (!button) return;
+  event.preventDefault();
+  event.stopPropagation(); // Pinning must not also navigate to a result or change the active tab.
+  let snapshot: PinnedSearchResult | undefined;
+  if (button.dataset.pinAnalysisRow !== undefined) {
+    const row = analysedRows?.[Number(button.dataset.pinAnalysisRow)];
+    if (row) snapshot = { ...row, fileName: fileNameFromPath(row.path) };
+  } else {
+    const report = button.dataset.pinSearchBatchId === undefined ? state.results
+      : state.searchResultHistory.find(entry => entry.id === Number(button.dataset.pinSearchBatchId))?.report;
+    let index = Number(button.dataset.pinResultIndex);
+    if (!Number.isInteger(index) || index < 0) return;
+    for (const hit of report?.hits ?? []) {
+      if (index < hit.matches.length) {
+        const match = hit.matches[index];
+        snapshot = { path: hit.path, fileName: hit.fileName, line: match.line, column: match.column, text: match.lineText };
+        break;
+      }
+      index -= hit.matches.length;
+    }
+  }
+  if (!snapshot) return;
+  state.pinnedSearchResult = pinSearchResultSnapshot(state.pinnedSearchResult, snapshot);
+  renderPinnedSearchResult(); // Keep the results DOM and scroll position intact.
+  setBottomResultsHeight(state.bottomResultsHeight);
+}
+
+function renderPinnedSearchResult() {
+  const pin = state.pinnedSearchResult;
+  $("pinnedSearchComparison").classList.toggle("hidden", !pin);
+  if (!pin) {
+    for (const id of ["pinnedSearchFileName", "pinnedSearchLocation", "pinnedSearchPath", "pinnedSearchText"]) $(id).textContent = "";
+    return;
+  }
+  const values = {
+    pinnedSearchFileName: pin.fileName,
+    pinnedSearchLocation: `第 ${pin.line} 行 · 第 ${pin.column} 列`,
+    pinnedSearchPath: pin.path,
+    pinnedSearchText: pin.text,
+  };
+  for (const [id, value] of Object.entries(values)) {
+    if ($(id).textContent !== value) $(id).textContent = value;
+  }
+  $("pinnedSearchPath").title = pin.path;
+}
+
+function unpinSearchResult() {
+  state.pinnedSearchResult = null;
+  renderPinnedSearchResult();
+  syncBottomResults();
+  if ($("bottomResultsDock").classList.contains("hidden")) focusActiveEditor();
+  else $(activeBottomResultTool === "search" ? "bottomSearchResultsTab" : "bottomAnalyseResultsTab").focus();
+}
+
 function handleSearchResultKeydown(event: KeyboardEvent) {
   if (event.key !== "Enter" && event.key !== " ") return;
   const target = event.target instanceof HTMLElement ? event.target : null;
@@ -6583,7 +6672,7 @@ function bindResultAnalysis() {
 function renderResultAnalysis(body: HTMLElement, summary: HTMLElement) {
   const rows = analysedRows!;
   summary.textContent = `二次分析 · ${rows.length} 条 · 保留原始文件位置`;
-  body.innerHTML = `<div class="find-result-list">${rows.slice(0, analysisVisibleRows).map((row, index) => `<div class="find-result-row" role="button" tabindex="0" data-analysis-row="${index}"><span class="find-result-line">${row.line}:${row.column}</span><span class="find-result-preview">${escapeHtml(row.text)}</span><small>${escapeHtml(row.path)}</small></div>`).join("")}</div>${rows.length > analysisVisibleRows ? '<button class="tool-button" id="moreAnalysisRows">继续显示</button>' : ""}`;
+  body.innerHTML = `<div class="find-result-list">${rows.slice(0, analysisVisibleRows).map((row, index) => `<div class="find-result-item">${searchResultPinButton(index, row.line, undefined, true)}<div class="find-result-row" role="button" tabindex="0" data-analysis-row="${index}"><span class="find-result-line">${row.line}:${row.column}</span><span class="find-result-preview">${escapeHtml(row.text)}</span><small>${escapeHtml(row.path)}</small></div></div>`).join("")}</div>${rows.length > analysisVisibleRows ? '<button class="tool-button" id="moreAnalysisRows">继续显示</button>' : ""}`;
   body.querySelectorAll<HTMLElement>("[data-analysis-row]").forEach(button => button.addEventListener("click", (event) => {
     if (mouseClickHasTextSelection(event, button)) return;
     const row = rows[Number(button.dataset.analysisRow)];
@@ -8326,6 +8415,7 @@ function nativeResultsAvailable() {
     || state.workspaceSearchStatus === "error"
     || state.results !== null
     || state.searchResultHistory.length > 0
+    || Boolean(state.pinnedSearchResult)
     || state.replacePreview !== null;
 }
 
@@ -8349,6 +8439,7 @@ function closeBottomResults() {
 }
 
 function syncBottomResults() {
+  renderPinnedSearchResult();
   const searchAvailable = nativeResultsAvailable();
   const analyseAvailable = analyseResultsAvailable;
   const searchTab = $<HTMLButtonElement>("bottomSearchResultsTab");
@@ -8627,7 +8718,11 @@ function renderProgressiveSearchResults(
       row.dataset.resultIndex = String(resultIndex);
       if (batchId !== undefined) row.dataset.searchBatchId = String(batchId);
       row.innerHTML = `<span class="find-result-line">${match.line}:${match.column}</span><span class="find-result-preview">${highlightMatchLine(match)}</span>`;
-      rows?.appendChild(row);
+      const item = document.createElement("div");
+      item.className = "find-result-item";
+      item.innerHTML = searchResultPinButton(resultIndex, match.line, batchId);
+      item.appendChild(row);
+      rows?.appendChild(item);
       matchIndex += 1;
       resultIndex += 1;
       appended += 1;

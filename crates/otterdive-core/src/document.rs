@@ -1,10 +1,12 @@
-use crate::fs::{decode_owned_bytes, encode_text};
+use crate::fs::{decode_owned_bytes, decode_owned_bytes_with_encoding, encode_text};
 use crate::search::{ReplaceOutcome, SearchOptions, apply_replace_all};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 pub const EDITABLE_FILE_LIMIT_BYTES: u64 = 20 * 1024 * 1024;
+/// Bound both disk input and decoded IPC/model payloads. Larger logs use the chunk reader.
+pub const DOCUMENT_FILE_LIMIT_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncodingKind {
@@ -105,11 +107,55 @@ pub struct LoadedDocument {
 
 impl LoadedDocument {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::open_with_encoding(path, None)
+    }
+
+    pub fn open_with_encoding(
+        path: impl AsRef<Path>,
+        encoding: Option<EncodingKind>,
+    ) -> io::Result<Self> {
         let path = path.as_ref();
         let metadata = fs::metadata(path)?;
-        let bytes = fs::read(path)?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "只能打开普通文本文件",
+            ));
+        }
+        ensure_document_size(metadata.len())?;
+        let file = fs::File::open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "只能打开普通文本文件",
+            ));
+        }
+        ensure_document_size(metadata.len())?;
+        // A file can grow after metadata is read. Never use an unbounded fs::read here.
+        let mut bytes = Vec::new();
+        file.take(DOCUMENT_FILE_LIMIT_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        ensure_document_size(bytes.len() as u64)?;
+        let forced_utf16 = matches!(
+            encoding,
+            Some(EncodingKind::Utf16Le | EncodingKind::Utf16Be)
+        );
+        if crate::fs::has_binary_signature(&bytes)
+            || (!forced_utf16 && crate::fs::is_probably_binary(&bytes))
+        {
+            return Err(binary_document_error());
+        }
         let file_size = bytes.len();
-        let decoded = decode_owned_bytes(bytes);
+        let decoded = match encoding {
+            Some(encoding) => decode_owned_bytes_with_encoding(bytes, encoding),
+            None => decode_owned_bytes(bytes),
+        };
+        ensure_document_size(decoded.text.len() as u64)?;
+        // Check the complete decoded text, including UTF-16 and binary tails beyond the sample.
+        if decoded.text.contains('\0') {
+            return Err(binary_document_error());
+        }
         let title = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -118,7 +164,7 @@ impl LoadedDocument {
         let line_ending = LineEnding::detect(&decoded.text);
         let (mut read_only, mut read_only_reason) = read_only_state(
             metadata.permissions().readonly(),
-            metadata.len(),
+            file_size as u64,
             EDITABLE_FILE_LIMIT_BYTES,
         );
         if decoded.had_errors {
@@ -140,6 +186,23 @@ impl LoadedDocument {
             },
         })
     }
+}
+
+fn ensure_document_size(size: u64) -> io::Result<()> {
+    if size > DOCUMENT_FILE_LIMIT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "文件或解码后的文本超过 32 MiB 安全载入上限；请使用“文件 → 打开大文件 / 实时日志…”分块阅读",
+        ));
+    }
+    Ok(())
+}
+
+fn binary_document_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "不支持将 ZIP 或二进制文件作为文本打开；原文件未修改",
+    )
 }
 
 impl Document {
@@ -339,6 +402,149 @@ fn read_only_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn input_fixture(label: &str, bytes: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "otterdive-open-{}-{}-{label}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn document_open_rejects_zip_and_binary_even_with_a_text_extension() {
+        for bytes in [
+            b"PK\x05\x06\0\0\0\0".as_slice(),
+            b"plain\0binary".as_slice(),
+        ] {
+            let path = input_fixture("binary.txt", bytes);
+            let result = LoadedDocument::open(&path);
+            fs::remove_file(path).unwrap();
+            assert!(result.is_err(), "binary input was accepted as a document");
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
+    fn document_open_rejects_oversized_files_before_loading() {
+        let path = input_fixture("oversize", b"");
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(32 * 1024 * 1024 + 1)
+            .unwrap();
+        let result = LoadedDocument::open(&path);
+        fs::remove_file(path).unwrap();
+        assert!(result.is_err(), "oversized file was fully loaded");
+        assert!(result.unwrap_err().to_string().contains("分块阅读"));
+    }
+
+    #[test]
+    fn explicit_encoding_cannot_bypass_binary_or_size_guards() {
+        let zip = input_fixture("zip", b"PK\x03\x04\0\0\0\0");
+        for encoding in [
+            EncodingKind::Utf8,
+            EncodingKind::Windows1252,
+            EncodingKind::Utf16Le,
+        ] {
+            assert!(LoadedDocument::open_with_encoding(&zip, Some(encoding)).is_err());
+        }
+        fs::remove_file(zip).unwrap();
+        let path = input_fixture("oversize-reopen", b"");
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(DOCUMENT_FILE_LIMIT_BYTES + 1)
+            .unwrap();
+        assert!(LoadedDocument::open_with_encoding(&path, Some(EncodingKind::Utf8)).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn text_encodings_empty_files_and_misleading_extensions_remain_supported() {
+        let text = "普通文本\n第二行\r\n";
+        for encoding in [
+            EncodingKind::Utf8,
+            EncodingKind::Utf8Bom,
+            EncodingKind::Utf16Le,
+            EncodingKind::Utf16Be,
+            EncodingKind::Gbk,
+            EncodingKind::Big5,
+        ] {
+            let path = input_fixture("text.zip", &encode_text(&text, encoding).unwrap());
+            let doc = LoadedDocument::open_with_encoding(&path, Some(encoding)).unwrap();
+            assert_eq!(doc.text, text);
+            assert!(!doc.meta.read_only);
+            if matches!(
+                encoding,
+                EncodingKind::Utf8
+                    | EncodingKind::Utf8Bom
+                    | EncodingKind::Utf16Le
+                    | EncodingKind::Utf16Be
+            ) {
+                assert_eq!(LoadedDocument::open(&path).unwrap().text, text);
+            }
+            fs::remove_file(path).unwrap();
+        }
+        // Explicit UTF-16 is also used to recover text without a BOM.
+        let path = input_fixture("utf16-no-bom", b"h\0i\0");
+        assert_eq!(
+            LoadedDocument::open_with_encoding(&path, Some(EncodingKind::Utf16Le))
+                .unwrap()
+                .text,
+            "hi"
+        );
+        fs::remove_file(path).unwrap();
+        let empty = input_fixture("empty", b"");
+        assert_eq!(LoadedDocument::open(&empty).unwrap().text, "");
+        fs::remove_file(empty).unwrap();
+    }
+
+    #[test]
+    fn binary_tail_and_utf16_binary_are_rejected_after_decoding() {
+        let mut bytes = vec![b'a'; 8192];
+        bytes.push(0);
+        for bytes in [bytes, vec![0xff, 0xfe, b'a', 0, 0, 0]] {
+            let path = input_fixture("binary-tail", &bytes);
+            assert!(LoadedDocument::open(&path).is_err());
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn decoded_size_is_bounded_even_when_utf16_expands() {
+        let text = "汉".repeat(12 * 1024 * 1024);
+        let path = input_fixture(
+            "expanding",
+            &encode_text(&text, EncodingKind::Utf16Le).unwrap(),
+        );
+        assert!(fs::metadata(&path).unwrap().len() < DOCUMENT_FILE_LIMIT_BYTES);
+        let error = LoadedDocument::open(&path).unwrap_err();
+        assert!(error.to_string().contains("32 MiB"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn non_regular_files_are_rejected_without_reading() {
+        assert_eq!(
+            LoadedDocument::open(std::env::temp_dir())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            LoadedDocument::open("/dev/zero").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
 
     #[test]
     fn loaded_document_reads_a_dto_ready_snapshot() {

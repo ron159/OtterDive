@@ -643,7 +643,17 @@ pub fn read_text(path: impl AsRef<Path>) -> io::Result<DecodedText> {
     Ok(decode_owned_bytes(bytes))
 }
 
-fn is_probably_binary(bytes: &[u8]) -> bool {
+pub(crate) fn has_binary_signature(bytes: &[u8]) -> bool {
+    // ZIP archives can otherwise be mistaken for text, including empty archives.
+    [b"PK\x03\x04".as_slice(), b"PK\x05\x06", b"PK\x07\x08"]
+        .iter()
+        .any(|signature| bytes.starts_with(signature))
+}
+
+pub(crate) fn is_probably_binary(bytes: &[u8]) -> bool {
+    if has_binary_signature(bytes) {
+        return true;
+    }
     if bytes.is_empty() || bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
         return false;
     }
