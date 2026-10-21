@@ -1,3 +1,4 @@
+import { selectedResultLineIndices, type PinnedResultInput } from "./pinnedSearchResult";
 import { invoke } from "@tauri-apps/api/core";
 import * as monaco from "monaco-editor/editor";
 import {
@@ -30,6 +31,8 @@ export interface AnalyseDocumentSnapshot {
   fileSize: number;
   dirty: boolean;
   largeFile: boolean;
+  encoding?: string;
+  diskRevision?: string | null;
 }
 
 export interface AnalysePanelHost {
@@ -48,6 +51,7 @@ export interface AnalysePanelHost {
   getDefaultDirectory: () => string | null;
   getSettings: () => AnalysePanelSettings;
   updateSettings: (settings: AnalysePanelSettings) => void;
+  pinResults: (results: readonly PinnedResultInput[]) => void;
   log: (message: string) => void;
 }
 
@@ -115,6 +119,7 @@ interface AnalyseLine {
   styledSegments: StyledSegment[];
   sourceDocumentId?: number;
   sourceDocumentTitle?: string;
+  sourceDocumentPath?: string | null;
 }
 
 interface StyledSegment {
@@ -235,6 +240,10 @@ export function createAnalysePanel(
     element("run").addEventListener("click", () => void run());
     element("cancel").addEventListener("click", () => cancelActiveRun());
     element("clear-result").addEventListener("click", clearResultState);
+    element("pin-result").addEventListener("mousedown", event => event.preventDefault());
+    element("pin-result").addEventListener("click", pinResultSelection);
+    resultEditor.addAction({ id: "otterdive.analyse.pin-result", label: "固定选中结果行用于对比",
+      contextMenuGroupId: "navigation", contextMenuOrder: 2, run: pinResultSelection });
     element("add").addEventListener("click", addPattern);
     element("add-selection").addEventListener("click", () => {
       addSelectionAsPattern(host.getSelectedText());
@@ -789,6 +798,8 @@ export function createAnalysePanel(
                 ...commonRequest,
                 path: documentSnapshot.path,
                 expectedFileSize: documentSnapshot.fileSize,
+                encoding: documentSnapshot.encoding,
+                expectedDiskRevision: documentSnapshot.diskRevision,
               },
             })
             : await invoke<AnalyseRunResponse>("run_analyse", {
@@ -806,6 +817,7 @@ export function createAnalysePanel(
           for (const line of result.lines) {
             line.sourceDocumentId = documentSnapshot.id;
             line.sourceDocumentTitle = documentSnapshot.title;
+            line.sourceDocumentPath = documentSnapshot.path;
           }
           combined.lines.push(...result.lines);
           combined.totalMatches += result.totalMatches;
@@ -869,6 +881,22 @@ export function createAnalysePanel(
       if (activeRunId === runId) activeRunId = null;
       if (runId === nextRunId) setRunning(false);
     }
+  }
+
+  function pinResultSelection() {
+    if (!latestResult) return;
+    const indices = selectedResultLineIndices(resultEditor.getSelections() ?? [], latestResult.lines.length,
+      resultEditor.getPosition()?.lineNumber ?? 1,
+      latestResult.lines.map(line => (line.text.match(/\r\n|\r|\n/g)?.length ?? 0) + 1));
+    const documents = new Map(host.getDocuments().map(doc => [doc.id, doc]));
+    host.pinResults(indices.map(index => {
+      const line = latestResult!.lines[index];
+      const documentId = line.sourceDocumentId ?? latestResult!.documentId;
+      const doc = documents.get(documentId);
+      return { kind: "analyse", text: line.text, analysis: line,
+        sources: [{ documentId, path: line.sourceDocumentPath === undefined ? doc?.path ?? null : line.sourceDocumentPath,
+          fileName: line.sourceDocumentTitle || doc?.title || "未命名", line: line.sourceLine, column: 1 }] };
+    }));
   }
 
   function isCurrentResult(
@@ -1641,6 +1669,7 @@ function resultMarkup() {
           <span data-analyse-role="result-find-summary"></span>
         </div>
         <div class="analyse-result-actions">
+          <button data-analyse-role="pin-result" type="button" title="支持多行和多选区；无选区时固定当前结果行">固定选中行</button>
           <button data-analyse-role="copy-result" type="button">复制</button>
           <button data-analyse-role="copy-result-rtf" type="button">复制富文本</button>
           <button data-analyse-role="save-result" type="button">保存文本</button>

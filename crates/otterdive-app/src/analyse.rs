@@ -37,7 +37,13 @@ impl AnalyseService {
         }
     }
 
-    fn package_result(&self, mut result: AnalyseResultDto) -> Result<AnalyseResultDto, String> {
+    pub(crate) fn package_result(
+        &self,
+        mut result: AnalyseResultDto,
+    ) -> Result<AnalyseResultDto, String> {
+        if result.lines.iter().any(|line| line.text.len() > 256 * 1024) {
+            return Err("Analyse 单条结果超过 256 KiB 安全显示上限；结果未被截成局部分析，请缩小 Pattern 范围".into());
+        }
         result.total_lines = result.lines.len();
         if result.lines.len() <= RESULT_CHUNK_LINES {
             return Ok(result);
@@ -108,6 +114,8 @@ pub struct AnalysePathRunRequest {
     pub path: String,
     pub expected_file_size: u64,
     pub patterns: Vec<AnalysePatternDto>,
+    pub encoding: Option<String>,
+    pub expected_disk_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -261,7 +269,8 @@ pub async fn run_analyse(
     let engine = Arc::clone(&service.engine);
     let cancel = CancellationToken::new();
     service.register_run(run_id, cancel.clone())?;
-    let task = tauri::async_runtime::spawn_blocking(move || execute(request, &engine, &cancel)).await;
+    let task =
+        tauri::async_runtime::spawn_blocking(move || execute(request, &engine, &cancel)).await;
     service.finish_run(run_id);
     let result = task.map_err(|error| format!("Analyse task failed: {error}"))??;
     service.package_result(result)
@@ -319,8 +328,8 @@ pub fn release_analyse_result(
 pub fn parse_analyse_profile(
     request: AnalyseProfileParseRequest,
 ) -> Result<ParsedAnalyseProfileDto, String> {
-    let parsed = parse_profile(&request.xml, request.first_pattern_id)
-        .map_err(|error| error.to_string())?;
+    let parsed =
+        parse_profile(&request.xml, request.first_pattern_id).map_err(|error| error.to_string())?;
     Ok(ParsedAnalyseProfileDto {
         patterns: parsed
             .patterns
@@ -433,12 +442,15 @@ fn analyse_lines_to_merged(lines: Vec<AnalyseLineDto>) -> Result<Vec<MergedLineR
         .collect()
 }
 
-fn execute_path(
+pub(crate) fn execute_path(
     request: AnalysePathRunRequest,
     engine: &AnalyseEngine,
     cancel: &CancellationToken,
 ) -> Result<AnalyseResultDto, String> {
     let path = PathBuf::from(&request.path);
+    if let Some(revision) = &request.expected_disk_revision {
+        crate::file_revision::ensure_revision(&path, revision)?;
+    }
     let metadata = fs::metadata(&path)
         .map_err(|error| format!("Unable to read Analyse source metadata: {error}"))?;
     if !metadata.is_file() {
@@ -460,13 +472,20 @@ fn execute_path(
     if cancel.is_cancelled() {
         return Err("Analyse run was cancelled".to_owned());
     }
-    let decoded = otterdive_core::fs::read_text(&path)
-        .map_err(|error| format!("Unable to read Analyse source: {error}"))?;
+    let decoded = otterdive_core::fs::read_text_cancellable(
+        &path,
+        request.encoding.as_deref().map(crate::app::parse_encoding),
+        cancel,
+    )
+    .map_err(|error| format!("Unable to read Analyse source: {error}"))?;
     let size_after = fs::metadata(&path)
         .map_err(|error| format!("Unable to recheck Analyse source: {error}"))?
         .len();
     if size_after != request.expected_file_size {
         return Err("Analyse source changed while it was being read".to_owned());
+    }
+    if let Some(revision) = &request.expected_disk_revision {
+        crate::file_revision::ensure_revision(&path, revision)?;
     }
     execute(
         AnalyseRunRequest {
@@ -853,6 +872,8 @@ mod tests {
         let file_size = fs::metadata(&path).unwrap().len();
         let result = execute_path(
             AnalysePathRunRequest {
+                encoding: None,
+                expected_disk_revision: None,
                 run_id: 50,
                 document_id: 60,
                 document_revision: 70,
@@ -873,6 +894,50 @@ mod tests {
     }
 
     #[test]
+    fn path_analysis_reaches_beyond_33_mib_without_using_the_editor_window() {
+        use std::io::Write;
+        let path =
+            std::env::temp_dir().join(format!("otterdive-analyse-33m-{}.txt", std::process::id()));
+        let block = b"ordinary line\n".repeat(4096);
+        let mut file = fs::File::create(&path).unwrap();
+        let mut size = 0;
+        let mut lines = 0;
+        while size < 33 * 1024 * 1024 {
+            file.write_all(&block).unwrap();
+            size += block.len();
+            lines += 4096;
+        }
+        file.write_all("中文 TAIL_TARGET\n".as_bytes()).unwrap();
+        drop(file);
+        let started = std::time::Instant::now();
+        let request = AnalysePathRunRequest {
+            encoding: Some("UTF-8".into()),
+            expected_disk_revision: Some(crate::file_revision::revision(&path).unwrap()),
+            run_id: 1,
+            document_id: 1,
+            document_revision: 1,
+            pattern_revision: 1,
+            path: path.to_string_lossy().into(),
+            expected_file_size: fs::metadata(&path).unwrap().len(),
+            patterns: vec![pattern("TAIL_TARGET", "normal")],
+        };
+        let result = execute_path(
+            request,
+            &AnalyseEngine::default(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(result.lines.len(), 1);
+        assert_eq!(result.lines[0].source_line, lines + 1);
+        assert_eq!(result.lines[0].text, "中文 TAIL_TARGET");
+        eprintln!(
+            "33 MiB full Analyse {:?}; source line {}",
+            started.elapsed(),
+            result.lines[0].source_line
+        );
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn path_run_rejects_a_stale_file_size() {
         let path = std::env::temp_dir().join(format!(
             "otterdive-analyse-path-stale-{}-{}.txt",
@@ -885,6 +950,8 @@ mod tests {
         fs::write(&path, "ERROR\n").unwrap();
         let result = execute_path(
             AnalysePathRunRequest {
+                encoding: None,
+                expected_disk_revision: None,
                 run_id: 51,
                 document_id: 61,
                 document_revision: 71,
@@ -899,6 +966,34 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         assert!(result.unwrap_err().contains("changed before the run"));
+    }
+
+    #[test]
+    fn path_run_rejects_a_same_size_replacement_using_disk_revision() {
+        let path =
+            std::env::temp_dir().join(format!("otterdive-analyse-revision-{}", std::process::id()));
+        let replacement = path.with_extension("replacement");
+        fs::write(&path, "ERROR\n").unwrap();
+        let revision = crate::file_revision::revision(&path).unwrap();
+        fs::write(&replacement, "OTHER\n").unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        let result = execute_path(
+            AnalysePathRunRequest {
+                encoding: None,
+                expected_disk_revision: Some(revision),
+                run_id: 52,
+                document_id: 62,
+                document_revision: 72,
+                pattern_revision: 82,
+                path: path.to_string_lossy().into_owned(),
+                expected_file_size: 6,
+                patterns: vec![pattern("ERROR", "normal")],
+            },
+            &AnalyseEngine::default(),
+            &CancellationToken::new(),
+        );
+        fs::remove_file(path).unwrap();
+        assert!(result.is_err());
     }
 
     #[test]

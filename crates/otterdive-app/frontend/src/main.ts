@@ -1,3 +1,4 @@
+import { PagedDocumentController, pageLocalPosition, type PageTarget } from "./pagedDocument";
 import { regexReplacementAt } from "./searchReplacement";
 import { revealReadingMatch } from "./readingSearch";
 import { registerMarkdownLinkCompletions, checkMarkdownLinks } from "./markdownLinkTools";
@@ -11,7 +12,7 @@ import { mapScrollPosition } from "./scrollSync";
 import { sourceSelectionToMarkdownCursor, markdownCursorToSourceSelection, captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, MarkdownHistory, normalizeMarkdownLocations, type MarkdownScrollAnchor, type MarkdownDocumentLocation, type MarkdownHistoryEntry } from "./markdownNavigation";
 import { documentOutlineLayout, restoreOutlinePreferences, outlineHeadingSelector, outlineHeadingOffset, retainedOutlineNavigation } from "./documentOutline";
 import { exportResultRows, type ResultRow, type AnalysisStep } from "./resultAnalysis";
-import { pinSearchResultSnapshot, type PinnedSearchResult } from "./pinnedSearchResult";
+import { appendPinnedResults, removePinnedResult, type PinnedResult, type PinnedResultInput } from "./pinnedSearchResult";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -212,6 +213,7 @@ interface DocumentDto {
   readOnlyReason?: string | null;
   language: string;
   largeFile: boolean;
+  paged?: boolean;
 }
 
 interface TreeItemDto {
@@ -251,6 +253,7 @@ interface TextMatchDto {
   column: number;
   lineText: string;
   matchedText: string;
+  previewStartColumn?: number;
 }
 
 interface FileHitDto {
@@ -903,7 +906,7 @@ const state = {
   logs: [] as string[],
   results: null as SearchReportDto | null,
   searchResultHistory: [] as SearchResultHistoryEntry<SearchReportDto, SearchScope>[],
-  pinnedSearchResult: null as PinnedSearchResult | null,
+  pinnedResults: [] as readonly PinnedResult[],
   replacePreview: null as ReplacePreviewDto | null,
   replacePreviewApplied: false,
   activeResultIndex: -1,
@@ -1033,6 +1036,8 @@ let markdownPreviewResizeState: HorizontalResizeState | null = null;
 let outlineActiveFrame = 0;
 let outlineNavigation: { index: number; scrollTop: number } | null = null;
 let searchResultNavigationDepth = 0;
+const pagedDocuments = new globalThis.Map<number, PagedDocumentController>();
+let pagedScrollGuard = false;
 let editorLayoutFrame = 0;
 let editorLayoutSettleFrame = 0;
 let editorLayoutForceRender = false;
@@ -1483,6 +1488,8 @@ function bootstrap() {
         fileSize: doc.fileSize,
         dirty: doc.dirty,
         largeFile: doc.largeFile,
+        encoding: doc.encoding,
+        diskRevision: doc.diskRevision,
       };
     },
     getDocuments: () => state.documents.map((doc) => ({
@@ -1494,13 +1501,15 @@ function bootstrap() {
       fileSize: doc.fileSize,
       dirty: doc.dirty,
       largeFile: doc.largeFile,
+      encoding: doc.encoding,
+      diskRevision: doc.diskRevision,
     })),
     getDocumentRevisions: () => state.documents.map((doc) => ({
       id: doc.id,
       revision: documentVersion(doc),
     })),
     getSelectedText: selectedSourceTextForAnalyse,
-    getSourceLine: () => (editor.getPosition()?.lineNumber ?? 1),
+    getSourceLine: () => (pagedDocuments.get(state.activeId)?.page?.startLine ?? 1)+(editor.getPosition()?.lineNumber ?? 1)-1,
     navigate: (documentId, line) => {
       if (!state.documents.some((doc) => doc.id === documentId)) return;
       activateDocument(documentId);
@@ -1508,7 +1517,15 @@ function bootstrap() {
     },
     revealSource: (documentId, line) => {
       if (activeDocument().id !== documentId) return;
-      editor.revealLineInCenterIfOutsideViewport(line);
+      const doc = activeDocument();
+      if (doc.paged) {
+        const controller = pagedController(doc);
+        const current = controller.page;
+        if (current && line>=current.startLine && line<=current.endLine) editor.revealLineInCenterIfOutsideViewport(line-current.startLine+1);
+        else if (!controller.busy) void controller.load({ line, column: 1 }).then(page => {
+          if (page && state.activeId===doc.id && state.documents.includes(doc)) editor.revealLineInCenterIfOutsideViewport(line-page.startLine+1);
+        });
+      } else editor.revealLineInCenterIfOutsideViewport(line);
     },
     setBookmarkLines: (documentId, lines) => {
       if (lines.length > 0) analyseBookmarkLines.set(documentId, [...new Set(lines)].sort((a, b) => a - b));
@@ -1520,6 +1537,7 @@ function bootstrap() {
       if (visible) openBottomResults("analyse");
       else syncBottomResults();
     },
+    pinResults: addPinnedResults,
     getRecentProfilePaths: () => state.analyseRecentProfiles,
     rememberProfilePath: (path) => {
       state.analyseRecentProfiles = [
@@ -1537,12 +1555,13 @@ function bootstrap() {
     },
     log,
   });
+  bindPagedDocumentControls();
   editor.onDidScrollChange(() => {
     if (!pendingMarkdownLocation && isMarkdownLikeDocument()) scheduleSessionSave();
     scheduleOutlineActiveHeading();
     syncMarkdownPreviewScroll();
     const line = editor.getVisibleRanges()[0]?.startLineNumber;
-    if (line) analysePanel?.syncSourceLine(line);
+    if (line && !pagedScrollGuard) analysePanel?.syncSourceLine(line+(pagedDocuments.get(state.activeId)?.page?.startLine ?? 1)-1);
   });
   const editorResizeObserver = new ResizeObserver(() => requestEditorLayout(!paneResizeActive()));
   editorResizeObserver.observe($("editor"));
@@ -2223,7 +2242,16 @@ function bindActions() {
   $("findResultsBody").addEventListener("wheel", handleSearchResultWheel, { passive: false });
   $("findResultsBody").addEventListener("keydown", handleSearchResultKeydown);
   $("findResultsBody").addEventListener("click", handleSearchResultPin, true);
-  $("unpinSearchResultButton").addEventListener("click", unpinSearchResult);
+  $("clearPinnedResultsButton").addEventListener("click", () => unpinSearchResult());
+  $("pinnedResultsList").addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-unpin-id]");
+    if (button) unpinSearchResult(button.dataset.unpinId);
+  });
+  $("pinSelectedSearchResultsButton").addEventListener("mousedown", event => event.preventDefault());
+  $("pinSelectedSearchResultsButton").addEventListener("click", pinSelectedSearchResults);
+  document.addEventListener("selectionchange", () => {
+    $<HTMLButtonElement>("pinSelectedSearchResultsButton").disabled = !selectedSearchResultRows().length;
+  });
   $("findCurrentButton").addEventListener("click", () => findSelectedDocuments(true));
   $("findNextButton").addEventListener("click", () => void findNextResult());
   $("findPreviousButton").addEventListener("click", () => void findPreviousResult());
@@ -3806,7 +3834,7 @@ function bindBottomResultsResize() {
 
 function bottomResultsMaxHeight() {
   const compact = window.innerWidth <= 760 || window.innerHeight <= 760;
-  const fraction = compact ? (state.pinnedSearchResult ? 0.5 : 0.32) : 0.6;
+  const fraction = compact ? (state.pinnedResults.length ? 0.5 : 0.32) : 0.6;
   return Math.max(MIN_BOTTOM_RESULTS_HEIGHT, Math.floor(window.innerHeight * fraction));
 }
 
@@ -3815,7 +3843,7 @@ function setBottomResultsHeight(
   maxHeight = bottomResultsMaxHeight(),
   fast = false,
 ) {
-  const minimum = state.pinnedSearchResult ? Math.min(260, maxHeight) : MIN_BOTTOM_RESULTS_HEIGHT;
+  const minimum = state.pinnedResults.length ? Math.min(260, maxHeight) : MIN_BOTTOM_RESULTS_HEIGHT;
   state.bottomResultsHeight = Math.min(maxHeight, Math.max(minimum, Math.round(height)));
   $("app").style.setProperty("--bottom-results-height", `${state.bottomResultsHeight}px`);
   $("bottomResultsResize").setAttribute("aria-valuenow", String(state.bottomResultsHeight));
@@ -4087,6 +4115,142 @@ function setBusy(message: string) {
   renderChrome();
 }
 
+function pagedController(doc: OpenDocument) {
+  let controller = pagedDocuments.get(doc.id);
+  if (!controller) {
+    controller = new PagedDocumentController({ path: doc.path!, encoding: doc.encoding, revision: doc.diskRevision! }, invoke,
+      (page, previous, transition) => {
+        if (!state.documents.includes(doc)) return;
+        const preserving = transition !== "replace" && previous && state.activeId === doc.id;
+        const top = editor.getVisibleRanges()[0]?.startLineNumber ?? 1;
+        const sourceTop = top+(previous?.startLine ?? 1)-1;
+        const topDelta = editor.getScrollTop()-editor.getTopForLineNumber(top);
+        const oldPosition = editor.getPosition() ?? { lineNumber: 1, column: 1 };
+        const sourcePosition = { line: oldPosition.lineNumber+(previous?.startLine ?? 1)-1,
+          column: oldPosition.column+(oldPosition.lineNumber===1 ? (previous?.startColumn ?? 1)-1 : 0) };
+        const left = editor.getScrollLeft();
+        pagedScrollGuard = true;
+        ensureDocumentModel(doc).setValue(page.text);
+        if (state.activeId === doc.id) {
+          applyEditorPerformanceProfile(doc);
+          if (preserving) {
+            editor.setPosition(pageLocalPosition(page, sourcePosition.line, sourcePosition.column));
+            const line = Math.max(1,sourceTop-page.startLine+1);
+            const width = editor.getOption(monaco.editor.EditorOption.fontInfo).typicalHalfwidthCharacterWidth;
+            const columnDelta = previous.startLine===page.startLine ? previous.startColumn-page.startColumn : 0;
+            editor.setScrollPosition({ scrollTop: editor.getTopForLineNumber(line)+topDelta, scrollLeft: Math.max(0,left+columnDelta*width) });
+          } else { editor.setScrollTop(0); editor.setPosition({ lineNumber: 1, column: 1 }); }
+          renderDocumentStatus();
+        }
+        window.requestAnimationFrame(() => { pagedScrollGuard = false; });
+      }, () => { if (state.activeId === doc.id) renderPagedDocumentControls(); });
+    pagedDocuments.set(doc.id, controller);
+  }
+  return controller;
+}
+
+function renderPagedDocumentControls() {
+  const doc = activeDocument(); const toolbar = $("pagedDocumentToolbar");
+  toolbar.classList.toggle("hidden", !doc?.paged);
+  $("editorWrap").classList.toggle("paged-document-open", Boolean(doc?.paged));
+  if (!doc?.paged) return;
+  const controller = pagedController(doc); const page = controller.page;
+  $("pagedDocumentStatus").textContent = controller.error || (controller.busy ? "正在按需读取…（可关闭标签取消）" : page
+    ? `只读 · 源行 ${page.startLine}:${page.startColumn}–${page.endLine}:${page.endColumn} · ${formatBytes(page.nextOffset)} / ${formatBytes(page.size)}${page.warning ? ` · ${page.warning}` : ""}` : "准备按需读取…");
+  for (const id of ["pagedFirstButton", "pagedPreviousButton"]) $<HTMLButtonElement>(id).disabled = controller.busy || !page || page.startOffset <= 3;
+  for (const id of ["pagedNextButton", "pagedLastButton"]) $<HTMLButtonElement>(id).disabled = controller.busy || !page?.hasMore;
+  $<HTMLButtonElement>("pagedCancelButton").disabled = !controller.busy;
+  const position = $<HTMLInputElement>("pagedFilePosition"); position.max = String(Math.max(1, doc.fileSize-1)); position.value = String(page?.startOffset ?? 0);
+  requestEditorLayout();
+}
+
+function bindPagedDocumentControls() {
+  const load = (target: (doc: OpenDocument, controller: PagedDocumentController) => PageTarget) => {
+    const doc = activeDocument(); if (!doc.paged) return;
+    const controller = pagedController(doc); void controller.load(target(doc, controller));
+  };
+  $("pagedFirstButton").addEventListener("click", () => load(() => ({ offset: 0 })));
+  $("pagedPreviousButton").addEventListener("click", () => load((_doc,c) => ({ offset: Math.max(0,(c.page?.startOffset ?? 0)-1) })));
+  $("pagedNextButton").addEventListener("click", () => load((_doc,c) => ({ offset: c.page?.nextOffset ?? 0 })));
+  $("pagedLastButton").addEventListener("click", () => load(doc => ({ offset: Math.max(0,doc.fileSize-1) })));
+  $("pagedCancelButton").addEventListener("click", () => { const doc = activeDocument(); if (doc.paged) { pagedController(doc).cancel(); renderPagedDocumentControls(); } });
+  $("pagedFilePosition").addEventListener("change", () => load(() => ({ offset: Number($<HTMLInputElement>("pagedFilePosition").value) })));
+  const continueScroll = (direction: number) => {
+    const doc = activeDocument(); if (!doc.paged || pagedScrollGuard) return false;
+    const controller = pagedController(doc); if (controller.busy || !controller.page) return false;
+    const height = editor.getLayoutInfo().height;
+    const nearBottom = editor.getScrollTop()+height >= editor.getScrollHeight()-height;
+    if (direction>0 && nearBottom && controller.page.hasMore) {
+      void controller.load({ offset: controller.page.nextOffset }, "append"); return true;
+    }
+    if (direction<0 && editor.getScrollTop()<=height && controller.page.startOffset>3) {
+      void controller.load({ offset: controller.page.startOffset-1 }, "prepend"); return true;
+    }
+    return false;
+  };
+  let previousTop = 0;
+  editor.onDidScrollChange(event => {
+    if (event.scrollTopChanged) {
+      const direction = event.scrollTop-previousTop; previousTop = event.scrollTop;
+      if (direction) continueScroll(direction);
+    }
+  });
+  $("editor").addEventListener("wheel", event => {
+    if (event.ctrlKey || event.metaKey) return;
+    if (continueScroll(event.deltaY)) {
+      const edge = event.deltaY>0 ? editor.getScrollTop()+editor.getLayoutInfo().height>=editor.getScrollHeight()-4 : editor.getScrollTop()<=0;
+      if (edge) event.preventDefault();
+    }
+  }, { passive: false });
+}
+
+async function searchPagedDocuments(scope: "current" | "open", showPanel: boolean, recordHistory: boolean, navigate: boolean) {
+  const documents = scope === "open" ? [...state.documents] : [activeDocument()];
+  const query = $<HTMLInputElement>("findInput").value;
+  if (!query) return;
+  const patternError = currentSearchPatternError(query); setCurrentFindError(patternError); if (patternError) return;
+  if ($<HTMLInputElement>("searchSelectionInput").checked) {
+    setCurrentFindError("按需文档当前不支持跨页选区查找；取消“仅选区”后执行全文查找"); return;
+  }
+  if (workspaceSearchIsBusy()) await cancelWorkspaceSearch();
+  if (recordHistory) commitSearchHistory(); resetResultAnalysis();
+  const requestId = beginWorkspaceSearch("search", "searching"); workspaceSearchCancelRequested = false;
+  const hits = documents.filter(doc => !doc.paged).map(doc => ({ path: doc.path || doc.title, fileName: doc.title, encoding: doc.encoding, matches: modelMatches(doc, false) })).filter(hit => hit.matches.length);
+  const report: SearchReportDto = { hits, skipped: [], total: hits.reduce((n,hit) => n+hit.matches.length,0) };
+  state.results = report; state.searchScope = scope; state.searchQuery = query; state.searchSignature = currentSearchSignature(scope); state.activeResultIndex = -1; state.panel = "results";
+  if (showPanel) openBottomResults("search");
+  let done = false; let timer: number | undefined;
+  const channel = new Channel<SearchEvent>();
+  channel.onmessage = event => {
+    if (requestId !== state.workspaceSearchRequestId || done) return;
+    for (const hit of event.report.hits) {
+      const previous = report.hits.find(item => item.path === hit.path);
+      if (previous) previous.matches.push(...hit.matches); else report.hits.push(hit);
+    }
+    report.total += event.report.total;
+    if (event.done) {
+      done = true; window.clearTimeout(timer); workspaceSearchRunId = null;
+      report.cancelled = event.cancelled; report.truncated = event.truncated; report.error = event.error;
+      finishWorkspaceSearch(requestId);
+      if (showPanel) state.searchResultHistory = addSearchResultHistory(state.searchResultHistory, query, scope, report);
+      renderSearchSidebarResults(); renderCurrentFindCount();
+      if (event.error) setCurrentFindError(event.error);
+      if (event.truncated) log("全文搜索结果超过 100000 条，已明确停止；请缩小查找条件");
+      if (navigate && report.total && !event.cancelled && !event.error) void openSearchResult(initialSearchResultIndex(report.total));
+    } else if (timer === undefined) timer = window.setTimeout(() => { timer = undefined; if (requestId === state.workspaceSearchRequestId) { renderSearchSidebarResults(); renderCurrentFindCount(); } },100);
+  };
+  renderSearchSidebarResults();
+  try {
+    const runId = await invoke<number>("start_document_search", { onEvent: channel, request: {
+      documents: documents.filter(doc => doc.paged).map(doc => ({ path: doc.path!, encoding: doc.encoding, revision: doc.diskRevision! })),
+      options: { root: "", query, mode: getSearchMode(), matchCase: $<HTMLInputElement>("matchCaseInput").checked, wholeWord: $<HTMLInputElement>("wholeWordInput").checked,
+        includeHidden: true, recursive: false, fileGlob: "*", skipDirs: "", maxFileSize: Number.MAX_SAFE_INTEGER },
+    } });
+    if (requestId !== state.workspaceSearchRequestId || workspaceSearchCancelRequested) await invoke("cancel_workspace_search", { runId });
+    else if (!done) workspaceSearchRunId = runId;
+  } catch (error) { if (requestId === state.workspaceSearchRequestId) { failWorkspaceSearch(requestId,error); setCurrentFindError(String(error)); } }
+}
+
 function createDocument(
   dto: DocumentDto,
   options: {
@@ -4129,6 +4293,7 @@ function ensureDocumentModel(doc: OpenDocument) {
   doc.text = "";
   doc.savedAlternativeVersionId = doc.dirty ? 0 : model.getAlternativeVersionId();
   model.onDidChangeContent(() => {
+    if (doc.paged) return;
     const wasDirty = doc.dirty;
     doc.dirty = doc.metadataDirty || model.getAlternativeVersionId() !== doc.savedAlternativeVersionId;
     state.searchRevision += 1;
@@ -4156,6 +4321,7 @@ function documentText(doc: OpenDocument) {
 }
 
 function documentVersion(doc: OpenDocument) {
+  if (doc.paged) return 1;
   return doc.model?.getVersionId() ?? 1;
 }
 
@@ -4209,6 +4375,12 @@ function nextUntitledTitle(extension = "txt") {
 
 async function navigateSourceLine(doc: OpenDocument, line: number, column: number) {
   if (!Number.isSafeInteger(line) || line < 1 || state.activeId !== doc.id) return;
+  if (doc.paged) {
+    const page = await pagedController(doc).load({ line, column });
+    if (!page || !state.documents.includes(doc) || state.activeId !== doc.id) return;
+    const position = pageLocalPosition(page, line, column);
+    editor.setPosition(position); editor.revealPositionInCenter(position); editor.focus(); return;
+  }
   editor.revealPositionInCenter({ lineNumber: line, column });
   editor.setPosition({ lineNumber: line, column });
   editor.focus();
@@ -4236,6 +4408,8 @@ function activateDocument(id: number) {
   ensureDocumentModel(doc);
   if (!isMarkdownLikeDocument(doc) || state.markdownEditMode !== "wysiwyg") attachEditorModel(doc);
   renderAll();
+  if (doc.paged || previous?.paged) renderPagedDocumentControls();
+  if (doc.paged && !pagedController(doc).page && !pagedController(doc).busy) void pagedController(doc).load({ offset: 0 });
   if (previous?.id !== id && markdownLocations[documentSessionKey(doc)]) {
     void restoreMarkdownLocation(doc, markdownLocations[documentSessionKey(doc)]);
   }
@@ -4417,6 +4591,7 @@ function applyDocumentDto(
   dto: DocumentDto,
   encodingStatus: OpenDocument["encodingStatus"],
 ) {
+  if (doc.paged || dto.paged) { pagedDocuments.get(doc.id)?.close(); pagedDocuments.delete(doc.id); }
   doc.externalRevision = undefined;
   if (doc.model) doc.model.setValue(dto.text);
   cancelAutoSave(doc.id);
@@ -4433,6 +4608,7 @@ function applyDocumentDto(
     doc.savedAlternativeVersionId = doc.model.getAlternativeVersionId();
   }
   applyDetectedDocumentLanguage(doc, dto.language);
+  if (doc.paged && state.activeId === doc.id) void pagedController(doc).load({ offset: 0 });
 }
 
 interface OpenPathsOptions {
@@ -5004,6 +5180,10 @@ async function closeDocument(id: number, confirmClose = true): Promise<boolean> 
   if (doc.saving) { log(`文档正在保存，暂未关闭：${doc.title}`); return false; }
   const index = state.documents.indexOf(doc);
   if (index < 0) return false;
+  if (doc.paged) { pagedDocuments.get(doc.id)?.close(); pagedDocuments.delete(doc.id); }
+  if (doc.paged && state.searchScope !== "workspace" && workspaceSearchIsBusy()) {
+    void cancelWorkspaceSearch(); state.workspaceSearchRequestId++; state.workspaceSearchStatus = "idle";
+  }
   rememberMarkdownLocation(doc);
   rememberClosedDocument(doc);
   discardRecovery(doc);
@@ -5030,7 +5210,7 @@ function rememberClosedDocument(doc: OpenDocument) {
   closedDocuments.unshift({
     title: doc.title,
     path: doc.path,
-    text: documentText(doc),
+    text: doc.paged ? "" : documentText(doc),
     encoding: doc.encoding,
     lineEnding: doc.lineEnding,
     fileSize: doc.fileSize,
@@ -5039,6 +5219,7 @@ function rememberClosedDocument(doc: OpenDocument) {
     language: doc.language,
     languageOverride: doc.languageOverride,
     largeFile: doc.largeFile,
+    paged: doc.paged,
     draftId: doc.draftId,
     creationIntent: doc.creationIntent,
     dirty: doc.dirty,
@@ -5062,6 +5243,7 @@ async function reopenClosedDocument() {
       return;
     }
   }
+  if (snapshot.paged && snapshot.path) { await openPath(snapshot.path, true); return; }
   const doc = createDocument(snapshot, {
     draftId: snapshot.draftId,
     creationIntent: snapshot.creationIntent,
@@ -5899,6 +6081,10 @@ function convertEncoding(encoding: EncodingLabel) {
 
 function findSelectedDocuments(showPanel = false, recordHistory = true, navigateToInitial = showPanel) {
   if (recordHistory) cancelScheduledCurrentFind();
+  const scope = searchAllOpenFilesEnabled() ? "open" : "current";
+  if ((scope === "open" ? state.documents : [activeDocument()]).some(doc => doc.paged)) {
+    void searchPagedDocuments(scope, showPanel, recordHistory, navigateToInitial); return;
+  }
   if (searchAllOpenFilesEnabled()) {
     findOpenDocuments(showPanel, recordHistory, navigateToInitial);
     return;
@@ -5907,6 +6093,7 @@ function findSelectedDocuments(showPanel = false, recordHistory = true, navigate
 }
 
 function findCurrent(showPanel = false, recordHistory = true, navigateToInitial = true) {
+  if (activeDocument().paged) { void searchPagedDocuments("current", showPanel, recordHistory, navigateToInitial); return; }
   const query = ($("findInput") as HTMLInputElement).value;
   if (!query) {
     log("查找内容不能为空");
@@ -5971,6 +6158,7 @@ function findCurrent(showPanel = false, recordHistory = true, navigateToInitial 
 }
 
 function findOpenDocuments(showPanel = false, recordHistory = true, navigateToInitial = showPanel) {
+  if (state.documents.some(doc => doc.paged)) { void searchPagedDocuments("open", showPanel, recordHistory, navigateToInitial); return; }
   const query = ($("findInput") as HTMLInputElement).value;
   if (!query) {
     log("查找内容不能为空");
@@ -6210,59 +6398,112 @@ function searchResultPinButton(index: number, line: number, batchId?: number, an
   return `<button class="search-result-pin" type="button" ${source} aria-label="固定第 ${line} 行用于对比" title="固定此行用于对比">${iconSvg("Pin")}</button>`;
 }
 
+function searchResultSnapshot(dataset: DOMStringMap): PinnedResultInput | undefined {
+  if (dataset.pinAnalysisRow !== undefined) {
+    const row = analysedRows?.[Number(dataset.pinAnalysisRow)];
+    if (row) return { kind: "search-analysis", text: row.text, fields: row.fields,
+      sources: [{ path: row.path, fileName: fileNameFromPath(row.path), line: row.line, column: row.column }] };
+    return;
+  }
+  const report = dataset.pinSearchBatchId === undefined ? state.results
+    : state.searchResultHistory.find(entry => entry.id === Number(dataset.pinSearchBatchId))?.report;
+  let index = Number(dataset.pinResultIndex);
+  if (!Number.isInteger(index) || index < 0) return;
+  for (const hit of report?.hits ?? []) {
+    if (index < hit.matches.length) {
+      const match = hit.matches[index];
+      return { kind: "search", text: match.lineText,
+        sources: [{ path: hit.path, fileName: hit.fileName, line: match.line, column: match.column }] };
+    }
+    index -= hit.matches.length;
+  }
+}
+
 function handleSearchResultPin(event: MouseEvent) {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-pin-result-index], [data-pin-analysis-row]");
   if (!button) return;
   event.preventDefault();
-  event.stopPropagation(); // Pinning must not also navigate to a result or change the active tab.
-  let snapshot: PinnedSearchResult | undefined;
-  if (button.dataset.pinAnalysisRow !== undefined) {
-    const row = analysedRows?.[Number(button.dataset.pinAnalysisRow)];
-    if (row) snapshot = { ...row, fileName: fileNameFromPath(row.path) };
-  } else {
-    const report = button.dataset.pinSearchBatchId === undefined ? state.results
-      : state.searchResultHistory.find(entry => entry.id === Number(button.dataset.pinSearchBatchId))?.report;
-    let index = Number(button.dataset.pinResultIndex);
-    if (!Number.isInteger(index) || index < 0) return;
-    for (const hit of report?.hits ?? []) {
-      if (index < hit.matches.length) {
-        const match = hit.matches[index];
-        snapshot = { path: hit.path, fileName: hit.fileName, line: match.line, column: match.column, text: match.lineText };
-        break;
-      }
-      index -= hit.matches.length;
+  event.stopPropagation();
+  const snapshot = searchResultSnapshot(button.dataset);
+  if (snapshot) addPinnedResults([snapshot]);
+}
+
+function selectedSearchResultRows(): HTMLElement[] {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed) return [];
+  return [...$("findResultsBody").querySelectorAll<HTMLElement>(".find-result-row")].filter(row => {
+    for (let i = 0; i < selection.rangeCount; i++) {
+      const range = selection.getRangeAt(i);
+      if (!range.intersectsNode(row)) continue;
+      const bounds = document.createRange(); bounds.selectNodeContents(row);
+      const overlap = range.cloneRange();
+      if (range.compareBoundaryPoints(Range.START_TO_START, bounds) < 0) overlap.setStart(bounds.startContainer, bounds.startOffset);
+      if (range.compareBoundaryPoints(Range.END_TO_END, bounds) > 0) overlap.setEnd(bounds.endContainer, bounds.endOffset);
+      if (!overlap.collapsed && overlap.toString().length > 0) return true;
     }
-  }
-  if (!snapshot) return;
-  state.pinnedSearchResult = pinSearchResultSnapshot(state.pinnedSearchResult, snapshot);
-  renderPinnedSearchResult(); // Keep the results DOM and scroll position intact.
+    return false;
+  });
+}
+
+function pinSelectedSearchResults() {
+  const snapshots = selectedSearchResultRows().flatMap(row => {
+    const button = row.closest(".find-result-item")?.querySelector<HTMLButtonElement>(".search-result-pin");
+    const snapshot = button && searchResultSnapshot(button.dataset);
+    return snapshot ? [snapshot] : [];
+  });
+  addPinnedResults(snapshots);
+}
+
+function addPinnedResults(inputs: readonly PinnedResultInput[]) {
+  const next = appendPinnedResults(state.pinnedResults, inputs);
+  if (next === state.pinnedResults) return;
+  state.pinnedResults = next;
+  renderPinnedSearchResult(); // Preserve both result scroll axes and the result selection.
   setBottomResultsHeight(state.bottomResultsHeight);
+  requestEditorLayout();
 }
 
 function renderPinnedSearchResult() {
-  const pin = state.pinnedSearchResult;
-  $("pinnedSearchComparison").classList.toggle("hidden", !pin);
-  if (!pin) {
-    for (const id of ["pinnedSearchFileName", "pinnedSearchLocation", "pinnedSearchPath", "pinnedSearchText"]) $(id).textContent = "";
-    return;
+  const pins = state.pinnedResults;
+  $("pinnedSearchComparison").classList.toggle("hidden", pins.length === 0);
+  $("pinnedResultsCount").textContent = `${pins.length} 条`;
+  const list = $("pinnedResultsList");
+  const existing = new globalThis.Map([...list.children].map(node => [(node as HTMLElement).dataset.pinId, node]));
+  const retained = new Set(pins.map(pin => pin.id));
+  for (const [id, node] of existing) if (!id || !retained.has(id)) node.remove();
+  for (const pin of pins) {
+    if (existing.has(pin.id)) continue;
+    const item = document.createElement("article"); item.className = "pinned-result-item"; item.dataset.pinId = pin.id;
+    const header = document.createElement("header");
+    const source = document.createElement("span"); source.className = "pinned-result-source";
+    const label = pin.kind === "analyse" ? "Analyse" : pin.kind === "search-analysis" ? "二次分析" : "搜索";
+    source.textContent = `${label} · ${pin.sources.map(row => `${row.fileName} · 第 ${row.line} 行 · 第 ${row.column} 列`).join("；")}`;
+    source.title = pin.sources.map(row => row.path || row.fileName).join("\n");
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "tool-button";
+    remove.dataset.unpinId = pin.id; remove.textContent = "取消"; remove.setAttribute("aria-label", `取消固定：${source.textContent}`);
+    header.append(source, remove);
+    const paths = document.createElement("div"); paths.className = "pinned-result-path";
+    paths.textContent = pin.sources.map(row => row.path || row.fileName).join("；"); paths.title = paths.textContent;
+    const text = document.createElement("pre"); text.tabIndex = 0; text.textContent = pin.text;
+    text.setAttribute("aria-label", `${label}固定内容`);
+    item.append(header, paths, text);
+    if (pin.fields || pin.analysis?.matchingPatternIds.length) {
+      const context = document.createElement("small");
+      context.textContent = pin.fields ? JSON.stringify(pin.fields) : `Pattern ${pin.analysis!.matchingPatternIds.join(", ")}`;
+      item.append(context);
+    }
+    list.append(item);
   }
-  const values = {
-    pinnedSearchFileName: pin.fileName,
-    pinnedSearchLocation: `第 ${pin.line} 行 · 第 ${pin.column} 列`,
-    pinnedSearchPath: pin.path,
-    pinnedSearchText: pin.text,
-  };
-  for (const [id, value] of Object.entries(values)) {
-    if ($(id).textContent !== value) $(id).textContent = value;
-  }
-  $("pinnedSearchPath").title = pin.path;
 }
 
-function unpinSearchResult() {
-  state.pinnedSearchResult = null;
+function unpinSearchResult(id?: string) {
+  const index = state.pinnedResults.findIndex(pin => pin.id === id);
+  state.pinnedResults = id ? removePinnedResult(state.pinnedResults, id) : [];
   renderPinnedSearchResult();
   syncBottomResults();
-  if ($("bottomResultsDock").classList.contains("hidden")) focusActiveEditor();
+  const buttons = $("pinnedResultsList").querySelectorAll<HTMLButtonElement>("[data-unpin-id]");
+  if (id && buttons.length) buttons[Math.min(Math.max(0, index), buttons.length - 1)].focus();
+  else if ($("bottomResultsDock").classList.contains("hidden")) focusActiveEditor();
   else $(activeBottomResultTool === "search" ? "bottomSearchResultsTab" : "bottomAnalyseResultsTab").focus();
 }
 
@@ -7277,7 +7518,7 @@ function applyEditorPerformanceProfile(doc: OpenDocument, target = editor) {
   document.documentElement.style.setProperty("--editor-font-size", `${state.fontSize}px`);
   target.updateOptions({
     readOnly: editorBusyDepth > 0 || closingEditorsLocked || doc.readOnly || isReadingDocument(doc),
-    lineNumbers: "on",
+    lineNumbers: doc.paged ? (line => String((pagedDocuments.get(doc.id)?.page?.startLine ?? 1)+line-1)) : "on",
     readOnlyMessage: { value: doc.readOnlyReason || "当前文档只读" },
     minimap: { enabled: !large && state.minimap },
     wordWrap: !large && state.wordWrap ? "on" : "off",
@@ -7286,6 +7527,7 @@ function applyEditorPerformanceProfile(doc: OpenDocument, target = editor) {
     fontFamily: editorFont,
     fontSize: state.fontSize,
     lineHeight: editorLineHeight(),
+    contextmenu: !doc.paged,
     folding: !large,
     links: !large,
     // Keep current-word occurrences available for large documents too. The
@@ -7313,6 +7555,7 @@ function markdownSearchOptions(): MarkdownSearchOptions {
 }
 
 function renderAll() {
+  renderPagedDocumentControls();
   renderMenus();
   renderWorkspace();
   renderChrome();
@@ -7623,10 +7866,14 @@ function renderDocumentStatus(doc = commandDocument()) {
   $("statusDocumentState").textContent = [doc.readOnly ? "只读" : doc.saving ? "正在保存" : doc.dirty ? "未保存" : "", doc.encodingStatus]
     .filter(Boolean)
     .join(" · ");
+  const position = commandEditor().getPosition() ?? { lineNumber: 1, column: 1 };
+  const page = doc.paged ? pagedDocuments.get(doc.id)?.page : undefined;
+  const sourceLine = position.lineNumber+(page?.startLine ?? 1)-1;
+  const sourceColumn = position.column+(position.lineNumber===1 ? (page?.startColumn ?? 1)-1 : 0);
   $("statusRight").innerHTML = [
-    `第 ${(commandEditor().getPosition()?.lineNumber ?? 1)} 行，第 ${commandEditor().getPosition()?.column ?? 1} 列`,
-    `${documentLineCount(doc)} 行`,
-    `${documentValueLength(doc)} 字符`,
+    `第 ${sourceLine} 行，第 ${sourceColumn} 列`,
+    `${documentLineCount(doc)} 行${doc.paged ? "（当前窗口）" : ""}`,
+    `${documentValueLength(doc)} 字符${doc.paged ? "（当前窗口）" : ""}`,
     `${formatBytes(doc.fileSize)}`,
     writingStatisticsLabel(doc),
   ].filter(Boolean).map((item) => `<span>${item}</span>`).join(`<span class="dot"></span>`);
@@ -8415,7 +8662,7 @@ function nativeResultsAvailable() {
     || state.workspaceSearchStatus === "error"
     || state.results !== null
     || state.searchResultHistory.length > 0
-    || Boolean(state.pinnedSearchResult)
+    || state.pinnedResults.length > 0
     || state.replacePreview !== null;
 }
 
@@ -8878,6 +9125,7 @@ async function openResult(path: string, line: number, column: number) {
 }
 
 function renderSearchDecorations() {
+  if (activeDocument()?.paged) { searchDecorations?.clear(); activeSearchDecoration?.clear(); return; }
   if (!searchDecorations || !activeSearchDecoration) return;
   if (!state.results || state.results.total === 0) {
     searchDecorations.clear();
@@ -9608,6 +9856,7 @@ function markdownEditModeLabel(mode: MarkdownEditMode) {
 }
 
 function isMarkdownLikeDocument(doc = activeDocument()) {
+  if (doc.paged) return false;
   if (isMarkdownLikeLanguage(doc.language)) return true;
   const name = (doc.path || doc.title).toLowerCase();
   return /\.(md|markdown|mdx|rmd)$/.test(name);
@@ -10412,6 +10661,12 @@ function transformToLowercase() {
 }
 
 async function goToLine() {
+  const doc = commandDocument();
+  if (doc.paged) {
+    const value = await askTextInput({ title: "跳转到行", subtitle: "在完整文件中定位，按需载入目标位置", label: "源文件行号", value: String(pagedDocuments.get(doc.id)?.page?.startLine ?? 1), inputMode: "numeric" });
+    if (value !== null && Number.isSafeInteger(Number(value)) && Number(value)>0) await navigateSourceLine(doc, Number(value), 1);
+    return;
+  }
   const targetEditor = commandEditor();
   const model = targetEditor.getModel();
   if (!model) return;
@@ -12050,7 +12305,7 @@ function markdownMatchesToDto(matches: MarkdownSearchMatch[]): TextMatchDto[] {
 }
 
 function highlightMatchLine(match: TextMatchDto) {
-  const start = Math.max(0, match.column - 1);
+  const start = Math.max(0, match.column - (match.previewStartColumn ?? 1));
   const before = match.lineText.slice(0, start);
   const matched = match.lineText.slice(start, start + match.matchedText.length);
   const after = match.lineText.slice(start + match.matchedText.length);
@@ -12470,6 +12725,7 @@ async function showWorkbenchError(error: unknown) {
 async function showSnapshotManager(kind: "recovery" | "history") {
   await recoveryQueue;
   const doc = activeDocument();
+  if (doc.paged) throw new Error("按需只读文档不能将当前窗口作为全文比较；请在普通文档中查看或恢复快照");
   const items = await invoke<SnapshotEntry[]>("list_snapshots", { request: { kind, key: kind === "history" ? recoveryKey(doc) : null } });
   const { showSnapshotPicker, showComparison } = await import("./workbenchPanels");
   await showSnapshotPicker(items, async (item) => {
@@ -12496,6 +12752,7 @@ async function showSnapshotManager(kind: "recovery" | "history") {
 
 async function compareWithDisk() {
   const doc = activeDocument();
+  if (doc.paged) throw new Error("此操作需要完整可编辑模型；按需只读文档不会将当前片段作为全文处理");
   if (!doc.path) throw new Error("当前文档尚未保存，没有磁盘版本");
   const disk = await invoke<DocumentDto>("open_path", { path: doc.path });
   const { showComparison } = await import("./workbenchPanels");
@@ -12520,12 +12777,14 @@ async function compareWithOtherFile() {
   if (!path) return;
   const other = await invoke<DocumentDto>("open_path", { path });
   const doc = activeDocument(); syncMarkdownModelFromEditor(doc);
+  if (doc.paged || other.paged) throw new Error("按需文档不能以局部窗口作为全文比较");
   const { showComparison } = await import("./workbenchPanels");
   await showComparison({ title: `${other.title} ↔ ${doc.title}`, original: other.text, modified: documentText(doc), language: doc.language, theme: workbenchEditorOptions().theme });
 }
 
 async function openSideEditor() {
   const doc = activeDocument(); syncMarkdownModelFromEditor(doc);
+  if (doc.paged) throw new Error("此操作需要完整可编辑模型；按需只读文档不会将当前片段作为全文处理");
   const { createSideEditor } = await import("./workbenchPanels");
   if (sideEditor) {
     const previous = state.documents.find((item) => item.id === sideDocumentId);
@@ -12624,6 +12883,7 @@ async function insertDocumentTemplate() {
 
 async function saveActiveDocumentTemplate() {
   const doc = activeDocument();
+  if (doc.paged) throw new Error("此操作需要完整可编辑模型；按需只读文档不会将当前片段作为全文处理");
   if (!isMarkdownLikeDocument(doc)) throw new Error("请先打开 Markdown 文档");
   syncMarkdownModelFromEditor(doc);
   closeMenus();

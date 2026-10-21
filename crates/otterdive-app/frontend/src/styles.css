@@ -1123,63 +1123,25 @@ select:focus-visible {
 }
 
 .bottom-results-dock:has(> .pinned-search-comparison:not(.hidden)) {
-  grid-template-rows: 32px auto minmax(0, 1fr);
+  grid-template-rows: 32px minmax(84px, 40%) minmax(0, 1fr);
 }
-
-.pinned-search-comparison {
-  min-width: 0;
-  padding: 4px 12px 6px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-2);
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-.pinned-search-comparison > header,
-.pinned-search-source {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-}
-
-.pinned-search-comparison > header strong {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-.pinned-search-comparison > header > span,
-#pinnedSearchPath {
-  overflow: hidden;
-  color: var(--text-3);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pinned-search-comparison > header .tool-button {
-  height: 24px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
+.pinned-search-comparison { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); background: var(--surface-2); user-select: text; -webkit-user-select: text; }
+.pinned-search-comparison > header, .pinned-result-item > header { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; }
+.pinned-search-comparison > header strong { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.pinned-search-comparison > header > span { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pinned-search-comparison .tool-button { height: 24px; margin-left: auto; flex-shrink: 0; }
 .pinned-search-comparison .lucide-icon { width: 14px; height: 14px; }
+.pinned-results-list { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.pinned-result-item { padding: 4px 0; border-top: 1px solid var(--line); }
+.pinned-result-source { min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pinned-result-path { color: var(--text-3); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pinned-result-item pre { max-height: 7.5em; overflow: auto; margin: 4px 0; color: var(--text); font: 12px/1.5 var(--editor-font); white-space: pre; }
+.pinned-result-item small { color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere; }
+#pinSelectedSearchResultsButton { margin-left: auto; white-space: nowrap; }
 @media (max-height: 760px) {
   .bottom-results-dock:has(> .pinned-search-comparison:not(.hidden)) .result-analysis-toolbar { max-height: 56px; }
 }
-.pinned-search-source { margin-top: 2px; }
-.pinned-search-source strong { max-width: 25%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#pinnedSearchLocation { flex-shrink: 0; color: var(--text-3); }
-#pinnedSearchText {
-  max-height: 3em;
-  overflow: auto;
-  margin: 4px 0 0;
-  color: var(--text);
-  font: 12px/1.5 var(--editor-font);
-  white-space: pre;
-}
+@media (max-width: 760px) { .pinned-search-comparison > header > span { display: none; } }
 
 .bottom-results-content > section {
   grid-column: 1;
@@ -7651,3 +7613,11 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 #editorArea.side-editor-open > #workbenchSidePane { grid-column: 2; grid-row: 1; }
 #editorArea.preview-open.side-editor-open:not(.markdown-reading) { grid-template-columns: minmax(0, 1fr) 8px minmax(200px, 30%) minmax(250px, 35%); }
 #editorArea.preview-open.side-editor-open:not(.markdown-reading) > #workbenchSidePane { grid-column: 4; }
+
+.editor-wrap.paged-document-open { grid-template-rows: auto auto minmax(0, 1fr); }
+.editor-wrap.paged-document-open #editor { grid-row: 3; }
+.editor-wrap.paged-document-open #pagedDocumentToolbar { grid-row: 2; grid-column: 1; }
+.paged-document-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; padding: 4px 8px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.paged-document-toolbar button { height: 24px; padding: 2px 6px; font-size: 11px; }
+.paged-document-toolbar input { min-width: 60px; width: 120px; }
+#pagedDocumentStatus { min-width: 0; overflow-wrap: anywhere; font-size: 11px; color: var(--text-3); }

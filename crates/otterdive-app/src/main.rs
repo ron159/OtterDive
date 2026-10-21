@@ -8,6 +8,7 @@ mod app;
 mod document_delivery;
 mod document_templates;
 mod file_revision;
+mod paged_document;
 mod pdf_export;
 mod project_links;
 mod session_store;

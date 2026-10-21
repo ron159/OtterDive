@@ -2,7 +2,7 @@ use crate::app::{
     SearchReportDto, SearchRequest, search_options_from_request, search_report_to_dto,
 };
 use otterdive_core::{analyse::CancellationToken, fs::search_directory_stream};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
@@ -93,4 +93,88 @@ pub fn cancel_workspace_search(
         cancel.cancel();
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentSearchSource {
+    path: String,
+    encoding: String,
+    revision: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentSearchRequest {
+    documents: Vec<DocumentSearchSource>,
+    options: SearchRequest,
+}
+#[tauri::command]
+pub fn start_document_search(
+    request: DocumentSearchRequest,
+    on_event: Channel<SearchEvent>,
+    service: tauri::State<'_, SearchService>,
+) -> Result<u64, String> {
+    let id = service.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let cancel = CancellationToken::new();
+    service
+        .runs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(id, cancel.clone());
+    let runs = service.runs.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let options = search_options_from_request(&request.options);
+        let mut truncated = false;
+        let mut error = None;
+        for source in request.documents {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let path = std::path::Path::new(&source.path);
+            let result =
+                crate::file_revision::ensure_revision(path, &source.revision).and_then(|_| {
+                    otterdive_core::fs::search_file_stream(
+                        path,
+                        &request.options.query,
+                        &options,
+                        Some(crate::app::parse_encoding(&source.encoding)),
+                        &cancel,
+                        |report| {
+                            on_event
+                                .send(SearchEvent {
+                                    report: search_report_to_dto(report),
+                                    done: false,
+                                    cancelled: false,
+                                    truncated: false,
+                                    error: None,
+                                })
+                                .is_ok()
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+                    .and_then(|limited| {
+                        crate::file_revision::ensure_revision(path, &source.revision)?;
+                        Ok(limited)
+                    })
+                });
+            match result {
+                Ok(limit) => truncated |= limit,
+                Err(reason) => {
+                    error = Some(reason);
+                    break;
+                }
+            }
+        }
+        let _ = on_event.send(SearchEvent {
+            report: search_report_to_dto(Default::default()),
+            done: true,
+            cancelled: cancel.is_cancelled(),
+            truncated,
+            error,
+        });
+        if let Ok(mut runs) = runs.lock() {
+            runs.remove(&id);
+        }
+    });
+    Ok(id)
 }

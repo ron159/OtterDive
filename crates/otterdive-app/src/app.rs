@@ -120,6 +120,7 @@ pub struct DocumentDto {
     pub read_only_reason: Option<String>,
     pub language: String,
     pub large_file: bool,
+    pub paged: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -451,6 +452,7 @@ pub struct TextMatchDto {
     pub column: usize,
     pub matched_text: String,
     pub line_text: String,
+    pub preview_start_column: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -694,6 +696,9 @@ pub fn run() {
             let store = SessionStore::new(database_path);
             store.initialize().map_err(std::io::Error::other)?;
             app.manage(store);
+            app.manage(std::sync::Arc::new(
+                crate::paged_document::PagedDocumentService::default(),
+            ));
             app.manage(AnalyseService::default());
             app.manage(ReplaceService::default());
             app.manage(crate::stream_search::SearchService::default());
@@ -713,6 +718,8 @@ pub fn run() {
             crate::workbench::store_markdown_asset,
             crate::workbench::migrate_markdown_assets,
             crate::workbench::read_file_chunk,
+            crate::paged_document::read_document_page,
+            crate::paged_document::cancel_document_page,
             crate::workbench::pandoc_status,
             crate::workbench::convert_document,
             crate::workbench::export_document_text,
@@ -739,6 +746,7 @@ pub fn run() {
             open_project_link,
             search_workspace,
             crate::stream_search::start_workspace_search,
+            crate::stream_search::start_document_search,
             crate::stream_search::cancel_workspace_search,
             preview_workspace_replace,
             apply_workspace_replace,
@@ -831,6 +839,12 @@ async fn open_path(path: String) -> Result<DocumentDto, String> {
 
 fn load_path(path: PathBuf) -> Result<DocumentDto, String> {
     let revision = crate::file_revision::revision(&path)?;
+    if fs::metadata(&path).map_err(|e| e.to_string())?.len() > EDITABLE_FILE_LIMIT_BYTES {
+        let mut dto = crate::paged_document::metadata(&path, None)?;
+        crate::file_revision::ensure_revision(&path, &revision)?;
+        dto.disk_revision = Some(revision);
+        return Ok(dto);
+    }
     let doc = LoadedDocument::open(&path)
         .map_err(|err| format!("打开失败：{}：{err}", path.display()))?;
     crate::file_revision::ensure_revision(&path, &revision)?;
@@ -844,8 +858,16 @@ async fn reopen_path_with_encoding(request: ReopenRequest) -> Result<DocumentDto
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(request.path);
         let revision = crate::file_revision::revision(&path)?;
-        let doc = LoadedDocument::open_with_encoding(&path, Some(parse_encoding(&request.encoding)))
-            .map_err(|err| format!("打开失败：{}：{err}", path.display()))?;
+        if fs::metadata(&path).map_err(|e| e.to_string())?.len() > EDITABLE_FILE_LIMIT_BYTES {
+            let mut dto =
+                crate::paged_document::metadata(&path, Some(parse_encoding(&request.encoding)))?;
+            crate::file_revision::ensure_revision(&path, &revision)?;
+            dto.disk_revision = Some(revision);
+            return Ok(dto);
+        }
+        let doc =
+            LoadedDocument::open_with_encoding(&path, Some(parse_encoding(&request.encoding)))
+                .map_err(|err| format!("打开失败：{}：{err}", path.display()))?;
         crate::file_revision::ensure_revision(&path, &revision)?;
         let mut dto = loaded_document_to_dto(doc);
         dto.disk_revision = Some(revision);
@@ -1275,6 +1297,7 @@ fn document_to_dto(doc: Document) -> DocumentDto {
         title: doc.title,
         path: path.map(|path| path.display().to_string()),
         language: language_from_path(path),
+        paged: false,
         large_file: doc.meta.read_only && doc.meta.file_size > EDITABLE_FILE_LIMIT_BYTES as usize,
         text: doc.text,
         encoding: encoding_label(doc.meta.encoding).to_owned(),
@@ -1293,6 +1316,7 @@ fn loaded_document_to_dto(doc: LoadedDocument) -> DocumentDto {
         title: doc.title,
         path: path.map(|path| path.display().to_string()),
         language: language_from_path(path),
+        paged: false,
         large_file: doc.meta.read_only && doc.meta.file_size > EDITABLE_FILE_LIMIT_BYTES as usize,
         text: doc.text,
         encoding: encoding_label(doc.meta.encoding).to_owned(),
@@ -1632,6 +1656,7 @@ fn match_to_dto(value: TextMatch) -> TextMatchDto {
         column: value.column,
         matched_text: value.matched_text,
         line_text: value.line_text,
+        preview_start_column: value.line_text_start_column,
     }
 }
 
@@ -1855,7 +1880,8 @@ mod large_document_tests {
 
     #[test]
     fn open_and_reopen_reject_a_real_empty_zip_without_changing_it() {
-        let path = std::env::temp_dir().join(format!("otterdive-rejected-{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("otterdive-rejected-{}.txt", std::process::id()));
         let mut zip = b"PK\x05\x06".to_vec();
         zip.resize(22, 0); // A valid empty ZIP central-directory record.
         std::fs::write(&path, &zip).unwrap();
@@ -1873,7 +1899,7 @@ mod large_document_tests {
     }
 
     #[test]
-    fn opening_large_document_preserves_the_complete_text() {
+    fn opening_large_document_automatically_uses_bounded_pages() {
         let path = std::env::temp_dir().join(format!("otterdive-large-dto-{}", std::process::id()));
         let mut temp = BufWriter::new(std::fs::File::create(&path).unwrap());
         for _ in 0..450_000 {
@@ -1885,14 +1911,14 @@ mod large_document_tests {
         let dto = load_path(path.clone()).unwrap();
         assert!(dto.read_only && dto.large_file);
         assert!(dto.file_size > 20_000_000);
-        assert_eq!(dto.text.len(), dto.file_size);
-        assert_eq!(dto.text.lines().count(), 450_000);
+        assert!(dto.paged);
+        assert!(dto.text.is_empty());
         let reopened = tauri::async_runtime::block_on(reopen_path_with_encoding(ReopenRequest {
             path: path.to_string_lossy().into_owned(),
             encoding: "UTF-8".to_owned(),
         }))
         .unwrap();
-        assert_eq!(reopened.text, dto.text);
+        assert!(reopened.paged && reopened.text.is_empty());
         assert_eq!(reopened.disk_revision, dto.disk_revision);
         std::fs::remove_file(path).unwrap();
     }
@@ -1971,5 +1997,15 @@ mod save_encoding_tests {
         save(&path, &path, "GBK", "中文🙂").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "中文🙂");
         fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+/// Labels accepted by the existing character-safe chunk reader.
+pub(crate) fn chunk_encoding(label: &str) -> &str {
+    match label {
+        "UTF-8-BOM" => "UTF-8 BOM",
+        "UTF-16 Little Endian" => "UTF-16 LE",
+        "UTF-16 Big Endian" => "UTF-16 BE",
+        other => other,
     }
 }

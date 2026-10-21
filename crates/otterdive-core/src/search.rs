@@ -59,6 +59,7 @@ pub struct TextMatch {
     pub column: usize,
     pub matched_text: String,
     pub line_text: String,
+    pub line_text_start_column: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +110,57 @@ impl SearchMatcher {
         }
     }
 
+    pub(crate) fn visit_bounded_matches(
+        &self,
+        text: &str,
+        mut visit: impl FnMut(TextMatch) -> bool,
+    ) {
+        let index = LineIndex::new(text);
+        for mat in self.pattern.find_iter(text) {
+            if mat.start() == mat.end()
+                || (self.whole_word && !is_whole_word(text, mat.start(), mat.end()))
+            {
+                continue;
+            }
+            let line_idx = index
+                .starts
+                .partition_point(|offset| *offset <= mat.start())
+                .saturating_sub(1);
+            let line_start = index.starts[line_idx];
+            let line_end = index
+                .starts
+                .get(line_idx + 1)
+                .map(|n| n.saturating_sub(1))
+                .unwrap_or(text.len());
+            let mut preview_start = mat.start().saturating_sub(1024).max(line_start);
+            while !text.is_char_boundary(preview_start) {
+                preview_start += 1;
+            }
+            let mut preview_end = (preview_start + 4096).min(line_end);
+            while !text.is_char_boundary(preview_end) {
+                preview_end -= 1;
+            }
+            let mut matched_end = mat.end().min(mat.start() + 2048);
+            while !text.is_char_boundary(matched_end) {
+                matched_end -= 1;
+            }
+            let hit = TextMatch {
+                range: MatchRange {
+                    start: mat.start(),
+                    end: mat.end(),
+                },
+                line: line_idx + 1,
+                column: text[line_start..mat.start()].encode_utf16().count() + 1,
+                line_text_start_column: text[line_start..preview_start].encode_utf16().count() + 1,
+                line_text: text[preview_start..preview_end].to_owned(),
+                matched_text: text[mat.start()..matched_end].to_owned(),
+            };
+            if !visit(hit) {
+                break;
+            }
+        }
+    }
+
     fn matching_ranges(&self, text: &str) -> Vec<(usize, usize)> {
         self.pattern
             .find_iter(text)
@@ -123,6 +175,7 @@ impl SearchMatcher {
 pub enum SearchError {
     EmptyQuery,
     InvalidRegex(String),
+    ReadFile(String),
     ReadOnlyDocument(String),
 }
 
@@ -130,6 +183,7 @@ impl std::fmt::Display for SearchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyQuery => write!(f, "查询内容不能为空"),
+            Self::ReadFile(err) => write!(f, "读取搜索源失败：{err}"),
             Self::InvalidRegex(err) => write!(f, "正则表达式错误：{err}"),
             Self::ReadOnlyDocument(reason) => write!(f, "文档只读：{reason}"),
         }
@@ -328,6 +382,7 @@ impl LineIndex {
             column,
             matched_text: text[start..end].to_owned(),
             line_text: text[line_start..line_end].to_owned(),
+            line_text_start_column: 1,
         }
     }
 }

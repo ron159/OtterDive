@@ -302,7 +302,7 @@
             <nav class="outline-list" id="outlineList" aria-label="章节导航"></nav>
           </aside>
         <section class="editor-area" id="editorArea">
-          <div class="editor-wrap">
+          <div class="editor-wrap" id="editorWrap">
             <div class="current-find-dock hidden" id="currentFindDock">
               <div class="current-find-bar">
                 <div class="current-find-query">
@@ -333,6 +333,11 @@
                 </div>
               </div>
               <div class="current-find-history-menu hidden" id="currentFindHistoryMenu" role="listbox" aria-label="搜索历史"></div>
+            </div>
+            <div id="pagedDocumentToolbar" class="paged-document-toolbar hidden" aria-label="按需只读文件导航">
+              <button id="pagedFirstButton" type="button">开头</button><button id="pagedPreviousButton" type="button">上一段</button><button id="pagedNextButton" type="button">下一段</button><button id="pagedLastButton" type="button">末尾</button><button id="pagedCancelButton" type="button">取消读取</button>
+              <input id="pagedFilePosition" type="range" min="0" max="1" value="0" aria-label="完整文件位置" />
+              <span id="pagedDocumentStatus" role="status">准备按需读取…</span>
             </div>
             <div id="editor"></div>
             <div id="markdownWysiwyg" class="markdown-wysiwyg" aria-label="Markdown 即时编辑器" aria-hidden="true"></div>
@@ -1146,14 +1151,13 @@
             <span class="icon-slot" data-icon="X"></span>
           </button>
         </header>
-        <section class="pinned-search-comparison hidden" id="pinnedSearchComparison" aria-label="固定行对比">
-          <header><strong><span class="icon-slot" data-icon="Pin"></span>固定对比</strong><span>固定时快照 · 新的固定行会替换当前行</span><button class="tool-button" id="unpinSearchResultButton" type="button">取消固定</button></header>
-          <div class="pinned-search-source"><strong id="pinnedSearchFileName"></strong><span id="pinnedSearchLocation"></span><span id="pinnedSearchPath"></span></div>
-          <pre id="pinnedSearchText" tabindex="0" aria-label="固定时的行内容"></pre>
+        <section class="pinned-search-comparison hidden" id="pinnedSearchComparison" aria-label="固定结果对比">
+          <header><strong><span class="icon-slot" data-icon="Pin"></span>固定对比 <span id="pinnedResultsCount" aria-live="polite"></span></strong><span>独立快照 · 可选多行追加</span><button class="tool-button" id="clearPinnedResultsButton" type="button">清空固定</button></header>
+          <div id="pinnedResultsList" class="pinned-results-list" role="list" aria-label="已固定的搜索与 Analyse 结果"></div>
         </section>
         <div class="bottom-results-content">
           <section class="find-results-pane hidden" id="searchResultsPane" aria-label="搜索结果" aria-live="polite" aria-busy="false">
-            <header><strong id="findResultsTitle">搜索结果</strong><span id="findResultsSummary">等待搜索</span></header>
+            <header><strong id="findResultsTitle">搜索结果</strong><span id="findResultsSummary">等待搜索</span><button class="tool-button" id="pinSelectedSearchResultsButton" type="button" disabled title="拖选多行结果文本后，一次固定所选结果行">固定选中行</button></header>
             <div class="result-analysis-toolbar" id="resultAnalysisToolbar">
               <select id="resultAnalysisSource" aria-label="分析来源"><option value="current">当前搜索结果</option></select>
               <input id="resultAnalysisQuery" placeholder="在结果中筛选；提取时输入捕获组正则" aria-label="结果分析条件" />

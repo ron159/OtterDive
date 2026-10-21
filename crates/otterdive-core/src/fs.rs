@@ -996,3 +996,210 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 }
+
+/// Inspect a bounded text sample independently of any editor/model size policy.
+pub fn inspect_text_sample(
+    bytes: Vec<u8>,
+    encoding: Option<EncodingKind>,
+) -> io::Result<DecodedText> {
+    let forced_utf16 = matches!(
+        encoding,
+        Some(EncodingKind::Utf16Le | EncodingKind::Utf16Be)
+    );
+    if has_binary_signature(&bytes) || (!forced_utf16 && is_probably_binary(&bytes)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "不支持将 ZIP 或二进制文件作为文本打开；原文件未修改",
+        ));
+    }
+    let decoded = match encoding {
+        Some(encoding) => decode_owned_bytes_with_encoding(bytes, encoding),
+        None => decode_owned_bytes(bytes),
+    };
+    if decoded.text.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "不支持将二进制文件作为文本打开；原文件未修改",
+        ));
+    }
+    Ok(decoded)
+}
+
+/// Explicit full-file operations run off the UI thread, with cancellation during the read.
+/// The editor never uses this to populate its model.
+pub fn read_text_cancellable(
+    path: &Path,
+    encoding: Option<EncodingKind>,
+    cancel: &crate::analyse::CancellationToken,
+) -> io::Result<DecodedText> {
+    const LIMIT: u64 = 512 * 1024 * 1024;
+    if fs::metadata(path)?.len() > LIMIT {
+        return Err(io::Error::other(
+            "全文搜索/分析超过 512 MiB 后台内存安全上限；未改为局部搜索",
+        ));
+    }
+    let mut file = fs::File::open(path)?.take(LIMIT + 1);
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "任务已取消"));
+        }
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if bytes.len() as u64 > LIMIT {
+            return Err(io::Error::other("文件增长超过后台安全上限"));
+        }
+    }
+    inspect_text_sample(bytes, encoding)
+}
+
+pub fn search_file_stream(
+    path: &Path,
+    query: &str,
+    options: &SearchOptions,
+    encoding: Option<EncodingKind>,
+    cancel: &crate::analyse::CancellationToken,
+    mut emit: impl FnMut(DirectorySearchReport) -> bool,
+) -> Result<bool, SearchError> {
+    let matcher = SearchMatcher::new(query, options)?;
+    let decoded = read_text_cancellable(path, encoding, cancel)
+        .map_err(|e| SearchError::ReadFile(e.to_string()))?;
+    let normalized = decoded.text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut batch = Vec::new();
+    let mut total = 0;
+    let mut truncated = false;
+    matcher.visit_bounded_matches(&normalized, |hit| {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        if total >= 100_000 {
+            truncated = true;
+            return false;
+        }
+        total += 1;
+        batch.push(hit);
+        if batch.len() == 128 {
+            if !emit(DirectorySearchReport {
+                hits: vec![FileHit {
+                    path: path.into(),
+                    encoding: decoded.encoding,
+                    matches: std::mem::take(&mut batch),
+                }],
+                ..Default::default()
+            }) {
+                cancel.cancel();
+            }
+        }
+        !cancel.is_cancelled()
+    });
+    if !batch.is_empty() {
+        emit(DirectorySearchReport {
+            hits: vec![FileHit {
+                path: path.into(),
+                encoding: decoded.encoding,
+                matches: batch,
+            }],
+            ..Default::default()
+        });
+    }
+    Ok(truncated)
+}
+
+#[cfg(test)]
+mod paged_search_tests {
+    use super::*;
+    use crate::analyse::CancellationToken;
+    use std::io::Write;
+    #[test]
+    fn full_file_search_finds_tail_beyond_32_mib_with_utf16_columns_and_crlf() {
+        let path = std::env::temp_dir().join(format!(
+            "otterdive-fullpath-search-{}.txt",
+            std::process::id()
+        ));
+        let mut file = fs::File::create(&path).unwrap();
+        let block = b"ordinary text\r\n".repeat(4096);
+        let mut bytes = 0;
+        let mut lines = 0;
+        while bytes < 33 * 1024 * 1024 {
+            file.write_all(&block).unwrap();
+            bytes += block.len();
+            lines += 4096;
+        }
+        file.write_all("甲😀 TAIL_TARGET\r\nnext line".as_bytes())
+            .unwrap();
+        drop(file);
+        let mut hits = Vec::new();
+        let started = Instant::now();
+        let limited = search_file_stream(
+            &path,
+            "TAIL_TARGET",
+            &SearchOptions::default(),
+            Some(EncodingKind::Utf8),
+            &CancellationToken::new(),
+            |report| {
+                hits.extend(report.hits.into_iter().flat_map(|hit| hit.matches));
+                true
+            },
+        )
+        .unwrap();
+        assert!(!limited);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, lines + 1);
+        assert_eq!(hits[0].column, 5);
+        assert!(hits[0].line_text.contains("TAIL_TARGET"));
+        eprintln!(
+            "33 MiB full-file search {:?}, tail source line {}",
+            started.elapsed(),
+            hits[0].line
+        );
+        let mut options = SearchOptions::default();
+        options.mode = crate::SearchMode::Regex;
+        let mut multiline = 0;
+        search_file_stream(
+            &path,
+            "TAIL_TARGET\\nnext",
+            &options,
+            Some(EncodingKind::Utf8),
+            &CancellationToken::new(),
+            |r| {
+                multiline += r.hits.iter().map(|h| h.matches.len()).sum::<usize>();
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(multiline, 1);
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn a_long_line_never_becomes_a_whole_line_ipc_payload_and_cancellation_is_preserved() {
+        let path =
+            std::env::temp_dir().join(format!("otterdive-long-search-{}.txt", std::process::id()));
+        fs::write(&path, format!("{}TARGET", "甲".repeat(12 * 1024 * 1024))).unwrap();
+        let mut hits = Vec::new();
+        search_file_stream(
+            &path,
+            "TARGET",
+            &SearchOptions::default(),
+            Some(EncodingKind::Utf8),
+            &CancellationToken::new(),
+            |r| {
+                hits.extend(r.hits.into_iter().flat_map(|h| h.matches));
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 1);
+        assert!(hits[0].line_text.len() <= 4096);
+        assert!(hits[0].line_text.contains("TARGET"));
+        assert!(hits[0].line_text_start_column > 1_000_000);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(read_text_cancellable(&path, None, &cancel).is_err());
+        fs::remove_file(path).unwrap();
+    }
+}

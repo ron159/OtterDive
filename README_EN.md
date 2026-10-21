@@ -24,7 +24,7 @@ Large logs, cross-file searches, and complex rule analysis often force you to ju
 ## ✨ Feature Highlights
 
 - 📂 **Files and workspaces**: Open content in single-file or workspace mode by selecting or dragging files and folders.
-- ✍️ **Monaco editing experience**: Detect dozens of languages by file name and extension, with syntax highlighting, completion, folding, bracket matching, and multiple cursors; large files load in full and display continuously, with reading and decoding performed in the background. Files above 20 MiB remain read-only for editing protection.
+- ✍️ **Monaco editing experience**: Detect dozens of languages by file name and extension, with syntax highlighting, completion, folding, bracket matching, and multiple cursors; normal Open automatically uses background on-demand reading above 20 MiB. Monaco loads neighboring chunks during continuous scrolling and retains a bounded window. The existing read-only protection remains.
 - 🧹 **Local code formatting**: Format JavaScript, TypeScript, JSX, TSX, JSON, JSONC, Markdown, TOML, Python, and Dockerfile content with bundled dprint WASM plugins, plus dedicated SQL formatting, without runtime network access.
 - ⌨️ **Familiar keybindings**: Choose the built-in VS Code or Notepad++ profile, browse commands by group, and customize bindings.
 - 📝 **Complete Markdown workflow**: Use instant editing, source and split-preview modes, outlines, tables, task lists, math, remote images, Mermaid, PlantUML, and Vega diagrams.
@@ -33,20 +33,22 @@ Large logs, cross-file searches, and complex rule analysis often force you to ju
 - 📋 **Templates and snippets**: Create documents from templates, insert snippets, save the current document as a template, and manage local templates with title, date, and time variables.
 - 📦 **Portable document bundles**: Export the current Markdown, linked documents, images, and local attachments as a ZIP with relative links, reporting missing or out-of-scope resources.
 - 🔎 **Multi-scope search**: Search the current file, all open documents, or an entire workspace with normal, extended, and regular-expression modes, result navigation, and replacement previews. Workspace searches deliver batches and can be cancelled while keeping partial results.
-- 📌 **Pin a result for comparison**: Use the pin beside a result to keep one snapshot above the results, with its source and line/column. It stays visible while scrolling, switching result panes, or closing the source tab. A new pin replaces it; unpin at any time. Pins are not restored after restart.
+- 📌 **Pin a result for comparison**: Append independent snapshots to a shared comparison area. Search supports selected rows; Analyse supports multiple lines and multiple selections, including complete analysis payloads. Each item retains its source and line/column. Repeated pins are deduplicated; scrolling, new searches, pane switches and source closure preserve pins. Remove one or clear all. Pins are not restored after restart.
 - 🧮 **Analyze search results**: Chain inclusion/exclusion filters, capture-group extraction and deduplication over current or historical results, with undo, CSV/JSON export and preserved source locations.
 - 🧩 **Analyse rule processing**: Import compatible XML profiles, run Normal, Escaped, Regex, and multiline Regex rules, and generate merged results, styles, bookmarks, HTML, and RTF output.
 - 🔤 **Encoding and line endings**: Detect and convert UTF-8, UTF-8 BOM, UTF-16, and ANSI encodings, with LF, CRLF, and CR support.
 - 💾 **Session restoration**: Restore drafts, open tabs, window placement, workspaces, search history, Analyse settings, and editor preferences.
 - 🎨 **Consistent desktop experience**: Use custom window chrome, light and dark themes, file-type icons, and configurable editor appearance.
 
-ZIP and binary files are rejected by the text editor. Both source files and decoded text are limited to 32 MiB. For larger files, use **File → Open large file / live log…** for chunked reading.
+ZIP and binary files are rejected by the text editor. Normal Open automatically handles 32/33 MiB and larger text with approximately 256 KiB background reads, automatic forward/backward loading during scrolling, and at most three neighboring chunks retained. A whole-file position slider, source-line navigation, cancellation and immediate tab closure remain available. Files above 20 MiB are read-only: full editing, Save As and treating a partial window as a whole-document export are unavailable.
 
-Within that limit, large and small files use the complete document for search, line navigation, and analysis, without the former pagination or 64 KiB long-line preview truncation. Workspace search returns results in batches, supports cancellation, and no longer skips files above 20 MiB by default or applies the former 50,000-match / 32 MiB result limits. Workspace replacement still skips files above 20 MiB. Practical capacity and performance depend on available memory, file size, and search result volume. Search result history retains the five most recent searches.
+On-demand documents still search and Analyse the complete source file in the background, with global source line/column navigation. Full-file operations have a 512 MiB memory safety limit. Search returns up to 100,000 results per on-demand file with an explicit stop notice, and long-line previews are bounded to about 4 KiB without changing source locations. Analyse explicitly rejects a single result above 256 KiB; ordinary multiline payloads are preserved. Cross-page selection search and full-model comparisons are unavailable. Workspace search returns results in batches, supports cancellation, and no longer skips files above 20 MiB by default or applies the former 50,000-match / 32 MiB result limits. Workspace replacement still skips files above 20 MiB. Practical capacity and performance depend on available memory, file size, and search result volume. Search result history retains the five most recent searches.
 
 ## Project Status
 
-OtterDive is under active development. GitHub Releases provide Windows x64, macOS ARM64, and Linux x64 packages. 
+The current release is **v0.8.4**. See the [English changelog](CHANGELOG_EN.md) or [中文更新日志](CHANGELOG.md). OtterDive is under active development. GitHub Releases provide Windows x64, macOS ARM64, and Linux x64 packages.
+
+The known macOS bundle signing/notarization defect remains unresolved; Gatekeeper approval is not guaranteed. Updater signatures are distinct from Apple Developer ID signing and notarization.
 
 ## Local Development
 

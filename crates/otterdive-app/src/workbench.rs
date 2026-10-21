@@ -765,7 +765,7 @@ pub struct ReadChunkRequest {
     pub previous_fingerprint: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileChunk {
     pub text: String,
@@ -896,7 +896,7 @@ fn complete_utf8_prefix(bytes: &[u8]) -> usize {
     }
 }
 
-fn read_chunk(request: ReadChunkRequest) -> Result<FileChunk, String> {
+pub(crate) fn read_chunk(request: ReadChunkRequest) -> Result<FileChunk, String> {
     let mut file = File::open(&request.path).map_err(|error| format!("读取文件失败：{error}"))?;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
     if !metadata.is_file() {
