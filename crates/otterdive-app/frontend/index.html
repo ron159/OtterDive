@@ -213,6 +213,7 @@
           <button class="menu-row" id="menuUppercaseButton" role="menuitem"><span class="icon-slot" data-icon="CaseUpper"></span><strong>转为大写</strong><small></small></button>
           <button class="menu-row" id="menuLowercaseButton" role="menuitem"><span class="icon-slot" data-icon="CaseLower"></span><strong>转为小写</strong><small></small></button>
           <button class="menu-row" id="menuFormatDocumentButton" role="menuitem"><span class="icon-slot" data-icon="Braces"></span><strong>格式化文档</strong><small>Shift+Alt+F</small></button>
+          <button class="menu-row" id="menuOptimizeSpacingButton" role="menuitem" title="优化 Markdown 或纯文本中的中英文、数字间距；选中时仅处理选区"><span class="icon-slot" data-icon="Type"></span><strong>优化中英文间距</strong><small>选区 / 全文</small></button>
           <div class="menu-divider"></div>
           <button class="menu-row" id="menuSelectAllButton" role="menuitem"><span class="icon-slot" data-icon="Check"></span><strong>全选</strong><small>Ctrl+A</small></button>
         </div>
@@ -1147,12 +1148,13 @@
               <span class="icon-slot" data-icon="Sigma"></span><span>Analyse 结果</span>
             </button>
           </div>
+          <button class="tool-button hidden" id="togglePinnedResultsButton" type="button" aria-controls="pinnedSearchComparison" aria-expanded="true" title="显示或收起固定对比"><span class="icon-slot" data-icon="Pin"></span><span id="pinnedResultsToggleLabel">固定对比</span></button>
           <button class="bottom-results-close" id="closeBottomResultsButton" type="button" aria-label="关闭结果区域" title="关闭结果区域">
             <span class="icon-slot" data-icon="X"></span>
           </button>
         </header>
         <section class="pinned-search-comparison hidden" id="pinnedSearchComparison" aria-label="固定结果对比">
-          <header><strong><span class="icon-slot" data-icon="Pin"></span>固定对比 <span id="pinnedResultsCount" aria-live="polite"></span></strong><span>独立快照 · 可选多行追加</span><button class="tool-button" id="clearPinnedResultsButton" type="button">清空固定</button></header>
+          <header><strong><span class="icon-slot" data-icon="Pin"></span>固定对比 <span id="pinnedResultsCount" aria-live="polite"></span></strong><button class="tool-button" id="clearPinnedResultsButton" type="button">清空</button><button class="tool-button" id="collapsePinnedResultsButton" type="button" aria-label="收起固定对比" title="收起固定对比"><span class="icon-slot" data-icon="X"></span></button></header>
           <div id="pinnedResultsList" class="pinned-results-list" role="list" aria-label="已固定的搜索与 Analyse 结果"></div>
         </section>
         <div class="bottom-results-content">

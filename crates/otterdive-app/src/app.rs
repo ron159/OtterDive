@@ -236,6 +236,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 
     let uppercase = macos_menu_item(app, "edit.uppercase", "转为大写", None)?;
     let lowercase = macos_menu_item(app, "edit.lowercase", "转为小写", None)?;
+    let optimize_spacing = macos_menu_item(app, "edit.optimizeSpacing", "优化中英文间距", None)?;
     let insert_template = macos_menu_item(app, "markdown.insertTemplate", "插入模板片段…", None)?;
     let format_document = macos_menu_item(
         app,
@@ -253,6 +254,7 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         .select_all_with_text("全选")
         .separator()
         .items(&[&uppercase, &lowercase, &format_document])
+        .item(&optimize_spacing)
         .item(&insert_template)
         .build()?;
 

@@ -1122,26 +1122,21 @@ select:focus-visible {
   overflow: hidden;
 }
 
-.bottom-results-dock:has(> .pinned-search-comparison:not(.hidden)) {
-  grid-template-rows: 32px minmax(84px, 40%) minmax(0, 1fr);
-}
-.pinned-search-comparison { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; padding: 4px 12px 6px; border-bottom: 1px solid var(--line); background: var(--surface-2); user-select: text; -webkit-user-select: text; }
+.pinned-search-comparison { position: absolute; top: 40px; right: 12px; z-index: 12; width: min(640px, calc(100% - 24px)); max-height: calc(100% - 48px); display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); user-select: text; -webkit-user-select: text; }
 .pinned-search-comparison > header, .pinned-result-item > header { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; }
 .pinned-search-comparison > header strong { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.pinned-search-comparison > header > span { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pinned-search-comparison .tool-button { height: 24px; margin-left: auto; flex-shrink: 0; }
+.pinned-search-comparison > header strong { margin-right: auto; }
+.pinned-search-comparison .tool-button { height: 24px; flex-shrink: 0; }
+.pinned-result-item .tool-button { margin-left: auto; }
+#togglePinnedResultsButton { margin-left: auto; height: 26px; white-space: nowrap; }
 .pinned-search-comparison .lucide-icon { width: 14px; height: 14px; }
-.pinned-results-list { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.pinned-results-list { min-height: 0; max-height: 280px; overflow: auto; overscroll-behavior: contain; }
 .pinned-result-item { padding: 4px 0; border-top: 1px solid var(--line); }
 .pinned-result-source { min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pinned-result-path { color: var(--text-3); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pinned-result-item pre { max-height: 7.5em; overflow: auto; margin: 4px 0; color: var(--text); font: 12px/1.5 var(--editor-font); white-space: pre; }
 .pinned-result-item small { color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere; }
 #pinSelectedSearchResultsButton { margin-left: auto; white-space: nowrap; }
-@media (max-height: 760px) {
-  .bottom-results-dock:has(> .pinned-search-comparison:not(.hidden)) .result-analysis-toolbar { max-height: 56px; }
-}
-@media (max-width: 760px) { .pinned-search-comparison > header > span { display: none; } }
 
 .bottom-results-content > section {
   grid-column: 1;
@@ -1209,7 +1204,7 @@ select:focus-visible {
 
 @media (max-width: 760px), (max-height: 760px) {
   #app.bottom-results-open {
-    /* JavaScript caps the height and reserves room for the pinned comparison. */
+    /* JavaScript caps the height without reserving space for the floating pins. */
     grid-template-rows: 40px 42px 34px minmax(100px, 1fr) var(--bottom-results-height, 220px) 30px;
   }
 }
@@ -7013,6 +7008,37 @@ html:not(.platform-macos) .monaco-scrollable-element > .scrollbar > .slider {
   box-shadow: inset 0 1px 0 var(--glass-row-glint);
   backdrop-filter: blur(14px) saturate(1.35);
   -webkit-backdrop-filter: blur(14px) saturate(1.35);
+}
+
+/* Dark settings use flat surfaces without light-colored shadows or backdrop bleed. */
+.platform-macos body.dark {
+  --macos-glass-shadow: none;
+}
+
+body.dark .settings-page {
+  background: var(--bg);
+}
+
+body.dark .settings-sidebar,
+body.dark .settings-content {
+  background: var(--surface);
+}
+
+body.dark .settings-sidebar,
+body.dark .settings-content,
+body.dark .pinned-search-comparison,
+body.dark .settings-nav-item,
+body.dark .settings-close,
+body.dark .theme-card,
+body.dark .theme-card:hover,
+body.dark .theme-card.active,
+body.dark .theme-color-grid label,
+body.dark .settings-list,
+body.dark .keybinding-group,
+body.dark .about-block {
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .platform-macos *:hover {

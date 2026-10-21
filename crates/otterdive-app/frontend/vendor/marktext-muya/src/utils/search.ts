@@ -133,12 +133,19 @@ export function matchString(text: string, value: string, options: ISearchOption)
         });
     }
 
-    if (isWholeWord)
-        regStr = `\\b${regStr}\\b`;
-
     const regexp = createSearchRegExp(regStr, flag, !!isRegexp);
+    const matches = regexp ? alignToGraphemeClusters(text, execAll(regexp, text), !!isRegexp) : [];
+    if (!isWholeWord)
+        return matches;
 
-    return regexp ? alignToGraphemeClusters(text, execAll(regexp, text), !!isRegexp) : [];
+    // Match the source editor's Unicode boundaries without changing regex groups or alternatives.
+    return matches.filter(({ index, match }) => {
+        const end = index + match.length;
+        const before = Array.from(text.slice(Math.max(0, index - 2), index)).at(-1) ?? '';
+        const after = Array.from(text.slice(end, end + 2))[0] ?? '';
+        const wordCharacter = /^[\p{L}\p{N}_]$/u;
+        return !wordCharacter.test(before) && !wordCharacter.test(after);
+    });
 }
 
 // `$nn` is read as in VS Code's find widget: group nn when the pattern has one,

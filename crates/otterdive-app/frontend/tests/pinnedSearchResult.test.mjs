@@ -5,7 +5,7 @@ import test from 'node:test';
 import ts from 'typescript';
 const source = fs.readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
 const ast = ts.createSourceFile('main.ts',source,ts.ScriptTarget.Latest,true);
-const names = new Set(['searchResultPinButton','searchResultSnapshot','handleSearchResultPin','addPinnedResults','renderPinnedSearchResult','unpinSearchResult','nativeResultsAvailable','syncBottomResults','openBottomResults','closeBottomResults','clearSearchResults','resetSearchResults','closeDocument','bottomResultsMaxHeight']);
+const names = new Set(['searchResultPinButton','searchResultSnapshot','handleSearchResultPin','addPinnedResults','setPinnedResultsOpen','renderPinnedSearchResult','unpinSearchResult','nativeResultsAvailable','syncBottomResults','openBottomResults','closeBottomResults','clearSearchResults','resetSearchResults','closeDocument','bottomResultsMaxHeight']);
 const js = ts.transpileModule(ast.statements.filter(n=>ts.isFunctionDeclaration(n)&&names.has(n.name?.text)).map(n=>n.getText(ast)).join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 const moduleJs = ts.transpileModule(fs.readFileSync(new URL('../src/pinnedSearchResult.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText.replace(/^export /gm,'');
 const noop=()=>{};
@@ -25,7 +25,7 @@ function setup(){
  const match={line:23,column:7,lineText:'<script>snapshot & text</script>'};
  const report={total:1,hits:[{path:'/one/same.txt',fileName:'same.txt',matches:[match]}]};
  const state={pinnedResults:[],documents:[{id:1,path:'/one/same.txt'},{id:2,path:'/two/same.txt'}],activeId:2,results:report,searchResultHistory:[],replacePreview:null,workspaceSearchStatus:'idle'};
- const context={state,analysedRows:null,activeBottomResultTool:'search',analyseResultsAvailable:true,$:node,document:{createElement:tag=>new Element(tag)},iconSvg:()=>'<svg></svg>',fileNameFromPath:p=>p.split('/').pop(),workspaceSearchIsBusy:()=>false,requestEditorLayout:noop,setBottomResultsHeight:noop,MIN_BOTTOM_RESULTS_HEIGHT:160,window:{requestAnimationFrame:noop,innerWidth:1024,innerHeight:640},analysePanel:null,focusActiveEditor:()=>{focused='editor';},resetResultAnalysis:()=>{context.analysedRows=null;},renderSearchSidebarResults:noop,searchDecorations:null,activeSearchDecoration:null,markdownEditor:null,setCurrentFindError:noop,renderCurrentFindCount:noop,log:noop,confirmDocumentCanClose:async()=>true,rememberMarkdownLocation:noop,rememberClosedDocument:noop,discardRecovery:noop,writingStatsCache:new Map(),pagedDocuments:new Map(),closeSideEditorFor:noop,cancelAutoSave:noop,disposeMarkdownEditor:noop,markdownSessions:new Map(),cancelDocumentSizeUpdate:noop,activateDocument:id=>{state.activeId=id;},renderAll:noop,scheduleSessionSave:noop};
+ const context={state,pinnedResultsOpen:true,analysedRows:null,activeBottomResultTool:'search',analyseResultsAvailable:true,$:node,document:{createElement:tag=>new Element(tag)},iconSvg:()=>'<svg></svg>',fileNameFromPath:p=>p.split('/').pop(),workspaceSearchIsBusy:()=>false,requestEditorLayout:noop,setBottomResultsHeight:noop,MIN_BOTTOM_RESULTS_HEIGHT:160,window:{requestAnimationFrame:noop,innerWidth:1024,innerHeight:640},analysePanel:null,focusActiveEditor:()=>{focused='editor';},resetResultAnalysis:()=>{context.analysedRows=null;},renderSearchSidebarResults:noop,searchDecorations:null,activeSearchDecoration:null,markdownEditor:null,setCurrentFindError:noop,renderCurrentFindCount:noop,log:noop,confirmDocumentCanClose:async()=>true,rememberMarkdownLocation:noop,rememberClosedDocument:noop,discardRecovery:noop,writingStatsCache:new Map(),pagedDocuments:new Map(),closeSideEditorFor:noop,cancelAutoSave:noop,disposeMarkdownEditor:noop,markdownSessions:new Map(),cancelDocumentSizeUpdate:noop,activateDocument:id=>{state.activeId=id;},renderAll:noop,scheduleSessionSave:noop};
  vm.createContext(context);vm.runInContext(moduleJs,context);vm.runInContext(js,context);
  const pin=dataset=>context.handleSearchResultPin({target:{closest:()=>({dataset})},preventDefault:noop,stopPropagation:noop});
  return {context,state,report,match,node,pin,focused:()=>focused};
@@ -65,8 +65,23 @@ test('pane switching, a new search, clearing results, closing source and dock re
 test('stale rows are ignored and compact layout remains bounded outside scrolling/swappable panes',()=>{
  const h=setup();h.pin({pinResultIndex:'0'});const pins=h.state.pinnedResults;
  h.pin({pinResultIndex:'-1'});h.pin({pinResultIndex:'0',pinSearchBatchId:'missing'});h.pin({pinAnalysisRow:'0'});assert.equal(h.state.pinnedResults,pins);
- assert.equal(h.context.bottomResultsMaxHeight(),320);
+ assert.equal(h.context.bottomResultsMaxHeight(),204);
  const html=fs.readFileSync(new URL('../index.html',import.meta.url),'utf8');assert.ok(html.indexOf('id="pinnedSearchComparison"')<html.indexOf('class="bottom-results-content"'));
  const save=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='saveSession');assert.doesNotMatch(save.getText(ast),/pinnedResults/);
  assert.match(html,/id="pinSelectedSearchResultsButton"/);assert.match(source,/selection\.getRangeAt/);
+});
+
+test('floating pins collapse without losing snapshots and reopen when pinning the same result',()=>{
+ const h=setup();const height=h.context.bottomResultsMaxHeight();h.pin({pinResultIndex:'0'});
+ assert.equal(h.context.bottomResultsMaxHeight(),height);
+ h.context.setPinnedResultsOpen(false);
+ assert.equal(h.node('pinnedSearchComparison').classList.contains('hidden'),true);
+ assert.equal(h.node('togglePinnedResultsButton').attributes['aria-expanded'],'false');
+ assert.equal(h.focused(),h.node('togglePinnedResultsButton'));
+ h.pin({pinResultIndex:'0'});
+ assert.equal(h.state.pinnedResults.length,1);
+ assert.equal(h.node('pinnedSearchComparison').classList.contains('hidden'),false);
+ assert.equal(h.node('togglePinnedResultsButton').attributes['aria-expanded'],'true');
+ assert.equal(h.node('findResultsBody').scrollTop,600);
+ assert.equal(h.context.bottomResultsMaxHeight(),height);
 });

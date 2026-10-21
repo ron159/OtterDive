@@ -14,7 +14,11 @@ const javascript = ts.transpileModule(renderer.getText(ast), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
-test("renders every ordinary search result beyond the former 400-row limit", () => {
+for (const [name, emptyHits] of [
+  ["over 400 rows", false],
+  ["empty hits between populated files", true],
+  ["only count-only hits", "all"],
+]) test(`renders search results with ${name}`, () => {
   class Element {
     constructor(tagName) { this.tagName = tagName; }
     children = [];
@@ -37,6 +41,11 @@ test("renders every ordinary search result beyond the former 400-row limit", () 
       { path: "second.txt", fileName: "second.txt", matches: Array.from({ length: 500 }, (_, index) => ({ line: index + 1, column: 1 })) },
     ],
   };
+  if (emptyHits) {
+    const empty = { path: "live.md", fileName: "live.md", matches: [] };
+    report.hits = emptyHits === "all" ? [empty] : [empty, report.hits[0], empty, report.hits[1], empty];
+  }
+  const expectedRows = emptyHits === "all" ? 0 : report.total;
   const list = new Element();
   const context = vm.createContext({
     document: { createElement: tagName => new Element(tagName) },
@@ -55,11 +64,13 @@ test("renders every ordinary search result beyond the former 400-row limit", () 
   while (frames.length) frames.shift()();
 
   const rows = list.children.flatMap(group => group.lastElementChild.children.flatMap(item => item.children));
-  assert.equal(rows.length, report.total);
+  assert.equal(rows.length, expectedRows);
   assert.ok(rows.every(row => row.tagName === "div" && row.attributes.role === "button" && row.tabIndex === 0));
-  assert.equal(rows[0].dataset.resultIndex, "0");
-  assert.equal(rows.at(-1).dataset.resultIndex, "1000");
-  assert.equal(list.children.length, 2);
+  if (expectedRows) {
+    assert.equal(rows[0].dataset.resultIndex, "0");
+    assert.equal(rows.at(-1).dataset.resultIndex, "1000");
+  }
+  assert.equal(list.children.length, expectedRows ? 2 : 0);
   assert.equal(list.dataset.currentSearchResults, "true");
 });
 

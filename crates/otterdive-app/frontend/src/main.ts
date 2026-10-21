@@ -1,5 +1,6 @@
 import { PagedDocumentController, pageLocalPosition, type PageTarget } from "./pagedDocument";
 import { regexReplacementAt } from "./searchReplacement";
+import { textSpacingEdits } from "./textSpacing";
 import { revealReadingMatch } from "./readingSearch";
 import { registerMarkdownLinkCompletions, checkMarkdownLinks } from "./markdownLinkTools";
 import { normalizeWorkbenchPreferences, markdownExtensionPreferences, type WorkbenchPreferences } from "./workbenchPreferences";
@@ -1049,6 +1050,7 @@ let markdownPreviewRenderVersion = 0;
 let markdownModelSyncTimer = 0;
 let currentFindTimer = 0;
 let currentFindHistoryActiveIndex = -1;
+let pinnedResultsOpen = true;
 let searchHistoryField: "find" | "replace" | null = null;
 let searchHistoryActiveIndex = -1;
 let searchResultRenderVersion = 0;
@@ -1915,6 +1917,9 @@ function registerAppCommands() {
     command("editor.formatDocument", "格式化文档", "编辑", formatActiveDocument, {
       when: editorOnly,
     }),
+    command("edit.optimizeSpacing", "优化中英文间距", "编辑", optimizeActiveTextSpacing, {
+      enabled: () => canOptimizeTextSpacing(),
+    }),
     editorCommand("editor.selectNextOccurrence", "选中下一个同词", "editor.action.addSelectionToNextFindMatch", editorOnly),
     editorCommand("editor.selectAllOccurrences", "选中所有同词", "editor.action.selectHighlights", editorOnly),
     editorCommand("editor.addCursorAbove", "在上方添加光标", "editor.action.insertCursorAbove", editorOnly),
@@ -2243,6 +2248,14 @@ function bindActions() {
   $("findResultsBody").addEventListener("keydown", handleSearchResultKeydown);
   $("findResultsBody").addEventListener("click", handleSearchResultPin, true);
   $("clearPinnedResultsButton").addEventListener("click", () => unpinSearchResult());
+  $("togglePinnedResultsButton").addEventListener("click", () => setPinnedResultsOpen(!pinnedResultsOpen));
+  $("collapsePinnedResultsButton").addEventListener("click", () => setPinnedResultsOpen(false));
+  $("pinnedSearchComparison").addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    setPinnedResultsOpen(false);
+  });
   $("pinnedResultsList").addEventListener("click", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-unpin-id]");
     if (button) unpinSearchResult(button.dataset.unpinId);
@@ -2656,6 +2669,7 @@ function bindAppMenus() {
   bindMenuAction("menuUppercaseButton", transformToUppercase);
   bindMenuAction("menuLowercaseButton", transformToLowercase);
   bindMenuAction("menuFormatDocumentButton", () => void formatActiveDocument());
+  bindMenuAction("menuOptimizeSpacingButton", () => void optimizeActiveTextSpacing().catch(showWorkbenchError));
   bindMenuAction("menuSelectAllButton", selectAllEditor);
   bindMenuAction("menuFindButton", () => {
     openCurrentFind("find");
@@ -3834,7 +3848,7 @@ function bindBottomResultsResize() {
 
 function bottomResultsMaxHeight() {
   const compact = window.innerWidth <= 760 || window.innerHeight <= 760;
-  const fraction = compact ? (state.pinnedResults.length ? 0.5 : 0.32) : 0.6;
+  const fraction = compact ? 0.32 : 0.6;
   return Math.max(MIN_BOTTOM_RESULTS_HEIGHT, Math.floor(window.innerHeight * fraction));
 }
 
@@ -3843,8 +3857,7 @@ function setBottomResultsHeight(
   maxHeight = bottomResultsMaxHeight(),
   fast = false,
 ) {
-  const minimum = state.pinnedResults.length ? Math.min(260, maxHeight) : MIN_BOTTOM_RESULTS_HEIGHT;
-  state.bottomResultsHeight = Math.min(maxHeight, Math.max(minimum, Math.round(height)));
+  state.bottomResultsHeight = Math.min(maxHeight, Math.max(MIN_BOTTOM_RESULTS_HEIGHT, Math.round(height)));
   $("app").style.setProperty("--bottom-results-height", `${state.bottomResultsHeight}px`);
   $("bottomResultsResize").setAttribute("aria-valuenow", String(state.bottomResultsHeight));
   if (!fast && !editorLayoutFrozen) {
@@ -6455,17 +6468,25 @@ function pinSelectedSearchResults() {
 }
 
 function addPinnedResults(inputs: readonly PinnedResultInput[]) {
+  if (inputs.length === 0) return;
   const next = appendPinnedResults(state.pinnedResults, inputs);
-  if (next === state.pinnedResults) return;
   state.pinnedResults = next;
+  pinnedResultsOpen = true;
   renderPinnedSearchResult(); // Preserve both result scroll axes and the result selection.
-  setBottomResultsHeight(state.bottomResultsHeight);
-  requestEditorLayout();
+}
+
+function setPinnedResultsOpen(open: boolean) {
+  pinnedResultsOpen = open;
+  renderPinnedSearchResult();
+  if (!open) $("togglePinnedResultsButton").focus();
 }
 
 function renderPinnedSearchResult() {
   const pins = state.pinnedResults;
-  $("pinnedSearchComparison").classList.toggle("hidden", pins.length === 0);
+  $("pinnedSearchComparison").classList.toggle("hidden", pins.length === 0 || !pinnedResultsOpen);
+  $("togglePinnedResultsButton").classList.toggle("hidden", pins.length === 0);
+  $("togglePinnedResultsButton").setAttribute("aria-expanded", String(pins.length > 0 && pinnedResultsOpen));
+  $("pinnedResultsToggleLabel").textContent = `固定对比 · ${pins.length}`;
   $("pinnedResultsCount").textContent = `${pins.length} 条`;
   const list = $("pinnedResultsList");
   const existing = new globalThis.Map([...list.children].map(node => [(node as HTMLElement).dataset.pinId, node]));
@@ -7204,9 +7225,9 @@ function matchAllowed(doc: OpenDocument, match: monaco.editor.FindMatch, allowSe
   const line = model.getLineContent(match.range.startLineNumber);
   const start = match.range.startColumn - 1;
   const end = match.range.endColumn - 1;
-  const before = start > 0 ? line[start - 1] : "";
+  const before = Array.from(line.slice(Math.max(0, start - 2), start)).at(-1) ?? "";
   const endLine = model.getLineContent(match.range.endLineNumber);
-  const after = end < endLine.length ? endLine[end] : "";
+  const after = Array.from(endLine.slice(end, end + 2))[0] ?? "";
   return !isWordChar(before) && !isWordChar(after);
 }
 
@@ -7837,6 +7858,7 @@ function renderChrome() {
   const formattingDisabled = doc.readOnly || isReadingDocument(doc) || (!isSideEditorActive() && isMarkdownWysiwygActive(doc));
   $<HTMLButtonElement>("formatDocumentButton").disabled = formattingDisabled;
   $<HTMLButtonElement>("menuFormatDocumentButton").disabled = formattingDisabled;
+  $<HTMLButtonElement>("menuOptimizeSpacingButton").disabled = !canOptimizeTextSpacing(doc);
   ["menuMarkdownWysiwygButton", "menuMarkdownSplitButton", "menuMarkdownSourceButton"].forEach((id) => {
     $<HTMLButtonElement>(id).disabled = !markdownDocument;
   });
@@ -7917,6 +7939,7 @@ function commandElementIds(): Record<string, string> {
   menuUppercaseButton: "edit.uppercase",
   menuLowercaseButton: "edit.lowercase",
   menuFormatDocumentButton: "editor.formatDocument",
+  menuOptimizeSpacingButton: "edit.optimizeSpacing",
   menuSelectAllButton: "edit.selectAll",
   menuFindButton: "search.find",
   menuReplaceButton: "search.replace",
@@ -8948,6 +8971,11 @@ function renderProgressiveSearchResults(
     let appended = 0;
     while (hitIndex < report.hits.length && appended < 120 && performance.now() - started < 8) {
       const hit = report.hits[hitIndex];
+      // Live Markdown search keeps its count without materializing result rows.
+      if (hit.matches.length === 0) {
+        hitIndex += 1;
+        continue;
+      }
       if (matchIndex === 0) {
         const group = document.createElement("section");
         group.className = "find-result-group";
@@ -10508,6 +10536,59 @@ function runEditorAction(actionId: string, successMessage?: string) {
   editor.trigger("command", actionId, null);
   editor.focus();
   if (successMessage) log(successMessage);
+}
+
+function canOptimizeTextSpacing(doc = commandDocument()) {
+  return !doc.readOnly && !doc.paged && !isReadingDocument(doc) && editorBusyDepth === 0 && !workspaceMoveInProgress
+    && (isMarkdownLikeDocument(doc) || (doc.languageOverride ?? doc.language) === "plaintext");
+}
+
+async function optimizeActiveTextSpacing() {
+  const doc = commandDocument();
+  if (!canOptimizeTextSpacing(doc)) return;
+  const target = commandEditor();
+  const wysiwyg = !isSideEditorActive() && isMarkdownWysiwygActive(doc);
+  syncMarkdownModelFromEditor(doc);
+  const model = ensureDocumentModel(doc);
+  const before = model.getValue();
+  const version = model.getVersionId();
+  const cursor = wysiwyg ? markdownEditor?.getCursorOffset() : sourceSelectionToMarkdownCursor(target.getSelection());
+  const point = (position: { line: number; ch: number } | null | undefined) => position
+    ? model.getOffsetAt({ lineNumber: position.line + 1, column: position.ch + 1 }) : 0;
+  const anchor = point(cursor?.anchor), focus = point(cursor?.focus);
+  const selectionStart = Math.min(anchor, focus), selectionEnd = Math.max(anchor, focus);
+  const selected = selectionStart !== selectionEnd;
+  const offsets = textSpacingEdits(before, isMarkdownLikeDocument(doc))
+    .filter(offset => !selected || (offset > selectionStart && offset < selectionEnd));
+  if (!offsets.length) { log("中英文间距已是规范格式"); return; }
+  await preserveHistory(doc, before);
+  if (!canOptimizeTextSpacing(doc) || commandDocument() !== doc || model.isDisposed()
+    || target.getModel() !== model || model.getVersionId() !== version) {
+    log("文档已变化，已取消间距优化");
+    return;
+  }
+  model.pushStackElement();
+  model.pushEditOperations([], offsets.map(offset => {
+    const position = model.getPositionAt(offset);
+    return { range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column), text: " " };
+  }), () => null);
+  model.pushStackElement();
+  const moved = (offset: number) => {
+    const position = model.getPositionAt(offset + offsets.filter(edit => edit <= offset).length);
+    return { line: position.lineNumber - 1, ch: position.column - 1 };
+  };
+  const nextCursor = { anchor: moved(anchor), focus: moved(focus) };
+  if (wysiwyg) {
+    syncMarkdownEditorFromModel(doc, true);
+    markdownEditor?.setCursorOffset(nextCursor);
+  } else {
+    const selection = markdownCursorToSourceSelection(nextCursor)!;
+    target.setSelection(new monaco.Selection(selection.selectionStartLineNumber, selection.selectionStartColumn,
+      selection.positionLineNumber, selection.positionColumn));
+    target.focus();
+  }
+  scheduleRecovery(doc);
+  log(`已优化${selected ? "选区" : "全文"}中英文间距，补充 ${offsets.length} 处空格`);
 }
 
 function isFormattingActionSupported(doc = activeDocument()) {
