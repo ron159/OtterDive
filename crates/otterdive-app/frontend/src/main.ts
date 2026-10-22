@@ -1567,6 +1567,12 @@ function bootstrap() {
   });
   const editorResizeObserver = new ResizeObserver(() => requestEditorLayout(!paneResizeActive()));
   editorResizeObserver.observe($("editor"));
+  const pinnedResultsResizeObserver = new ResizeObserver(layoutPinnedSearchResult);
+  pinnedResultsResizeObserver.observe($("findResultsBody"));
+  pinnedResultsResizeObserver.observe($("analyseResultHost").querySelector(".analyse-result-editor")!);
+  pinnedResultsResizeObserver.observe($("bottomResultsDock"));
+  const pinnedResultsMutationObserver = new MutationObserver(() => window.requestAnimationFrame(layoutPinnedSearchResult));
+  pinnedResultsMutationObserver.observe($("findResultsBody"), { childList: true, subtree: true });
   registerAppCommands();
   bindKeybindings();
 
@@ -2247,6 +2253,9 @@ function bindActions() {
   $("findResultsBody").addEventListener("wheel", handleSearchResultWheel, { passive: false });
   $("findResultsBody").addEventListener("keydown", handleSearchResultKeydown);
   $("findResultsBody").addEventListener("click", handleSearchResultPin, true);
+  $("findResultsBody").addEventListener("scroll", syncPinnedSearchResultScroll, true);
+  $("pinnedResultsList").addEventListener("scroll", syncPinnedSearchResultScroll);
+  $("pinnedResultsList").addEventListener("wheel", handleSearchResultWheel, { passive: false });
   $("clearPinnedResultsButton").addEventListener("click", () => unpinSearchResult());
   $("togglePinnedResultsButton").addEventListener("click", () => setPinnedResultsOpen(!pinnedResultsOpen));
   $("collapsePinnedResultsButton").addEventListener("click", () => setPinnedResultsOpen(false));
@@ -6395,11 +6404,13 @@ function handleSearchResultWheel(event: WheelEvent) {
 function setSearchResultFontSize(value: number) {
   searchResultFontSize = Math.min(24, Math.max(10, value));
   $("findResultsBody").style.setProperty("--search-result-font-size", `${searchResultFontSize}px`);
+  layoutPinnedSearchResult();
 }
 
 function handleSearchResultHorizontalScroll(event: WheelEvent) {
   const target = event.target instanceof Element ? event.target : null;
-  const resultList = target?.closest<HTMLElement>(".find-result-list");
+  const resultList = target?.closest<HTMLElement>(".find-result-history-list")
+    ?? target?.closest<HTMLElement>(".find-result-list, .pinned-results-list");
   if (!resultList || Math.abs(event.deltaX) < 1 || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
   event.preventDefault();
   resultList.scrollLeft += event.deltaX;
@@ -6481,40 +6492,96 @@ function setPinnedResultsOpen(open: boolean) {
   if (!open) $("togglePinnedResultsButton").focus();
 }
 
+function layoutPinnedSearchResult() {
+  const body = $("findResultsBody");
+  if (!state.pinnedResults.length) {
+    body.style.removeProperty("--pinned-search-width");
+    return;
+  }
+  const dock = $("bottomResultsDock");
+  if (!pinnedResultsOpen || dock.classList.contains("hidden")) return;
+  const viewport = activeBottomResultTool === "search"
+    ? $("findResultsBody")
+    : $("analyseResultHost").querySelector<HTMLElement>(".analyse-result-editor");
+  if (!viewport) return;
+  const bounds = viewport.getBoundingClientRect();
+  if (!bounds.height) return;
+  const origin = dock.getBoundingClientRect();
+  const panel = $("pinnedSearchComparison");
+  panel.style.top = `${bounds.top - origin.top - dock.clientTop}px`;
+  panel.style.left = `${bounds.left - origin.left - dock.clientLeft}px`;
+  panel.style.width = `${bounds.width}px`;
+  panel.style.setProperty("--pinned-results-max-height", `${Math.floor(bounds.height / 2)}px`);
+  panel.style.setProperty("--search-result-font-size", `${searchResultFontSize}px`);
+  const list = $("pinnedResultsList");
+  if (activeBottomResultTool === "search") {
+    const row = body.querySelector<HTMLElement>(".find-result-row");
+    panel.style.setProperty("--pinned-result-line-width", row ? getComputedStyle(row).gridTemplateColumns.split(" ")[0] : "48px");
+    if (!row) {
+      body.style.removeProperty("--pinned-search-width");
+      list.style.removeProperty("--search-results-width");
+      return;
+    }
+    // Give both viewports the same scroll range, including retained Pins from an older search.
+    const pinWidth = [...list.querySelectorAll<HTMLElement>(".find-result-row")]
+      .reduce((width, row) => Math.max(width, row.scrollWidth + 28), 0);
+    body.style.setProperty("--pinned-search-width", `${pinWidth}px`);
+    const results = searchResultScrollViewport();
+    list.style.setProperty("--search-results-width", `${results.scrollWidth}px`);
+    list.scrollLeft = results.scrollLeft;
+  } else {
+    list.style.removeProperty("--search-results-width");
+  }
+}
+
+function searchResultScrollViewport() {
+  const body = $("findResultsBody");
+  return body.querySelector<HTMLElement>(".find-result-history-list, :scope > .find-result-list") ?? body;
+}
+
+function syncPinnedSearchResultScroll(event: Event) {
+  if (activeBottomResultTool !== "search" || !state.pinnedResults.length || !pinnedResultsOpen) return;
+  const list = $("pinnedResultsList");
+  const results = searchResultScrollViewport();
+  if (!results.querySelector(".find-result-row")) return;
+  const source = event.target;
+  if (!(source instanceof HTMLElement) || (source !== list && source !== results)) return;
+  const target = source === list ? results : list;
+  if (target.scrollLeft !== source.scrollLeft) target.scrollLeft = source.scrollLeft;
+}
+
 function renderPinnedSearchResult() {
   const pins = state.pinnedResults;
   $("pinnedSearchComparison").classList.toggle("hidden", pins.length === 0 || !pinnedResultsOpen);
   $("togglePinnedResultsButton").classList.toggle("hidden", pins.length === 0);
   $("togglePinnedResultsButton").setAttribute("aria-expanded", String(pins.length > 0 && pinnedResultsOpen));
   $("pinnedResultsToggleLabel").textContent = `固定对比 · ${pins.length}`;
-  $("pinnedResultsCount").textContent = `${pins.length} 条`;
+  $("pinnedResultsActions").classList.toggle("hidden", pins.length === 0 || !pinnedResultsOpen);
   const list = $("pinnedResultsList");
   const existing = new globalThis.Map([...list.children].map(node => [(node as HTMLElement).dataset.pinId, node]));
   const retained = new Set(pins.map(pin => pin.id));
   for (const [id, node] of existing) if (!id || !retained.has(id)) node.remove();
   for (const pin of pins) {
     if (existing.has(pin.id)) continue;
-    const item = document.createElement("article"); item.className = "pinned-result-item"; item.dataset.pinId = pin.id;
-    const header = document.createElement("header");
-    const source = document.createElement("span"); source.className = "pinned-result-source";
+    const item = document.createElement("article"); item.className = "pinned-result-item find-result-item"; item.dataset.pinId = pin.id;
+    const header = document.createElement("div"); header.className = "pinned-result-row find-result-row";
     const label = pin.kind === "analyse" ? "Analyse" : pin.kind === "search-analysis" ? "二次分析" : "搜索";
-    source.textContent = `${label} · ${pin.sources.map(row => `${row.fileName} · 第 ${row.line} 行 · 第 ${row.column} 列`).join("；")}`;
-    source.title = pin.sources.map(row => row.path || row.fileName).join("\n");
-    const remove = document.createElement("button"); remove.type = "button"; remove.className = "tool-button";
-    remove.dataset.unpinId = pin.id; remove.textContent = "取消"; remove.setAttribute("aria-label", `取消固定：${source.textContent}`);
-    header.append(source, remove);
-    const paths = document.createElement("div"); paths.className = "pinned-result-path";
-    paths.textContent = pin.sources.map(row => row.path || row.fileName).join("；"); paths.title = paths.textContent;
-    const text = document.createElement("pre"); text.tabIndex = 0; text.textContent = pin.text;
+    const description = `${label} · ${pin.sources.map(row => `${row.fileName} · 第 ${row.line} 行 · 第 ${row.column} 列`).join("；")}`;
+    header.title = `${description}\n${pin.sources.map(row => row.path || row.fileName).join("\n")}`;
+    if (pin.fields) header.title += `\n${JSON.stringify(pin.fields)}`;
+    else if (pin.analysis?.matchingPatternIds.length) header.title += `\nPattern ${pin.analysis.matchingPatternIds.join(", ")}`;
+    const source = document.createElement("span"); source.className = "find-result-line";
+    source.title = header.title;
+    source.textContent = pin.sources.map(row => `${row.line}:${row.column}`).join("；");
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "search-result-pin pinned-result-unpin";
+    remove.dataset.unpinId = pin.id; remove.innerHTML = iconSvg("Pin"); remove.title = `取消固定：${description}`; remove.setAttribute("aria-label", remove.title);
+    const text = document.createElement("pre"); text.className = "find-result-preview"; text.tabIndex = 0; text.textContent = pin.text;
     text.setAttribute("aria-label", `${label}固定内容`);
-    item.append(header, paths, text);
-    if (pin.fields || pin.analysis?.matchingPatternIds.length) {
-      const context = document.createElement("small");
-      context.textContent = pin.fields ? JSON.stringify(pin.fields) : `Pattern ${pin.analysis!.matchingPatternIds.join(", ")}`;
-      item.append(context);
-    }
+    header.append(source, text);
+    item.append(remove, header);
     list.append(item);
   }
+  layoutPinnedSearchResult();
 }
 
 function unpinSearchResult(id?: string) {

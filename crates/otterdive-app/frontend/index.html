@@ -1148,13 +1148,16 @@
               <span class="icon-slot" data-icon="Sigma"></span><span>Analyse 结果</span>
             </button>
           </div>
-          <button class="tool-button hidden" id="togglePinnedResultsButton" type="button" aria-controls="pinnedSearchComparison" aria-expanded="true" title="显示或收起固定对比"><span class="icon-slot" data-icon="Pin"></span><span id="pinnedResultsToggleLabel">固定对比</span></button>
+          <button class="tool-button hidden" id="togglePinnedResultsButton" type="button" aria-controls="pinnedSearchComparison" aria-expanded="true" title="显示或收起固定对比"><span class="icon-slot" data-icon="Pin"></span><span id="pinnedResultsToggleLabel" aria-live="polite">固定对比</span></button>
+          <div class="pinned-results-actions hidden" id="pinnedResultsActions">
+            <button class="tool-button" id="clearPinnedResultsButton" type="button" title="清空固定对比">清空</button>
+            <button class="tool-button" id="collapsePinnedResultsButton" type="button" aria-label="收起固定对比" title="收起固定对比"><span class="icon-slot" data-icon="X"></span></button>
+          </div>
           <button class="bottom-results-close" id="closeBottomResultsButton" type="button" aria-label="关闭结果区域" title="关闭结果区域">
             <span class="icon-slot" data-icon="X"></span>
           </button>
         </header>
         <section class="pinned-search-comparison hidden" id="pinnedSearchComparison" aria-label="固定结果对比">
-          <header><strong><span class="icon-slot" data-icon="Pin"></span>固定对比 <span id="pinnedResultsCount" aria-live="polite"></span></strong><button class="tool-button" id="clearPinnedResultsButton" type="button">清空</button><button class="tool-button" id="collapsePinnedResultsButton" type="button" aria-label="收起固定对比" title="收起固定对比"><span class="icon-slot" data-icon="X"></span></button></header>
           <div id="pinnedResultsList" class="pinned-results-list" role="list" aria-label="已固定的搜索与 Analyse 结果"></div>
         </section>
         <div class="bottom-results-content">

@@ -26,6 +26,7 @@ function setup(){
  const report={total:1,hits:[{path:'/one/same.txt',fileName:'same.txt',matches:[match]}]};
  const state={pinnedResults:[],documents:[{id:1,path:'/one/same.txt'},{id:2,path:'/two/same.txt'}],activeId:2,results:report,searchResultHistory:[],replacePreview:null,workspaceSearchStatus:'idle'};
  const context={state,pinnedResultsOpen:true,analysedRows:null,activeBottomResultTool:'search',analyseResultsAvailable:true,$:node,document:{createElement:tag=>new Element(tag)},iconSvg:()=>'<svg></svg>',fileNameFromPath:p=>p.split('/').pop(),workspaceSearchIsBusy:()=>false,requestEditorLayout:noop,setBottomResultsHeight:noop,MIN_BOTTOM_RESULTS_HEIGHT:160,window:{requestAnimationFrame:noop,innerWidth:1024,innerHeight:640},analysePanel:null,focusActiveEditor:()=>{focused='editor';},resetResultAnalysis:()=>{context.analysedRows=null;},renderSearchSidebarResults:noop,searchDecorations:null,activeSearchDecoration:null,markdownEditor:null,setCurrentFindError:noop,renderCurrentFindCount:noop,log:noop,confirmDocumentCanClose:async()=>true,rememberMarkdownLocation:noop,rememberClosedDocument:noop,discardRecovery:noop,writingStatsCache:new Map(),pagedDocuments:new Map(),closeSideEditorFor:noop,cancelAutoSave:noop,disposeMarkdownEditor:noop,markdownSessions:new Map(),cancelDocumentSizeUpdate:noop,activateDocument:id=>{state.activeId=id;},renderAll:noop,scheduleSessionSave:noop};
+ context.layoutPinnedSearchResult=noop;
  vm.createContext(context);vm.runInContext(moduleJs,context);vm.runInContext(js,context);
  const pin=dataset=>context.handleSearchResultPin({target:{closest:()=>({dataset})},preventDefault:noop,stopPropagation:noop});
  return {context,state,report,match,node,pin,focused:()=>focused};
@@ -36,7 +37,7 @@ test('multiple rows append, repeated Pin deduplicates, and snapshots cannot chan
  h.match.line=80;h.match.lineText='second result';h.pin({pinResultIndex:'0'});
  assert.equal(h.state.pinnedResults.length,2);assert.equal(first.text,'<script>snapshot & text</script>');
  assert.equal(first.sources[0].path,'/one/same.txt');assert.equal(h.state.activeId,2);assert.equal(Object.isFrozen(first.sources[0]),true);
- const list=h.node('pinnedResultsList');assert.equal(list.children.length,2);assert.equal(list.children[0].children[2].textContent,first.text);
+ const list=h.node('pinnedResultsList');assert.equal(list.children.length,2);assert.equal(list.children[0].children[1].children[1].textContent,first.text);
  assert.equal(h.node('findResultsBody').scrollTop,600);assert.equal(h.node('findResultsBody').scrollLeft,240);
 });
 test('history, result analysis and real Analyse coexist with their own complete provenance',()=>{
