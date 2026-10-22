@@ -46,7 +46,7 @@ On-demand documents still search and Analyse the complete source file in the bac
 
 ## Project Status
 
-The current release is **v0.8.4**. See the [English changelog](CHANGELOG_EN.md) or [中文更新日志](CHANGELOG.md). OtterDive is under active development. GitHub Releases provide Windows x64, macOS ARM64, and Linux x64 packages.
+The current release is **v0.8.6**. See the [English changelog](CHANGELOG_EN.md) or [中文更新日志](CHANGELOG.md). OtterDive is under active development. GitHub Releases provide Windows x64, macOS ARM64, and Linux x64 packages.
 
 The known macOS bundle signing/notarization defect remains unresolved; Gatekeeper approval is not guaranteed. Updater signatures are distinct from Apple Developer ID signing and notarization.
 

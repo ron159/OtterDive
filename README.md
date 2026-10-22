@@ -46,7 +46,7 @@ ZIP 和二进制文件不会作为文本载入。正常“打开文件”入口�
 
 ## 当前状态
 
-当前发布版本为 **v0.8.4**，更新内容见[中文更新日志](CHANGELOG.md)与[English changelog](CHANGELOG_EN.md)。OtterDive 仍在持续开发中，GitHub Releases 提供 Windows x64、macOS ARM64 与 Linux x64 安装包。
+当前发布版本为 **v0.8.6**，更新内容见[中文更新日志](CHANGELOG.md)与[English changelog](CHANGELOG_EN.md)。OtterDive 仍在持续开发中，GitHub Releases 提供 Windows x64、macOS ARM64 与 Linux x64 安装包。
 
 macOS 整包签名与公证的已知缺陷尚未修复，不能保证通过 Gatekeeper；应用更新签名不等于 Apple Developer ID 签名或公证。
 

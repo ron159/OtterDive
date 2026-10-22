@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.6 — 2026-10-22
+
+### Fixes
+
+- Make pinned comparisons a compact floating strip below the filters, spanning the top of the results list. It stays visible while scrolling search results without increasing the height of the results or editor area. Collapse, reopen, remove individual items or clear all pins.
+- Align pinned rows with the search results' line-number column, text start and font. Horizontal scrolling is synchronized in both directions between pins and search results, preserving alignment at either end, when changing font size and when extracting secondary results. Long pins retained from previous searches share the scroll range with shorter results; pins remain independently browsable after clearing the search.
+- Fix Analyse actions such as Pin and Copy being pushed outside the clickable area in WebKit when the results area is short.
+
+## 0.8.5 — 2026-10-22
+
+### Improvements
+
+- Add **Edit → Optimize Chinese/English spacing** for selections or complete Markdown and plain-text documents. Insert spaces between Han characters and English letters or digits while preserving line breaks, indentation and existing whitespace. Protect Markdown code, link destinations, reference identifiers, metadata, HTML and math. The changes can be undone.
+- Move pinned comparisons into a floating panel at the top of the result content, with collapse and reopen controls. Multiple pins, source information and independent snapshots remain available without increasing the results area's height or occupying an extra layout row.
+
+### Fixes
+
+- Remove gradient glows, blurred panel backgrounds and outer card glows from dark settings pages while retaining selection borders and colors. Applies to dark system appearance and all dark color presets.
+- Fix Markdown instant editing highlighting matches while the find bar still reports zero results. Safely skip result groups without detail rows so counts and previous/next navigation update correctly.
+- Unify whole-word boundaries in instant editing and source search. Fix missed Chinese matches, false positives for English adjacent to Chinese, incorrect boundaries around regex alternatives, and false positives next to Unicode supplementary-plane letters and digits.
+
 ## 0.8.4 — 2026-10-21
 
 ### Improvements
