@@ -9,6 +9,7 @@
 <p align="center"><a href="README.md">简体中文</a> · English</p>
 
 <p align="center">
+  <a href="https://github.com/ron159/OtterDive/releases/latest"><img src="https://img.shields.io/github/v/release/ron159/OtterDive?display_name=tag&amp;sort=date" alt="Latest stable release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3b82f6.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2563eb.svg" alt="Windows, macOS and Linux" />
   <img src="https://img.shields.io/badge/Tauri-2-24c8db.svg" alt="Tauri 2" />
@@ -46,7 +47,7 @@ On-demand documents still search and Analyse the complete source file in the bac
 
 ## Project Status
 
-The current release is **v0.8.6**. See the [English changelog](CHANGELOG_EN.md) or [中文更新日志](CHANGELOG.md). OtterDive is under active development. GitHub Releases provide Windows x64, macOS ARM64, and Linux x64 packages.
+Get the [latest stable release](https://github.com/ron159/OtterDive/releases/latest). See the [English changelog](CHANGELOG_EN.md) or [中文更新日志](CHANGELOG.md). OtterDive is under active development. GitHub Releases provide Windows x64, macOS ARM64, and Linux x64 packages. The version badge follows stable releases automatically but may briefly lag because of caching.
 
 The known macOS bundle signing/notarization defect remains unresolved; Gatekeeper approval is not guaranteed. Updater signatures are distinct from Apple Developer ID signing and notarization.
 

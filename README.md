@@ -9,6 +9,7 @@
 <p align="center">简体中文 · <a href="README_EN.md">English</a></p>
 
 <p align="center">
+  <a href="https://github.com/ron159/OtterDive/releases/latest"><img src="https://img.shields.io/github/v/release/ron159/OtterDive?display_name=tag&amp;sort=date" alt="最新正式版" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3b82f6.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2563eb.svg" alt="Windows, macOS and Linux" />
   <img src="https://img.shields.io/badge/Tauri-2-24c8db.svg" alt="Tauri 2" />
@@ -46,7 +47,7 @@ ZIP 和二进制文件不会作为文本载入。正常“打开文件”入口�
 
 ## 当前状态
 
-当前发布版本为 **v0.8.6**，更新内容见[中文更新日志](CHANGELOG.md)与[English changelog](CHANGELOG_EN.md)。OtterDive 仍在持续开发中，GitHub Releases 提供 Windows x64、macOS ARM64 与 Linux x64 安装包。
+最新正式版及下载见 [GitHub Releases](https://github.com/ron159/OtterDive/releases/latest)，更新内容见[中文更新日志](CHANGELOG.md)与[English changelog](CHANGELOG_EN.md)。OtterDive 仍在持续开发中，GitHub Releases 提供 Windows x64、macOS ARM64 与 Linux x64 安装包。页首版本徽章会自动跟随正式发布更新，缓存可能造成短暂延迟。
 
 macOS 整包签名与公证的已知缺陷尚未修复，不能保证通过 Gatekeeper；应用更新签名不等于 Apple Developer ID 签名或公证。
 
