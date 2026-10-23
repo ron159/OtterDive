@@ -43,6 +43,12 @@ self.addEventListener("message", (event: MessageEvent<SqlFormatRequest>) => {
 });
 
 function compactSqlLayout(sql: string, expressionWidth: number) {
+  // Extra line compaction is only safe when newlines cannot belong to a
+  // literal or delimit a comment. Keep the formatter's layout in those cases.
+  const tokens = /'(?:''|\\[\s\S]|[^'\\])*'|"(?:""|[^"])*"|`[^`]*`|--[^\r\n]*|\/\*[\s\S]*?\*\//g;
+  for (const [token] of sql.matchAll(tokens)) {
+    if (/^(?:--|\/\*)/.test(token) || /[\r\n]/.test(token)) return sql.trim();
+  }
   let compacted = compactSimpleCaseExpressions(sql);
   const lines = compacted.split("\n");
   const output: string[] = [];

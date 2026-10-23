@@ -320,9 +320,13 @@ interface OpenDocument extends DocumentDto {
 }
 
 interface ClosedDocumentSnapshot extends DocumentDto {
+  sourceEncoding?: EncodingLabel;
+  externalRevision?: string;
   draftId?: string;
   creationIntent?: "default" | "explicit";
   dirty: boolean;
+  metadataDirty: boolean;
+  encodingStatus: OpenDocument["encodingStatus"];
   savedText: string;
   languageOverride?: string;
   origin: DocumentOrigin;
@@ -4888,6 +4892,8 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
     const currentEncoding = doc.encoding;
     const currentLineEnding = doc.lineEnding;
     const metadataChanged = currentEncoding !== encodingToSave || currentLineEnding !== lineEndingToSave;
+    syncActiveBookmarkLines(doc);
+    const oldSessionKey = documentSessionKey(doc);
     Object.assign(doc, saved, {
       encoding: metadataChanged ? currentEncoding : saved.encoding,
       lineEnding: metadataChanged ? currentLineEnding : saved.lineEnding,
@@ -4902,6 +4908,11 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
     doc.sourceEncoding = saved.encoding;
     doc.savedAlternativeVersionId = savedAlternativeVersionId;
     doc.draftId = undefined;
+    const nextSessionKey = documentSessionKey(doc);
+    if (oldSessionKey !== nextSessionKey && state.bookmarks[oldSessionKey]) {
+      state.bookmarks[nextSessionKey] = [...state.bookmarks[oldSessionKey]];
+      if (!sourcePath) delete state.bookmarks[oldSessionKey];
+    }
     if (doc.dirty) {
       // Keep the last durable copy until edits made during this save are durable too.
       await recoveryQueue;
@@ -4915,6 +4926,8 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
     renderAll();
     scheduleSessionSave();
     log(`保存 ${doc.title}`);
+    // An edit's timer may have fired while this write was still in flight.
+    if (doc.dirty) scheduleAutoSave(doc);
     return true;
   } catch (error) {
     reportPersistenceError(`save:${doc.id}`, `${automatic ? "自动保存" : "保存"}失败：${doc.title}`, error);
@@ -5234,6 +5247,10 @@ function rememberClosedDocument(doc: OpenDocument) {
     path: doc.path,
     text: doc.paged ? "" : documentText(doc),
     encoding: doc.encoding,
+    sourceEncoding: doc.sourceEncoding,
+    diskRevision: doc.diskRevision,
+    externalRevision: doc.externalRevision,
+    encodingStatus: doc.encodingStatus,
     lineEnding: doc.lineEnding,
     fileSize: doc.fileSize,
     readOnly: doc.readOnly,
@@ -5245,6 +5262,7 @@ function rememberClosedDocument(doc: OpenDocument) {
     draftId: doc.draftId,
     creationIntent: doc.creationIntent,
     dirty: doc.dirty,
+    metadataDirty: doc.metadataDirty,
     savedText: doc.savedText,
     origin: doc.origin,
     viewState: doc.viewState,
@@ -5265,7 +5283,11 @@ async function reopenClosedDocument() {
       return;
     }
   }
-  if (snapshot.paged && snapshot.path) { await openPath(snapshot.path, true); return; }
+  if (snapshot.paged && snapshot.path) {
+    try { await openPath(snapshot.path, true); }
+    catch (error) { closedDocuments.unshift(snapshot); throw error; }
+    return;
+  }
   const doc = createDocument(snapshot, {
     draftId: snapshot.draftId,
     creationIntent: snapshot.creationIntent,
@@ -5274,6 +5296,10 @@ async function reopenClosedDocument() {
     origin: snapshot.origin,
     languageOverride: snapshot.languageOverride,
   });
+  doc.sourceEncoding = snapshot.sourceEncoding ?? snapshot.encoding;
+  doc.externalRevision = snapshot.externalRevision;
+  doc.metadataDirty = snapshot.metadataDirty;
+  doc.encodingStatus = snapshot.encodingStatus;
   doc.viewState = snapshot.viewState;
   state.documents.push(doc);
   activateDocument(doc.id);

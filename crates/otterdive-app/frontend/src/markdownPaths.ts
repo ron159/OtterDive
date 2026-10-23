@@ -35,8 +35,8 @@ export function resolveMarkdownResource(source: string, documentPath?: string | 
     value = decodePath(value);
   }
   if (/^(?:[a-z]:[\\/]|[\\/])/i.test(value)) return normalizeResourcePath(value);
-  const base = documentPath ? documentPath.replace(/[\\/][^\\/]*$/, "") : workspaceRoot;
-  return base ? normalizeResourcePath(`${base}/${value}`) : "";
+  const base = documentPath ? documentPath.replace(/[\\/][^\\/]*$/, "") || "/" : workspaceRoot;
+  return base ? normalizeResourcePath(`${base}${/[\\/]$/.test(base) ? "" : "/"}${value}`) : "";
 }
 
 export function relativeMarkdownResource(fromDirectory: string, targetPath: string): string {

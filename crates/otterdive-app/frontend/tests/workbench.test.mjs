@@ -32,6 +32,14 @@ test('relative links respect POSIX case, Windows volumes and decoded heading anc
   assert.deepEqual(paths.splitMarkdownLink('readme.md#%E6%A0%87%E9%A2%98'), { path: 'readme.md', anchor: '标题' });
 });
 
+test('documents in the filesystem root resolve relative links and images from that root', () => {
+  assert.equal(paths.resolveMarkdownResource('guide.md', '/notes.md'), '/guide.md');
+  assert.equal(paths.resolveMarkdownResource('images/a%20b.png', '/notes.md'), '/images/a b.png');
+  assert.equal(paths.resolveMarkdownResource('../guide.md', '/notes.md'), '/guide.md');
+  assert.equal(paths.resolveMarkdownResource('guide.md', 'C:\\notes.md'), 'C:\\guide.md');
+  assert.equal(paths.resolveMarkdownResource('guide.md', null, '/'), '/guide.md');
+});
+
 test('writing statistics omit markup metadata and code while counting Unicode graphemes', () => {
   const source = '---\ntitle: hidden\n---\n# 中文\nHello **world** [文档](http://example.com)\n```js\nhidden code\n```\n';
   const stats = writingStats(source, true);

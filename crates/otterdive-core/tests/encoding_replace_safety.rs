@@ -83,6 +83,47 @@ fn lossy_saves_leave_original_bytes_untouched() {
     assert_eq!(fs::read(&path).unwrap(), [0xEF, 0xBB, 0xBF, 0xFF]);
 }
 
+#[cfg(unix)]
+#[test]
+fn saving_through_a_symbolic_link_updates_the_target_and_preserves_the_link() {
+    let dir = TestDir::new();
+    let target = dir.0.join("document.txt");
+    let alias = dir.0.join("alias.txt");
+    fs::write(&target, "before").unwrap();
+    std::os::unix::fs::symlink("document.txt", &alias).unwrap();
+    let mut document = Document::open(&alias).unwrap();
+    document.set_text("after".to_owned());
+    document.save().unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), "after");
+    assert_eq!(
+        fs::read_link(&alias).unwrap(),
+        PathBuf::from("document.txt")
+    );
+    assert_eq!(document.meta.path.as_deref(), Some(alias.as_path()));
+}
+
+#[test]
+fn save_as_refuses_a_directory_and_preserves_its_contents() {
+    let dir = TestDir::new();
+    let destination = dir.0.join("folder");
+    fs::create_dir(&destination).unwrap();
+    fs::write(destination.join("important.txt"), "keep").unwrap();
+    let mut document = Document::untitled(1);
+    document.set_text("new document".to_owned());
+    let result = document.save_as(&destination);
+    assert!(
+        result.is_err(),
+        "saving must not turn a directory into a file"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("important.txt")).unwrap(),
+        "keep"
+    );
+    assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    assert!(document.is_dirty());
+    assert!(document.meta.path.is_none());
+}
+
 #[test]
 fn selected_regex_matches_use_expanded_captures_and_preserve_other_matches() {
     let dir = TestDir::new();

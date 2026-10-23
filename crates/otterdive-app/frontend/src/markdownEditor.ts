@@ -1546,16 +1546,14 @@ function regexNamedGroupsAt(
   options: MarkdownSearchOptions,
   expectedIndex: number,
 ) {
-  try {
-    const expression = new RegExp(options.wholeWord ? `\\b${pattern}\\b` : pattern, options.matchCase ? "g" : "gi");
-    let match: RegExpExecArray | null;
-    while ((match = expression.exec(source))) {
-      if (match.index === expectedIndex) return match.groups;
-      if (match.index > expectedIndex) break;
-      if (match[0] === "") expression.lastIndex += 1;
-    }
-  } catch {
-    return undefined;
+  // Muya searches in Unicode mode, with a fallback for legacy expressions.
+  // The selected match has already passed its Unicode whole-word filter.
+  for (const flags of ["uy", "y"]) {
+    try {
+      const expression = new RegExp(pattern, `${options.matchCase ? "" : "i"}${flags}`);
+      expression.lastIndex = expectedIndex;
+      return expression.exec(source)?.groups;
+    } catch { /* Retry patterns which are only valid without Unicode mode. */ }
   }
   return undefined;
 }

@@ -127,11 +127,7 @@ impl SearchMatcher {
                 .partition_point(|offset| *offset <= mat.start())
                 .saturating_sub(1);
             let line_start = index.starts[line_idx];
-            let line_end = index
-                .starts
-                .get(line_idx + 1)
-                .map(|n| n.saturating_sub(1))
-                .unwrap_or(text.len());
+            let line_end = index.line_end(text, line_idx);
             let mut preview_start = mat.start().saturating_sub(1024).max(line_start);
             while !text.is_char_boundary(preview_start) {
                 preview_start += 1;
@@ -356,12 +352,19 @@ struct LineIndex {
 impl LineIndex {
     fn new(text: &str) -> Self {
         let mut starts = vec![0];
-        for (idx, byte) in text.bytes().enumerate() {
-            if byte == b'\n' {
+        let bytes = text.as_bytes();
+        for (idx, byte) in bytes.iter().copied().enumerate() {
+            if byte == b'\n' || (byte == b'\r' && bytes.get(idx + 1) != Some(&b'\n')) {
                 starts.push(idx + 1);
             }
         }
         Self { starts }
+    }
+
+    fn line_end(&self, text: &str, line_idx: usize) -> usize {
+        let start = self.starts[line_idx];
+        let next = self.starts.get(line_idx + 1).copied().unwrap_or(text.len());
+        start + text[start..next].trim_end_matches(['\r', '\n']).len()
     }
 
     fn match_from_range(&self, text: &str, start: usize, end: usize) -> TextMatch {
@@ -370,12 +373,8 @@ impl LineIndex {
             .partition_point(|line_start| *line_start <= start)
             .saturating_sub(1);
         let line_start = self.starts[line_idx];
-        let line_end = self
-            .starts
-            .get(line_idx + 1)
-            .map(|next_line| next_line.saturating_sub(1))
-            .unwrap_or(text.len());
-        let column = text[line_start..start].chars().count() + 1;
+        let line_end = self.line_end(text, line_idx);
+        let column = text[line_start..start].encode_utf16().count() + 1;
         TextMatch {
             range: MatchRange { start, end },
             line: line_idx + 1,
@@ -430,6 +429,73 @@ mod tests {
         assert_eq!(hits[0].line, 2);
         assert_eq!(hits[0].column, 5);
         assert_eq!(hits[0].line_text, "two target");
+    }
+
+    #[test]
+    fn search_and_replace_locations_follow_editor_newlines_and_utf16_columns() {
+        let text = "first\r甲😀 target\r\nlast target\n";
+        let options = SearchOptions::default();
+        let hits = find_all(text, "target", &options).unwrap();
+        assert_eq!((hits[0].line, hits[0].column), (2, 5));
+        assert_eq!(hits[0].line_text, "甲😀 target");
+        assert_eq!((hits[1].line, hits[1].column), (3, 6));
+        let replacement = apply_replace_all(text, "target", "found", &options).unwrap();
+        assert_eq!(replacement.matches, hits);
+        assert_eq!(replacement.text, "first\r甲😀 found\r\nlast found\n");
+    }
+
+    #[test]
+    fn bounded_and_regular_search_report_the_same_utf16_locations() {
+        let text = "😀 target\rnext\r\n😀 target";
+        let matcher = SearchMatcher::new("target", &SearchOptions::default()).unwrap();
+        let expected = matcher.find_all(text);
+        let mut bounded = Vec::new();
+        matcher.visit_bounded_matches(text, |hit| {
+            bounded.push(hit);
+            true
+        });
+        assert_eq!(expected, bounded);
+        assert_eq!((expected[0].line, expected[0].column), (1, 4));
+        assert_eq!((expected[1].line, expected[1].column), (3, 4));
+    }
+
+    #[test]
+    fn bounded_search_handles_newline_matches_and_multiline_spans() {
+        let text = "first\rtarget\r\nnext\nend";
+        for query in ["\r", "\r\n", "\n", "target\r\nnext", "(?s)target.*end"] {
+            let matcher = SearchMatcher::new(
+                query,
+                &SearchOptions {
+                    mode: SearchMode::Regex,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let expected = matcher.find_all(text);
+            assert!(!expected.is_empty(), "query {query:?}");
+            let mut bounded = Vec::new();
+            matcher.visit_bounded_matches(text, |hit| {
+                bounded.push(hit);
+                true
+            });
+            assert_eq!(bounded, expected, "query {query:?}");
+        }
+
+        // A newline begins just outside the trimmed preview, including the LF in CRLF.
+        let long_line = format!("{}\r\nend", "😀".repeat(3000));
+        for query in ["\r", "\n", "\r\n"] {
+            let matcher = SearchMatcher::new(query, &SearchOptions::default()).unwrap();
+            let mut count = 0;
+            matcher.visit_bounded_matches(&long_line, |hit| {
+                count += 1;
+                assert_eq!(hit.line, 1);
+                assert!(hit.column >= 6001);
+                assert!(hit.line_text.len() <= 4096);
+                assert!(!hit.line_text.contains(['\r', '\n']));
+                true
+            });
+            assert_eq!(count, 1);
+        }
     }
 
     #[test]

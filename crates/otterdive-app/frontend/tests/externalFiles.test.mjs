@@ -10,7 +10,7 @@ const ast = ts.createSourceFile('main.ts', source, ts.ScriptTarget.Latest, true)
 const names = new Set(['checkExternalFiles', 'saveDocument', 'handleMissingDocument', 'closeDocument',
   'confirmDocumentCanClose', 'shouldPromptToSave', 'removeOpenDocumentsForDeletedPath', 'confirmCloseAll', 'flushSessionBeforeClose',
   'closingDocumentSignature', 'setClosingEditorsLocked', 'blockInputDuringWindowClose', 'bindWindowCloseGuard', 'requestWindowClose',
-  'applyImageMigrations', 'replaceImageReference', 'markdownImageContentMask']);
+  'applyImageMigrations', 'replaceImageReference', 'markdownImageContentMask', 'scheduleAutoSave', 'cancelAutoSave', 'documentSessionKey']);
 const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
   .map(node => node.getText(ast)).join('\n');
 const js = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -20,6 +20,8 @@ function harness(options = {}) {
     encoding: 'UTF-8', dirty: false, version: 1, ...options.doc };
   const calls = { prompts: [], alerts: [], reads: 0, saves: [], refreshed: 0, recovery: [], locks: [], closed: 0, reloads: [], persistenceErrors: new Map() };
   const app = { inert: false };
+  const timers = new Map();
+  let timerId = 0;
   let modelText = doc.text;
   const model = { getValue: () => modelText, getAlternativeVersionId: () => doc.version, isDisposed: () => !!options.disposed, pushStackElement() {} };
   const context = {
@@ -30,9 +32,10 @@ function harness(options = {}) {
     sideDocumentId: 1, sideEditor: { updateOptions: ({ readOnly }) => { calls.locks.push(['side', readOnly]); } },
     appWindow: { onCloseRequested: handler => { context.nativeCloseHandler = handler; }, close: async () => { calls.closed++; } },
     confirmResolver: null, unsavedResolver: null, textInputResolver: null,
-    state: { restoring: false, documents: [doc], activeId: 1, searchRevision: 0, missingFileBehavior: options.behavior ?? 'keep', workbench: { historyEnabled: false, recoveryEnabled: true } },
+    state: { restoring: false, documents: [doc], activeId: 1, searchRevision: 0, bookmarks: {}, missingFileBehavior: options.behavior ?? 'keep', workbench: { historyEnabled: false, recoveryEnabled: true } },
     document: { visibilityState: 'visible' },
-    window: { clearTimeout() {}, addEventListener() {}, removeEventListener() {} }, sessionTimer: 0,
+    window: { clearTimeout(id) { timers.delete(id); }, setTimeout(callback) { timers.set(++timerId, callback); return timerId; }, addEventListener() {}, removeEventListener() {} }, sessionTimer: 0,
+    autoSaveTimers: new Map(),
     recoveryTimers: new Map(), recoveryIds: new Map(), closingDiscardedVersions: new Map(), recoveryQueue: Promise.resolve(),
     saveSession: async () => { calls.recovery.push('session'); await options.onSession?.(context, doc); },
     showExternalConflict: async () => { calls.prompts.push('diff'); return options.reload ?? false; },
@@ -46,6 +49,7 @@ function harness(options = {}) {
     discardRecovery: (_, key) => { calls.recovery.push(`discard:${key}`); },
     writingStatsCache: new Map(), markdownSessions: new Map(), closeSideEditorFor() {},
     syncMarkdownModelFromEditor() {}, cancelAutoSave() {},
+    syncActiveBookmarkLines() {}, ensureDraftId: doc => doc.draftId ?? 'draft-1',
     documentVersion: doc => doc.version,
     askConfirm: async prompt => { calls.prompts.push(prompt); return options.reload ?? false; },
     showAlert: async prompt => { calls.alerts.push(prompt); },
@@ -87,7 +91,51 @@ function harness(options = {}) {
   };
   vm.createContext(context);
   vm.runInContext(js, context);
-  return { doc, calls, context, model, check: () => context.checkExternalFiles(), save: automatic => context.saveDocument(doc, false, automatic) };
+  return { doc, calls, context, model, timers,
+    runTimers() { const pending = [...timers.values()]; timers.clear(); pending.forEach(callback => callback()); },
+    check: () => context.checkExternalFiles(), save: automatic => context.saveDocument(doc, false, automatic) };
+}
+
+test('auto-save resumes when edits made during a slow save outlive their timer', async () => {
+  const options = { revision: 'old', doc: { dirty: true } };
+  const h = harness(options);
+  h.context.state.workbench.autoSaveMode = 'afterDelay';
+  h.context.state.autoSaveDelaySeconds = 1;
+  options.onSave = async context => {
+    if (h.calls.saves.length !== 1) return;
+    context.setModelText('typed during save');
+    context.scheduleAutoSave(h.doc);
+    h.runTimers();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.calls.saves.length, 1, 'the timer must not start a concurrent write');
+    options.revision = 'saved';
+  };
+  assert.equal(await h.save(true), true);
+  assert.equal(h.doc.dirty, true);
+  assert.equal(h.timers.size, 1, 'successful save must re-arm auto-save for remaining edits');
+  h.runTimers();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.saves.length, 2);
+  assert.equal(h.calls.saves[1].text, 'typed during save');
+  assert.equal(h.doc.dirty, false);
+});
+
+for (const sourcePath of [null, '/file.txt']) {
+  test(`saving ${sourcePath ?? 'a draft'} to a new path retains its current bookmarks`, async () => {
+    const h = harness({ revision: 'missing', savePath: '/saved.txt', doc: { path: sourcePath, dirty: true, draftId: 'draft-1' } });
+    const previousKey = sourcePath ? `file:${sourcePath}` : 'draft:draft-1';
+    h.context.state.bookmarks[previousKey] = [2];
+    h.context.syncActiveBookmarkLines = doc => {
+      assert.equal(doc.path, sourcePath);
+      h.context.state.bookmarks[previousKey] = [3];
+    };
+    assert.equal(await h.context.saveDocument(h.doc, true), true);
+    assert.deepEqual(Array.from(h.context.state.bookmarks['file:/saved.txt'] ?? []), [3]);
+    if (sourcePath) {
+      assert.deepEqual(Array.from(h.context.state.bookmarks[previousKey]), [3], 'Save As preserves bookmarks for the original file');
+      assert.notEqual(h.context.state.bookmarks[previousKey], h.context.state.bookmarks['file:/saved.txt']);
+    } else assert.equal(h.context.state.bookmarks[previousKey], undefined, 'obsolete draft key is removed');
+  });
 }
 
 test('a failed save remains visible and leaves unsaved content intact', async () => {

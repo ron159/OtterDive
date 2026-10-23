@@ -692,7 +692,17 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> (String, bool) {
 }
 
 fn replace_file_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    // Opening follows symbolic links, so saving must update the same target.
+    // Rename the target itself instead of replacing the user's link with a regular file.
+    let resolved = fs::canonicalize(path)?;
+    let path = resolved.as_path();
     let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "保存目标必须是普通文件，不能覆盖目录或设备",
+        ));
+    }
     if metadata.permissions().readonly() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -749,6 +759,10 @@ fn unique_sibling_path(path: &Path, tag: &str) -> PathBuf {
 }
 
 fn should_visit(entry: &DirEntry, options: &SearchOptions, skip_dirs: &[String]) -> bool {
+    // The user explicitly selected this root; filters apply only to its descendants.
+    if entry.depth() == 0 {
+        return true;
+    }
     let name = entry.file_name().to_string_lossy();
     if !options.include_hidden && name.starts_with('.') {
         return false;
@@ -770,8 +784,7 @@ fn parse_list(input: &str) -> Vec<String> {
 }
 
 enum FileGlobPattern {
-    Extension(String),
-    ContainsAll(Vec<String>),
+    Wildcard(String),
     NameOrExtension(String),
 }
 
@@ -794,16 +807,8 @@ impl FileGlobMatcher {
                 .into_iter()
                 .map(|pattern| pattern.to_ascii_lowercase())
                 .map(|pattern| {
-                    if let Some(extension) = pattern.strip_prefix("*.") {
-                        FileGlobPattern::Extension(extension.to_owned())
-                    } else if pattern.contains('*') {
-                        FileGlobPattern::ContainsAll(
-                            pattern
-                                .split('*')
-                                .filter(|part| !part.is_empty())
-                                .map(ToOwned::to_owned)
-                                .collect(),
-                        )
+                    if pattern.contains(['*', '?']) {
+                        FileGlobPattern::Wildcard(pattern)
                     } else {
                         FileGlobPattern::NameOrExtension(pattern)
                     }
@@ -832,15 +837,44 @@ impl FileGlobMatcher {
             .to_ascii_lowercase();
 
         self.patterns.iter().any(|pattern| match pattern {
-            FileGlobPattern::Extension(expected) => extension == *expected,
-            FileGlobPattern::ContainsAll(parts) => {
-                parts.iter().all(|part| file_name.contains(part))
-            }
+            FileGlobPattern::Wildcard(pattern) => wildcard_matches(pattern, &file_name),
             FileGlobPattern::NameOrExtension(expected) => {
                 file_name == *expected || extension == expected.trim_start_matches('.')
             }
         })
     }
+}
+
+fn wildcard_matches(pattern: &str, name: &str) -> bool {
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let name = name.chars().collect::<Vec<_>>();
+    let (mut pattern_index, mut name_index) = (0, 0);
+    let mut star = None;
+    let mut retry_name = 0;
+    while name_index < name.len() {
+        match pattern.get(pattern_index) {
+            Some('*') => {
+                star = Some(pattern_index);
+                pattern_index += 1;
+                retry_name = name_index;
+            }
+            Some(character) if *character == '?' || *character == name[name_index] => {
+                pattern_index += 1;
+                name_index += 1;
+            }
+            _ => match star {
+                Some(star_index) => {
+                    retry_name += 1;
+                    name_index = retry_name;
+                    pattern_index = star_index + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[pattern_index..]
+        .iter()
+        .all(|character| *character == '*')
 }
 
 #[cfg(test)]
@@ -888,6 +922,61 @@ mod tests {
         assert!(matcher.matches(Path::new("main.RS")));
         assert!(matcher.matches(Path::new("README.md")));
         assert!(!matcher.matches(Path::new("package.json")));
+    }
+
+    #[test]
+    fn file_globs_preserve_order_anchors_and_compound_extensions() {
+        for (pattern, name, expected) in [
+            ("error*log", "error-2026.log", true),
+            ("error*log", "log-error.txt", false),
+            ("error*log", "prefix-error.log", false),
+            ("error*log", "error.log.bak", false),
+            ("*.test.ts", "search.test.ts", true),
+            ("*.test.ts", "search.ts", false),
+            ("*a*a*", "a.txt", false),
+            ("*a*a*", "alpha.txt", true),
+            ("log?.txt", "log1.txt", true),
+            ("log?.txt", "log10.txt", false),
+            ("*.txt", "file.TXT", true),
+            ("txt", "file.txt", true),
+        ] {
+            assert_eq!(
+                FileGlobMatcher::new(pattern).matches(Path::new(name)),
+                expected,
+                "pattern {pattern:?}, name {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicitly_selected_hidden_root_remains_searchable() {
+        let root =
+            std::env::temp_dir().join(format!(".otterdive-hidden-root-{}", std::process::id()));
+        fs::create_dir_all(root.join(".hidden")).unwrap();
+        fs::write(root.join("visible.txt"), "target").unwrap();
+        fs::write(root.join(".hidden/ignored.txt"), "target").unwrap();
+        let options = SearchOptions::default();
+        let search = search_directory(&root, "target", &options).unwrap();
+        let (replace, skipped) =
+            preview_directory_replace(&root, "target", "new", &options).unwrap();
+        let mut stream_hits = Vec::new();
+        search_directory_stream(
+            &root,
+            "target",
+            &options,
+            &crate::analyse::CancellationToken::new(),
+            100,
+            |batch| {
+                stream_hits.extend(batch.hits);
+                true
+            },
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(search.hits.len(), 1);
+        assert_eq!(replace.len(), 1);
+        assert!(skipped.is_empty());
+        assert_eq!(stream_hits.len(), 1);
     }
 
     #[test]

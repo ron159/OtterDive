@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.7 — 2026-10-23
+
+### Fixed
+
+- Reopened tabs retain disk revisions, source encodings, and pending metadata so external-change conflict protection remains active. Failed paged-file reopens remain retryable.
+- Auto-save is rescheduled for edits made during a slow save. First saves and Save As retain document bookmarks.
+- Saving through a symbolic link updates its target while preserving the link. Existing directories and devices are rejected before any replacement is attempted.
+- Search and replacement locations now agree with editor CR/CRLF/LF lines and UTF-16 columns. Filename globs respect ordering and anchors, including compound suffixes and single-character wildcards. Explicitly selected hidden root directories remain searchable.
+- Fixed relative links and images in Markdown files at the filesystem root, and named capture replacement involving emoji, Unicode properties, and Chinese whole-word matches.
+- SQL formatting preserves comments, multiline strings, and quoted identifiers instead of compacting their contents or swallowing projection fields into a comment.
+
 ## 0.8.6 — 2026-10-22
 
 ### Fixes
