@@ -96,6 +96,10 @@ jobs:
         working-directory: crates/otterdive-app/frontend
         run: npm test
 
+      - name: Run Rust regression tests
+        if: runner.os == 'Linux'
+        run: cargo test --locked --workspace
+
       - name: Validate updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash

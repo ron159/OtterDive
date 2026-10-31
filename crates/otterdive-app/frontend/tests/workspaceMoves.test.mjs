@@ -1,16 +1,12 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
-import ts from "typescript";
+import { mainFunctions } from "./support/mainFunctions.mjs";
 
-const source = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
 const noop = () => {};
 function harness(names, globals) {
-  const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).map(node => node.getText(ast)).join("\n");
   const context = vm.createContext({ ...globals });
-  vm.runInContext(ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  vm.runInContext(mainFunctions(names), context);
   return context;
 }
 

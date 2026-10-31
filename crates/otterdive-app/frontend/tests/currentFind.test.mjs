@@ -1,22 +1,15 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
-import ts from "typescript";
+import { mainFunctions } from "./support/mainFunctions.mjs";
 
 // Execute the production handlers with controlled time and editor boundaries.
-const source = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-const ast = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
 const names = new Set([
   "handleCurrentFindInput", "cancelScheduledCurrentFind", "scheduleCurrentFind",
   "findSelectedDocuments", "findCurrent", "findNextResult", "findPreviousResult",
   "setCurrentFindDockOpen",
 ]);
-const handlers = ts.transpileModule(
-  ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
-    .map(node => node.getText(ast)).join("\n"),
-  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
-).outputText;
+const handlers = mainFunctions(names);
 
 function setup() {
   let now = 0;
