@@ -20,7 +20,7 @@ pub struct AnalyseService {
 
 const RESULT_CHUNK_LINES: usize = 2_000;
 const MAX_RESULT_CHUNK_LINES: usize = 10_000;
-const MAX_ANALYSE_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ANALYSE_FILE_BYTES: u64 = otterdive_core::fs::MAX_FULL_TEXT_BYTES;
 
 impl AnalyseService {
     fn register_run(&self, run_id: u64, cancel: CancellationToken) -> Result<(), String> {

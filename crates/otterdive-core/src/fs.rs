@@ -41,6 +41,9 @@ pub struct DirectorySearchReport {
     pub elapsed_ms: u64,
 }
 
+/// Upper bound shared by full-file search and Analyse input loading.
+pub const MAX_FULL_TEXT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// Reuse the file buffer for ordinary UTF-8 instead of copying the entire file.
 /// BOMs and legacy encodings keep the same decoding behavior as `decode_bytes`.
 pub fn decode_owned_bytes(bytes: Vec<u8>) -> DecodedText {
@@ -1121,15 +1124,15 @@ pub fn read_text_cancellable(
     encoding: Option<EncodingKind>,
     cancel: &crate::analyse::CancellationToken,
 ) -> io::Result<DecodedText> {
-    const LIMIT: u64 = 512 * 1024 * 1024;
+    const LIMIT: u64 = MAX_FULL_TEXT_BYTES;
     if fs::metadata(path)?.len() > LIMIT {
         return Err(io::Error::other(
-            "全文搜索/分析超过 512 MiB 后台内存安全上限；未改为局部搜索",
+            "全文搜索/分析超过 2 GiB 后台内存安全上限",
         ));
     }
     let mut file = fs::File::open(path)?.take(LIMIT + 1);
     let mut bytes = Vec::new();
-    let mut buffer = [0u8; 64 * 1024];
+    let mut buffer = vec![0u8; 4 * 1024 * 1024];
     loop {
         if cancel.is_cancelled() {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "任务已取消"));
@@ -1157,11 +1160,12 @@ pub fn search_file_stream(
     let matcher = SearchMatcher::new(query, options)?;
     let decoded = read_text_cancellable(path, encoding, cancel)
         .map_err(|e| SearchError::ReadFile(e.to_string()))?;
-    let normalized = decoded.text.replace("\r\n", "\n").replace('\r', "\n");
     let mut batch = Vec::new();
     let mut total = 0;
     let mut truncated = false;
-    matcher.visit_bounded_matches(&normalized, |hit| {
+    // SearchMatcher and LineIndex already treat CR, LF, and CRLF as line breaks.
+    // Avoid a second full-size String allocation just to normalize line endings.
+    matcher.visit_bounded_matches(&decoded.text, |hit| {
         if cancel.is_cancelled() {
             return false;
         }

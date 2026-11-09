@@ -11,6 +11,7 @@ use std::{
 };
 
 pub const PAGE_BYTES: usize = 256 * 1024;
+const CHECKPOINT_INTERVAL: u64 = 4 * 1024 * 1024;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Position {
     line: usize,
@@ -298,8 +299,15 @@ impl PagedDocumentService {
             all.clear();
         }
         let positions = all.entry(key.into()).or_default();
+        // Keep an index about every 4 MiB. Dense 256 KiB checkpoints quickly
+        // exhausted the cache and made later jumps rescan from the beginning.
+        if chunk.next_offset % CHECKPOINT_INTERVAL >= PAGE_BYTES as u64 && chunk.has_more {
+            return Ok(());
+        }
         if positions.len() >= 4096 {
-            positions.clear();
+            let keep_from = positions.keys().next_back().copied().unwrap_or(0)
+                .saturating_sub(CHECKPOINT_INTERVAL * 2048);
+            positions.retain(|offset, _| *offset >= keep_from);
         }
         positions.insert(
             chunk.next_offset,
