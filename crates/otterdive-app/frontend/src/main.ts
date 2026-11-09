@@ -1043,8 +1043,6 @@ let outlineNavigation: { index: number; scrollTop: number } | null = null;
 let searchResultNavigationDepth = 0;
 const pagedDocuments = new globalThis.Map<number, PagedDocumentController>();
 let pagedScrollGuard = false;
-let pagedScrollbarDragging = false;
-let pagedPreviousTop = 0;
 let editorLayoutFrame = 0;
 let editorLayoutSettleFrame = 0;
 let editorLayoutForceRender = false;
@@ -4168,7 +4166,6 @@ function pagedController(doc: OpenDocument) {
             const columnDelta = previous.startLine===page.startLine ? previous.startColumn-page.startColumn : 0;
             editor.setScrollPosition({ scrollTop: editor.getTopForLineNumber(line)+topDelta, scrollLeft: Math.max(0,left+columnDelta*width) });
           } else { editor.setScrollTop(0); editor.setPosition({ lineNumber: 1, column: 1 }); }
-          pagedPreviousTop = editor.getScrollTop();
           renderDocumentStatus();
         }
         window.requestAnimationFrame(() => { pagedScrollGuard = false; });
@@ -4204,8 +4201,9 @@ function bindPagedDocumentControls() {
   $("pagedLastButton").addEventListener("click", () => load(doc => ({ offset: Math.max(0,doc.fileSize-1) })));
   $("pagedCancelButton").addEventListener("click", () => { const doc = activeDocument(); if (doc.paged) { pagedController(doc).cancel(); renderPagedDocumentControls(); } });
   $("pagedFilePosition").addEventListener("change", () => load(() => ({ offset: Number($<HTMLInputElement>("pagedFilePosition").value) })));
+  let scrollbarDragging = false;
   const continueScroll = (direction: number) => {
-    const doc = activeDocument(); if (!doc.paged || pagedScrollGuard || pagedScrollbarDragging) return false;
+    const doc = activeDocument(); if (!doc.paged || pagedScrollGuard || scrollbarDragging) return false;
     const controller = pagedController(doc); if (controller.busy || !controller.page) return false;
     const height = editor.getLayoutInfo().height;
     const nearBottom = editor.getScrollTop()+height >= editor.getScrollHeight()-height;
@@ -4218,14 +4216,18 @@ function bindPagedDocumentControls() {
     return false;
   };
   $("editor").addEventListener("pointerdown", event => {
-    const target = event.target;
-    if (target instanceof Element && target.closest(".monaco-scrollable-element > .scrollbar.vertical")) pagedScrollbarDragging = true;
+    const target = event.target as (EventTarget & { closest?: (selector: string) => Element | null }) | null;
+    if (target?.closest?.(".monaco-scrollable-element > .scrollbar.vertical")) scrollbarDragging = true;
   }, true);
-  window.addEventListener("pointerup", () => { pagedScrollbarDragging = false; }, true);
-  window.addEventListener("pointercancel", () => { pagedScrollbarDragging = false; }, true);
+  const releaseScrollbarDrag = () => { scrollbarDragging = false; };
+  $("editor").addEventListener("pointerup", releaseScrollbarDrag, true);
+  $("editor").addEventListener("pointercancel", releaseScrollbarDrag, true);
+  globalThis.addEventListener?.("pointerup", releaseScrollbarDrag, true);
+  globalThis.addEventListener?.("pointercancel", releaseScrollbarDrag, true);
+  let previousTop = 0;
   editor.onDidScrollChange(event => {
     if (event.scrollTopChanged) {
-      const direction = event.scrollTop-pagedPreviousTop; pagedPreviousTop = event.scrollTop;
+      const direction = event.scrollTop-previousTop; previousTop = event.scrollTop;
       if (direction) continueScroll(direction);
     }
   });

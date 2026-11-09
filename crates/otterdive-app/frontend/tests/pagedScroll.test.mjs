@@ -23,6 +23,12 @@ test('normal editor scrolling automatically reads adjacent pages without navigat
 test('busy/non-paged and programmatic model changes cannot create overlapping reads',()=>{
  const h=setup();h.controller.busy=true;h.scrollTo(4600);assert.equal(h.calls.length,0);h.controller.busy=false;h.context.pagedScrollGuard=true;h.scrollTo(4700);assert.equal(h.calls.length,0);h.context.pagedScrollGuard=false;h.doc.paged=false;h.scrollTo(4800);assert.equal(h.calls.length,0);
 });
+test('dragging the Monaco vertical scrollbar pauses automatic page loads until release',()=>{
+ const h=setup();
+ h.node('editor').listeners.pointerdown({target:{closest:selector=>selector.includes('scrollbar.vertical')}});
+ h.scrollTo(4100);assert.equal(h.calls.length,0);
+ h.node('editor').listeners.pointerup();h.scrollTo(4200);assert.equal(h.calls.length,1);
+});
 test('wheel at a window boundary reads the neighbor while modified zoom gestures are preserved',()=>{
  const h=setup();assert.equal(h.wheel(-1,{ctrlKey:true}),false);assert.equal(h.calls.length,0);assert.equal(h.wheel(-1),true);assert.equal(h.calls.at(-1).transition,'prepend');h.controller.page.startOffset=0;assert.equal(h.wheel(-1),false);
 });
