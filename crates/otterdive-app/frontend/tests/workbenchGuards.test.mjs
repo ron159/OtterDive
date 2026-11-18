@@ -175,7 +175,7 @@ test("restoring as a new document still creates a copy when current text matches
 });
 
 test("a missing history source does not abort safe replacement of the remaining preview", async () => {
-  const items = [{ fileId: 0, path: "/missing", fileName: "missing" }, { fileId: 1, path: "/good", fileName: "good" }];
+  const items = [{ fileId: 0, path: "/missing", fileName: "missing" }, { fileId: 1, path: "/good", fileName: "good" }, {fileId: 2, path: "/skip", fileName: "skip"}];
   const preview = { previewId: "p1", items };
   const state = { replacePreview: preview, documents: [], workbench: { historyEnabled: true } };
   let applied = false;
@@ -191,5 +191,8 @@ test("a missing history source does not abort safe replacement of the remaining 
   });
   await context.applyWorkspaceReplace();
   assert.equal(applied, true); assert.equal(context.lastReplaceBatchId, "b1");
+  assert.equal(items[2].writeStatus, "未选择");
+  assert.equal(items[0].writeStatus, "写入失败：gone");
+  assert.equal(items[1].writeStatus, "已写入 1 处");
   assert.equal(context.lastReplacePreview.items.length, 1); assert.equal(context.lastReplacePreview.items[0].path, "/good");
 });

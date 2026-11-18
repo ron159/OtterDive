@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.9 — 2026-11-18
+
+- Preserve the original path and macOS Finder tags during replacement saves. Protect open Save As destinations and restore draft encoding and line endings.
+- Fix CRLF multiline search and bookmark navigation in paged files. Bound directory search results and report replacement outcomes per file.
+- Fix Markdown outline navigation, footnote links, and image paths containing parentheses. Speed up image migration and dense Analyse highlights.
+- Open files in the platform file manager on macOS and Linux. Avoid redundant encoding and snapshot reads.
+
 ## 0.8.7 — 2026-10-23
 
 ### Fixed

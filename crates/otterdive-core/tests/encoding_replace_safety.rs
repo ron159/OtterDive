@@ -102,6 +102,64 @@ fn saving_through_a_symbolic_link_updates_the_target_and_preserves_the_link() {
     assert_eq!(document.meta.path.as_deref(), Some(alias.as_path()));
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn saving_preserves_finder_tags() {
+    use std::process::Command;
+    let dir = TestDir::new();
+    let path = dir.0.join("tagged.txt");
+    let key = "com.apple.metadata:_kMDItemUserTags";
+    let tags = "<plist version=\"1.0\"><array><string>Work</string></array></plist>";
+    fs::write(&path, "before").unwrap();
+    assert!(
+        Command::new("/usr/bin/xattr")
+            .args(["-w", key, tags])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut document = Document::open(&path).unwrap();
+    document.set_text("after".into());
+    document.save().unwrap();
+    let output = Command::new("/usr/bin/xattr")
+        .args(["-p", key])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim_end(), tags);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "after");
+}
+
+#[test]
+fn readers_always_see_a_complete_file_during_repeated_replacements() {
+    use std::sync::{Barrier, atomic::AtomicBool};
+    let dir = TestDir::new();
+    let path = dir.0.join("sample.txt");
+    fs::write(&path, "initial").unwrap();
+    let ready = Barrier::new(2);
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            ready.wait();
+            loop {
+                let contents = fs::read_to_string(&path).unwrap();
+                assert!(matches!(contents.as_str(), "initial" | "replacement"));
+                if finished.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+        });
+        ready.wait();
+        let written = (0..40)
+            .try_for_each(|_| write_text_atomically(&path, "replacement", EncodingKind::Utf8));
+        finished.store(true, Ordering::Release);
+        written.unwrap();
+        reader.join().unwrap();
+    });
+}
+
 #[test]
 fn save_as_refuses_a_directory_and_preserves_its_contents() {
     let dir = TestDir::new();

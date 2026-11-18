@@ -4,7 +4,7 @@ use crate::search::{
     bounded_replace_with_matcher,
 };
 use encoding_rs::{BIG5, GBK, SHIFT_JIS, UTF_8, WINDOWS_1252};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -35,6 +35,7 @@ pub struct FileReplacePreview {
 
 #[derive(Debug, Default, Clone)]
 pub struct DirectorySearchReport {
+    pub truncated: bool,
     pub hits: Vec<FileHit>,
     pub skipped: Vec<String>,
     pub files_scanned: usize,
@@ -181,65 +182,33 @@ pub fn search_directory(
     query: &str,
     options: &SearchOptions,
 ) -> Result<DirectorySearchReport, SearchError> {
-    let started = Instant::now();
-    let root = root.as_ref();
     let mut report = DirectorySearchReport::default();
-    let matcher = SearchMatcher::new(query, options)?;
-    let file_glob = FileGlobMatcher::new(&options.file_glob);
-    let skip_dirs = parse_list(&options.skip_dirs);
-    let mut walker = WalkDir::new(root);
-    if !options.recursive {
-        walker = walker.max_depth(1);
-    }
-    for entry in walker
-        .into_iter()
-        .filter_entry(|entry| should_visit(entry, options, &skip_dirs))
-    {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(err) => {
-                report.skipped.push(err.to_string());
-                continue;
-            }
-        };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if !file_glob.matches(path) {
-            continue;
-        }
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                report.skipped.push(format!("{}: {err}", path.display()));
-                continue;
-            }
-        };
-        if metadata.len() > options.max_file_size {
-            report
-                .skipped
-                .push(format!("{}: file too large", path.display()));
-            continue;
-        }
-        report.files_scanned += 1;
-        match read_text(path) {
-            Ok(decoded) => {
-                let matches = matcher.find_all(&decoded.text);
-                if !matches.is_empty() {
-                    report.hits.push(FileHit {
-                        path: path.to_path_buf(),
-                        matches,
-                        encoding: decoded.encoding,
-                    });
+    let summary = search_directory_stream(
+        root,
+        query,
+        options,
+        &crate::analyse::CancellationToken::new(),
+        MAX_DIRECTORY_MATCHES,
+        |batch| {
+            report.skipped.extend(batch.skipped);
+            for hit in batch.hits {
+                if let Some(last) = report.hits.last_mut().filter(|last| last.path == hit.path) {
+                    last.matches.extend(hit.matches);
+                } else {
+                    report.hits.push(hit);
                 }
             }
-            Err(err) => report.skipped.push(format!("{}: {err}", path.display())),
-        }
-    }
-    report.elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+            true
+        },
+    )?;
+    report.files_scanned = summary.files_scanned;
+    report.elapsed_ms = summary.elapsed_ms;
+    report.truncated = summary.truncated;
     Ok(report)
 }
+
+pub const MAX_DIRECTORY_MATCHES: usize = 100_000;
+const MAX_DIRECTORY_PREVIEW_BYTES: usize = 32 * 1024 * 1024;
 
 /// Batches contain only new hits/skips; counters are cumulative. Returning false stops delivery.
 #[derive(Debug, Default)]
@@ -267,7 +236,9 @@ pub fn search_directory_stream(
         walker = walker.max_depth(1);
     }
     let mut summary = StreamSearchSummary::default();
+    let max_results = max_results.min(MAX_DIRECTORY_MATCHES);
     let mut total = 0;
+    let mut preview_bytes = 0;
     for entry in walker
         .into_iter()
         .filter_entry(|entry| should_visit(entry, options, &skip_dirs))
@@ -304,14 +275,18 @@ pub fn search_directory_stream(
             Err(error) => batch.skipped.push(format!("{}: {error}", path.display())),
             Ok(decoded) => {
                 let mut matches = Vec::new();
-                matcher.visit_matches(&decoded.text, |hit| {
+                matcher.visit_bounded_matches(&decoded.text, false, |hit| {
                     if cancel.is_cancelled() {
                         return false;
                     }
-                    if total >= max_results {
+                    let hit_bytes = hit.line_text.len() + hit.matched_text.len();
+                    if total >= max_results
+                        || hit_bytes > MAX_DIRECTORY_PREVIEW_BYTES - preview_bytes
+                    {
                         summary.truncated = true;
                         return false;
                     }
+                    preview_bytes += hit_bytes;
                     matches.push(hit);
                     total += 1;
                     if matches.len() == 128 {
@@ -694,7 +669,7 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> (String, bool) {
     (text, had_errors)
 }
 
-fn replace_file_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn replace_file_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // Opening follows symbolic links, so saving must update the same target.
     // Rename the target itself instead of replacing the user's link with a regular file.
     let resolved = fs::canonicalize(path)?;
@@ -713,52 +688,33 @@ fn replace_file_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
         ));
     }
 
-    let tmp_path = unique_sibling_path(path, "otterdive-tmp");
-    let backup_path = unique_sibling_path(path, "otterdive-bak");
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("保存目标没有父目录"))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(bytes)?;
+    temp.as_file().set_permissions(metadata.permissions())?;
+    #[cfg(target_os = "macos")]
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    fs::set_permissions(&tmp_path, metadata.permissions())?;
-
-    if let Err(err) = fs::rename(path, &backup_path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(err);
-    }
-
-    match fs::rename(&tmp_path, path) {
-        Ok(()) => {
-            let _ = fs::remove_file(&backup_path);
-            Ok(())
-        }
-        Err(err) => {
-            let _ = fs::remove_file(&tmp_path);
-            let _ = fs::rename(&backup_path, path);
-            Err(err)
+        use std::os::fd::AsRawFd;
+        let source = fs::File::open(path)?;
+        // Both descriptors remain open for the call. Copy Finder tags and ACLs
+        // without replacing the new contents or restoring the old modification time.
+        let result = unsafe {
+            libc::fcopyfile(
+                source.as_raw_fd(),
+                temp.as_raw_fd(),
+                std::ptr::null_mut(),
+                libc::COPYFILE_XATTR | libc::COPYFILE_ACL,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
         }
     }
-}
-
-fn unique_sibling_path(path: &Path, tag: &str) -> PathBuf {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("file");
-    for attempt in 0..1000 {
-        let candidate = parent.join(format!(
-            ".{file_name}.{tag}-{}-{attempt}.tmp",
-            std::process::id()
-        ));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    parent.join(format!(".{file_name}.{tag}-{}.tmp", std::process::id()))
+    temp.as_file().sync_all()?;
+    temp.persist(path)?;
+    Ok(())
 }
 
 fn should_visit(entry: &DirEntry, options: &SearchOptions, skip_dirs: &[String]) -> bool {
@@ -1126,9 +1082,7 @@ pub fn read_text_cancellable(
 ) -> io::Result<DecodedText> {
     const LIMIT: u64 = MAX_FULL_TEXT_BYTES;
     if fs::metadata(path)?.len() > LIMIT {
-        return Err(io::Error::other(
-            "全文搜索/分析超过 2 GiB 后台内存安全上限",
-        ));
+        return Err(io::Error::other("全文搜索/分析超过 2 GiB 后台内存安全上限"));
     }
     let mut file = fs::File::open(path)?.take(LIMIT + 1);
     let mut bytes = Vec::new();
@@ -1163,9 +1117,10 @@ pub fn search_file_stream(
     let mut batch = Vec::new();
     let mut total = 0;
     let mut truncated = false;
-    // SearchMatcher and LineIndex already treat CR, LF, and CRLF as line breaks.
-    // Avoid a second full-size String allocation just to normalize line endings.
-    matcher.visit_bounded_matches(&decoded.text, |hit| {
+    let escaped = options.mode != crate::SearchMode::Literal;
+    let logical_newlines = (query.contains('\n') || (escaped && query.contains(r"\n")))
+        && !(query.contains('\r') || (escaped && query.contains(r"\r")));
+    matcher.visit_bounded_matches(&decoded.text, logical_newlines, |hit| {
         if cancel.is_cancelled() {
             return false;
         }
@@ -1265,6 +1220,40 @@ mod paged_search_tests {
         )
         .unwrap();
         assert_eq!(multiline, 1);
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn paged_logical_newlines_preserve_source_byte_spans_and_explicit_crlf_queries() {
+        let path =
+            std::env::temp_dir().join(format!("otterdive-logical-eol-{}", std::process::id()));
+        let text = "first\r\n甲😀 X\r\nY\rZ\nend";
+        fs::write(&path, text).unwrap();
+        for (query, expected) in [(r"X\nY\nZ", "X\r\nY\rZ"), (r"X\r\nY", "X\r\nY")] {
+            for mode in [crate::SearchMode::Regex, crate::SearchMode::Extended] {
+                let options = SearchOptions {
+                    mode,
+                    ..Default::default()
+                };
+                let mut hits = Vec::new();
+                search_file_stream(
+                    &path,
+                    query,
+                    &options,
+                    None,
+                    &CancellationToken::new(),
+                    |batch| {
+                        hits.extend(batch.hits.into_iter().flat_map(|file| file.matches));
+                        true
+                    },
+                )
+                .unwrap();
+                assert_eq!(hits.len(), 1);
+                let hit = &hits[0];
+                assert_eq!((hit.line, hit.column), (2, 5));
+                assert_eq!(hit.matched_text, expected);
+                assert_eq!(&text[hit.range.start..hit.range.end], expected);
+            }
+        }
         fs::remove_file(path).unwrap();
     }
     #[test]

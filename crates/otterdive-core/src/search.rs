@@ -60,6 +60,8 @@ pub struct TextMatch {
     pub matched_text: String,
     pub line_text: String,
     pub line_text_start_column: usize,
+    /// Full UTF-16 endpoint when the matched-text preview was clipped.
+    pub end_position: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,60 +98,95 @@ impl SearchMatcher {
             .collect()
     }
 
-    pub(crate) fn visit_matches(&self, text: &str, mut visit: impl FnMut(TextMatch) -> bool) {
-        let index = LineIndex::new(text);
-        for mat in self.pattern.find_iter(text) {
-            if mat.start() == mat.end()
-                || (self.whole_word && !is_whole_word(text, mat.start(), mat.end()))
-            {
-                continue;
-            }
-            if !visit(index.match_from_range(text, mat.start(), mat.end())) {
-                break;
-            }
-        }
-    }
-
     pub(crate) fn visit_bounded_matches(
         &self,
-        text: &str,
+        source: &str,
+        logical_newlines: bool,
         mut visit: impl FnMut(TextMatch) -> bool,
     ) {
-        let index = LineIndex::new(text);
+        // Editor searches can use LF for a logical line break. Keep raw source offsets
+        // and previews, and allocate the alternate view only for newline-aware queries.
+        let normalized;
+        let text = if logical_newlines && source.contains('\r') {
+            let mut value = String::with_capacity(source.len());
+            let mut last = 0;
+            for (offset, _) in source.match_indices('\r') {
+                value.push_str(&source[last..offset]);
+                if source.as_bytes().get(offset + 1) != Some(&b'\n') {
+                    value.push('\n');
+                }
+                last = offset + 1;
+            }
+            value.push_str(&source[last..]);
+            normalized = value;
+            normalized.as_str()
+        } else {
+            source
+        };
+        let mut raw_crlf = source.match_indices("\r\n").peekable();
+        let mut removed = 0;
+        let mut source_offset = |offset: usize| {
+            if text.len() != source.len() {
+                while raw_crlf
+                    .peek()
+                    .is_some_and(|(raw, _)| *raw < offset + removed)
+                {
+                    raw_crlf.next();
+                    removed += 1;
+                }
+            }
+            offset + removed
+        };
+        let index = LineIndex::new(source);
+        let (mut counted_offset, mut counted_units) = (0, 0);
         for mat in self.pattern.find_iter(text) {
             if mat.start() == mat.end()
                 || (self.whole_word && !is_whole_word(text, mat.start(), mat.end()))
             {
                 continue;
             }
-            let line_idx = index
-                .starts
-                .partition_point(|offset| *offset <= mat.start())
-                .saturating_sub(1);
+            let start = source_offset(mat.start());
+            let end = source_offset(mat.end());
+            let line_idx = index.starts.partition_point(|offset| *offset <= start) - 1;
             let line_start = index.starts[line_idx];
-            let line_end = index.line_end(text, line_idx);
-            let mut preview_start = mat.start().saturating_sub(1024).max(line_start);
-            while !text.is_char_boundary(preview_start) {
+            let line_end = index.line_end(source, line_idx);
+            let mut preview_start = start.saturating_sub(1024).clamp(line_start, line_end);
+            while !source.is_char_boundary(preview_start) {
                 preview_start += 1;
             }
             let mut preview_end = (preview_start + 4096).min(line_end);
-            while !text.is_char_boundary(preview_end) {
+            while !source.is_char_boundary(preview_end) {
                 preview_end -= 1;
             }
-            let mut matched_end = mat.end().min(mat.start() + 2048);
-            while !text.is_char_boundary(matched_end) {
+            let mut matched_end = end.min(start + 2048);
+            while !source.is_char_boundary(matched_end) {
                 matched_end -= 1;
             }
+            // Preview starts advance monotonically even on a single very long line.
+            if counted_offset < line_start {
+                counted_offset = line_start;
+                counted_units = 0;
+            }
+            counted_units += source[counted_offset..preview_start].encode_utf16().count();
+            counted_offset = preview_start;
+            let column = counted_units + source[preview_start..start].encode_utf16().count() + 1;
+            let end_position = (matched_end < end).then(|| {
+                let end_idx = index.starts.partition_point(|offset| *offset <= end) - 1;
+                let end_column = if end_idx == line_idx {
+                    column + source[start..end].encode_utf16().count()
+                } else {
+                    source[index.starts[end_idx]..end].encode_utf16().count() + 1
+                };
+                (end_idx + 1, end_column)
+            });
             let hit = TextMatch {
-                range: MatchRange {
-                    start: mat.start(),
-                    end: mat.end(),
-                },
+                range: MatchRange { start, end },
                 line: line_idx + 1,
-                column: text[line_start..mat.start()].encode_utf16().count() + 1,
-                line_text_start_column: text[line_start..preview_start].encode_utf16().count() + 1,
-                line_text: text[preview_start..preview_end].to_owned(),
-                matched_text: text[mat.start()..matched_end].to_owned(),
+                column,
+                line_text_start_column: counted_units + 1,
+                line_text: source[preview_start..preview_end].to_owned(),
+                matched_text: source[start..matched_end].to_owned(),
+                end_position,
             };
             if !visit(hit) {
                 break;
@@ -382,6 +419,7 @@ impl LineIndex {
             matched_text: text[start..end].to_owned(),
             line_text: text[line_start..line_end].to_owned(),
             line_text_start_column: 1,
+            end_position: None,
         }
     }
 }
@@ -450,7 +488,7 @@ mod tests {
         let matcher = SearchMatcher::new("target", &SearchOptions::default()).unwrap();
         let expected = matcher.find_all(text);
         let mut bounded = Vec::new();
-        matcher.visit_bounded_matches(text, |hit| {
+        matcher.visit_bounded_matches(text, false, |hit| {
             bounded.push(hit);
             true
         });
@@ -474,7 +512,7 @@ mod tests {
             let expected = matcher.find_all(text);
             assert!(!expected.is_empty(), "query {query:?}");
             let mut bounded = Vec::new();
-            matcher.visit_bounded_matches(text, |hit| {
+            matcher.visit_bounded_matches(text, false, |hit| {
                 bounded.push(hit);
                 true
             });
@@ -486,7 +524,7 @@ mod tests {
         for query in ["\r", "\n", "\r\n"] {
             let matcher = SearchMatcher::new(query, &SearchOptions::default()).unwrap();
             let mut count = 0;
-            matcher.visit_bounded_matches(&long_line, |hit| {
+            matcher.visit_bounded_matches(&long_line, false, |hit| {
                 count += 1;
                 assert_eq!(hit.line, 1);
                 assert!(hit.column >= 6001);

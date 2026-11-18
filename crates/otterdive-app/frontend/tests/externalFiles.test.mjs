@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import ts from 'typescript';
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+
+const { outputFiles } = await build({ entryPoints: [fileURLToPath(new URL('../src/markdownImages.ts', import.meta.url))], bundle: true, format: 'esm', write: false });
+const { applyImageMigrations, markdownImageReferences } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
 
 // Run the actual application functions with controlled disk I/O and dialogs.
 const source = fs.readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
@@ -10,7 +15,10 @@ const ast = ts.createSourceFile('main.ts', source, ts.ScriptTarget.Latest, true)
 const names = new Set(['checkExternalFiles', 'saveDocument', 'handleMissingDocument', 'closeDocument',
   'confirmDocumentCanClose', 'shouldPromptToSave', 'removeOpenDocumentsForDeletedPath', 'confirmCloseAll', 'flushSessionBeforeClose',
   'closingDocumentSignature', 'setClosingEditorsLocked', 'blockInputDuringWindowClose', 'bindWindowCloseGuard', 'requestWindowClose',
-  'applyImageMigrations', 'replaceImageReference', 'markdownImageContentMask', 'scheduleAutoSave', 'cancelAutoSave', 'documentSessionKey']);
+  'scheduleAutoSave', 'cancelAutoSave', 'documentSessionKey']);
+names.add('normalizePathForCompare');
+names.add('restoreSnapshotDocument');
+names.add('addOrReplaceDocument');
 const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
   .map(node => node.getText(ast)).join('\n');
 const js = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -25,6 +33,7 @@ function harness(options = {}) {
   let modelText = doc.text;
   const model = { getValue: () => modelText, getAlternativeVersionId: () => doc.version, isDisposed: () => !!options.disposed, pushStackElement() {} };
   const context = {
+    applyImageMigrations, markdownImageReferences,
     appReady: true, checkingExternalFiles: false, busyDepth: 0, editorBusyDepth: 0, workspaceMoveInProgress: false,
     closingEditorsLocked: false, closingAppWasInert: false, windowCloseConfirmed: false, windowCloseInProgress: false,
     $: () => app, activeDocument: () => context.state.documents[0], isReadingDocument: () => false,
@@ -95,6 +104,51 @@ function harness(options = {}) {
     runTimers() { const pending = [...timers.values()]; timers.clear(); pending.forEach(callback => callback()); },
     check: () => context.checkExternalFiles(), save: automatic => context.saveDocument(doc, false, automatic) };
 }
+
+test('save as refuses a destination owned by another dirty document', async () => {
+  const h = harness({ savePath: 'C:\\notes\\B.txt', doc: { path: 'C:\\notes\\A.txt', dirty: true } });
+  const other = { id: 2, path: 'c:/notes/b.txt', text: 'pending changes', dirty: true };
+  h.context.state.documents.push(other);
+  await assert.rejects(h.context.saveDocument(h.doc, true), /目标文件已在其他标签/);
+  assert.equal(h.calls.saves.length, 0);
+  assert.equal(h.doc.path, 'C:\\notes\\A.txt');
+  assert.equal(other.text, 'pending changes');
+  assert.equal(other.dirty, true);
+});
+
+test('a pending save as reserves its path for concurrent save and open', async () => {
+  const options = { savePath: '/target.txt', revision: 'missing' };
+  const h = harness(options);
+  const other = { id: 2, path: '/other.txt', dirty: true };
+  h.context.state.documents.push(other);
+  options.onCheck = async () => {
+    await assert.rejects(h.context.saveDocument(other, true), /目标文件已在其他标签/);
+    assert.throws(() => h.context.addOrReplaceDocument({ path: '/target.txt' }, 'standalone'), /正在被另存为/);
+  };
+  assert.equal(await h.context.saveDocument(h.doc, true), true);
+  assert.equal(h.calls.saves.length, 1);
+  assert.deepEqual(Array.from(h.calls.saves[0].otherOpenPaths), ['/other.txt']);
+  assert.equal(h.doc.pendingSavePath, undefined);
+});
+
+test('recovery restores pending encoding and line endings even when text is unchanged', async () => {
+  for (const [text, encoding, lineEnding] of [
+    ['local', 'UTF-16 Little Endian', 'LF'], ['local', 'UTF-8', 'CRLF'], ['modified', 'UTF-8', 'CR'],
+  ]) {
+    const h = harness({ doc: { lineEnding: 'LF' } });
+    h.context.documentText = () => h.model.getValue();
+    await h.context.restoreSnapshotDocument({
+      path: h.doc.path, text, encoding,
+      metadata: JSON.stringify({ diskRevision: 'old', sourceEncoding: 'UTF-8', lineEnding }),
+    }, false);
+    assert.equal(h.doc.dirty, true);
+    assert.equal(h.doc.metadataDirty, true);
+    assert.equal(h.model.getValue(), text);
+    assert.equal(h.doc.encoding, encoding);
+    assert.equal(h.doc.lineEnding, lineEnding);
+    assert.equal(h.doc.sourceEncoding, 'UTF-8');
+  }
+});
 
 test('auto-save resumes when edits made during a slow save outlive their timer', async () => {
   const options = { revision: 'old', doc: { dirty: true } };
@@ -497,7 +551,7 @@ test('successful image migration preserves concurrent typing and leaves it dirty
 
 function useRealImageMigration(h, result) {
   const implementation = ast.statements.filter(node => ts.isFunctionDeclaration(node)
-    && ['migrateDocumentImages', 'markdownImageReferences'].includes(node.name?.text))
+    && node.name?.text === 'migrateDocumentImages')
     .map(node => node.getText(ast)).join('\n');
   h.context.state.workbench.imageCopy = true;
   h.context.documentText = () => h.model.getValue();

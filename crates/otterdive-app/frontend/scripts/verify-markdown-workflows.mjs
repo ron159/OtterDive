@@ -23,8 +23,8 @@ for (const engine of engines) {
     ...(engine === "chromium" && process.env.CHROME_EXECUTABLE ? { executablePath: process.env.CHROME_EXECUTABLE } : {}),
     ...(engine === "webkit" && process.env.WEBKIT_EXECUTABLE ? { executablePath: process.env.WEBKIT_EXECUTABLE } : {}) });
   const context = await browser.newContext({ viewport: { width: 1440, height: 950 }, locale: "zh-CN", timezoneId: "Asia/Shanghai" });
-  const notes = "# 阅读验证\n\n[前往目标章节](target.md#target-section)\n\n" + Array.from({ length: 22 }, (_, index) =>
-    `## 第 ${index + 1} 章\n\n` + Array.from({ length: 9 }, (_, paragraph) => `这是第 ${index + 1} 章第 ${paragraph + 1} 段，用于检查阅读位置与模式切换。Local Markdown reading fixture.\n\n`).join("")).join("");
+  const notes = "# 阅读验证\n\n[前往目标章节](target.md#target-section)\n\n脚注入口[^note]。\n\n> ## 引用中的标题\n\n" + Array.from({ length: 22 }, (_, index) =>
+    `## 第 ${index + 1} 章\n\n` + Array.from({ length: 9 }, (_, paragraph) => `这是第 ${index + 1} 章第 ${paragraph + 1} 段，用于检查阅读位置与模式切换。Local Markdown reading fixture.\n\n`).join("")).join("") + "\n[^note]: 验证脚注目标\n";
   const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", "# Target document\n\n## Target section\n\nBack and forward navigation target.\n\n" + "Target paragraph.\n\n".repeat(60)]]);
   const revisions = new Map([...files.keys()].map(path => [path, "r1"]));
   const workspace = () => ({ root: "/qa", name: "QA workspace", items: [
@@ -112,6 +112,21 @@ for (const engine of engines) {
     await page.goto(baseUrl);
     await page.locator("#markdownPreview .markdown-preview-body h1").filter({ hasText: "阅读验证" }).waitFor();
     await until(async () => (await page.locator('#tabs [role="tab"]').count()) === 2, "Fixture tabs did not restore");
+    const preview = page.locator("#markdownPreview");
+    const isVisibleInPreview = selector => preview.evaluate((pane, selector) => {
+      const element = pane.querySelector(selector);
+      if (!element) return false;
+      const target = element.getBoundingClientRect(), frame = pane.getBoundingClientRect();
+      return target.top >= frame.top && target.bottom <= frame.bottom;
+    }, selector);
+    await page.getByRole("button", { name: "第 2 章", exact: true }).click();
+    await until(() => isVisibleInPreview('h2[id="第-2-章"]'), "Outline selected the wrong heading after a blockquote");
+    await page.getByRole("button", { name: "阅读验证", exact: true }).click();
+    await preview.locator('a[href="#fn-1"]').click();
+    await until(() => isVisibleInPreview('#fn-1'), "Footnote reference did not reveal its note");
+    await preview.locator('a[href="#fnref-1"]').click();
+    await until(() => isVisibleInPreview('#fnref-1'), "Footnote backlink did not return to its reference");
+    checks.push("Outline navigation after quoted headings and both directions of a footnote link");
     await page.locator("#markdownPreview").hover();
     await page.mouse.wheel(0, 3100);
     await until(async () => (await page.locator("#markdownPreview").evaluate(element => element.scrollTop)) > 1000, "Reading pane did not scroll");

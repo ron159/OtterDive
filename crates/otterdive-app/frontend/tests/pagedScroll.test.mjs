@@ -32,3 +32,29 @@ test('dragging the Monaco vertical scrollbar pauses automatic page loads until r
 test('wheel at a window boundary reads the neighbor while modified zoom gestures are preserved',()=>{
  const h=setup();assert.equal(h.wheel(-1,{ctrlKey:true}),false);assert.equal(h.calls.length,0);assert.equal(h.wheel(-1),true);assert.equal(h.calls.at(-1).transition,'prepend');h.controller.page.startOffset=0;assert.equal(h.wheel(-1),false);
 });
+
+test("paged bookmarks store source lines, navigate across pages and retain offscreen bookmarks", async () => {
+  const names = ["toggleBookmark", "navigateBookmark", "visibleBookmarkLines", "syncActiveBookmarkLines"];
+  const handlers = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
+    .map(node => node.getText(ast)).join("\n");
+  const doc = { id: 9, paged: true };
+  const page = { startLine: 1001 };
+  const cursor = { lineNumber: 7 };
+  const jumps = [];
+  const context = vm.createContext({
+    state: { bookmarks: { doc: [12] } }, commandDocument: () => doc, commandEditor: () => ({ getPosition: () => cursor }),
+    documentSessionKey: () => "doc", pagedDocuments: new Map([[doc.id, { page }]]),
+    documentLineCount: () => 20, renderBookmarkDecorations() {}, scheduleSessionSave() {}, log() {},
+    navigateSourceLine: async (_doc, line) => { jumps.push(line); },
+  });
+  vm.runInContext(ts.transpileModule(handlers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  context.toggleBookmark();
+  assert.deepEqual(Array.from(context.state.bookmarks.doc), [12, 1007]);
+  assert.deepEqual(Array.from(context.visibleBookmarkLines(doc, context.state.bookmarks.doc)), [7]);
+  context.syncActiveBookmarkLines(doc);
+  page.startLine = 1;
+  cursor.lineNumber = 12;
+  await context.navigateBookmark(1);
+  assert.deepEqual(jumps, [1007]);
+  assert.deepEqual(Array.from(context.visibleBookmarkLines(doc, context.state.bookmarks.doc)), [12]);
+});

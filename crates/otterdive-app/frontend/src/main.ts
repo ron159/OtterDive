@@ -7,6 +7,7 @@ import { normalizeWorkbenchPreferences, markdownExtensionPreferences, type Workb
 import { mountWorkbenchSettings, syncWorkbenchSettings } from "./workbenchSettings";
 import { bindMarkdownDiagramActions } from "./markdownDiagramActions";
 import { resolveMarkdownResource, relativeMarkdownResource, splitMarkdownLink } from "./markdownPaths";
+import { applyImageMigrations, markdownImageReferences, type ImageMigration } from "./markdownImages";
 import { writingStats } from "./writingStats";
 import { THEME_PRESETS, resolveThemePalette, matchingThemePreset, normalizeThemeColor, normalizeThemeOverrides, customEditorThemeColors, type ThemeMode, type ThemeColorKey, type ThemePalette, type ThemeOverrides } from "./themePresets";
 import { mapScrollPosition } from "./scrollSync";
@@ -255,6 +256,7 @@ interface TextMatchDto {
   lineText: string;
   matchedText: string;
   previewStartColumn?: number;
+  endPosition?: [number, number];
 }
 
 interface FileHitDto {
@@ -291,6 +293,7 @@ interface ReplacePreviewDto {
 }
 
 interface FileReplacePreviewDto {
+  writeStatus?: string;
   fileId: number;
   path: string;
   fileName: string;
@@ -304,6 +307,7 @@ interface OpenDocument extends DocumentDto {
   languageDetectionChecked?: boolean;
   externalRevision?: string;
   saving?: boolean;
+  pendingSavePath?: string;
   id: number;
   draftId?: string;
   creationIntent?: "default" | "explicit";
@@ -4166,6 +4170,8 @@ function pagedController(doc: OpenDocument) {
             const columnDelta = previous.startLine===page.startLine ? previous.startColumn-page.startColumn : 0;
             editor.setScrollPosition({ scrollTop: editor.getTopForLineNumber(line)+topDelta, scrollLeft: Math.max(0,left+columnDelta*width) });
           } else { editor.setScrollTop(0); editor.setPosition({ lineNumber: 1, column: 1 }); }
+          renderBookmarkDecorations();
+          renderAnalyseBookmarkDecorations();
           renderDocumentStatus();
         }
         window.requestAnimationFrame(() => { pagedScrollGuard = false; });
@@ -4588,14 +4594,13 @@ async function openPath(path: string, remember = false) {
     if (remember) rememberRecentPath(path);
     return;
   }
-  let dto: DocumentDto;
   try {
-    dto = await withBusy(`打开 ${fileNameFromPath(path)}`, () => invoke<DocumentDto>("open_path", { path }), { lockEditor: false });
+    const dto = await withBusy(`打开 ${fileNameFromPath(path)}`, () => invoke<DocumentDto>("open_path", { path }), { lockEditor: false });
+    addOrReplaceDocument(dto, remember ? "standalone" : "workspace");
   } catch (error) {
     await showOpenFailures([{ path, error }]);
     throw error;
   }
-  addOrReplaceDocument(dto, remember ? "standalone" : "workspace");
   if (remember) rememberRecentPath(path);
 }
 
@@ -4605,6 +4610,10 @@ function addOrReplaceDocument(
   options: { activate?: boolean; deferModel?: boolean } = {},
 ) {
   const shouldActivate = options.activate !== false;
+  const pathKey = dto.path && normalizePathForCompare(dto.path);
+  if (pathKey && state.documents.some((doc) => doc.pendingSavePath && normalizePathForCompare(doc.pendingSavePath) === pathKey)) {
+    throw new Error("此路径正在被另存为，请在保存完成后打开");
+  }
   const existing = state.documents.find((doc) => doc.path && doc.path === dto.path);
   if (existing) {
     if (!existing.dirty) {
@@ -4701,7 +4710,8 @@ async function openPaths(paths: string[], options: OpenPathsOptions): Promise<Op
     const result = loadedByPath.get(normalizePathForCompare(path));
     if (result?.value) {
       const origin = typeof options.origin === "function" ? options.origin(path) : options.origin;
-      documents.push(addOrReplaceDocument(result.value, origin, { activate: false, deferModel: true }));
+      try { documents.push(addOrReplaceDocument(result.value, origin, { activate: false, deferModel: true })); }
+      catch (error) { failed.push({ error, path }); }
     } else {
       failed.push({ error: result?.error ?? new Error("打开任务没有返回结果"), path });
     }
@@ -4847,6 +4857,14 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
       return false;
     }
     const sourcePath = doc.path ?? null;
+    if (forceSaveAs || !sourcePath) {
+      const target = normalizePathForCompare(path);
+      if (state.documents.some((item) => item !== doc && (
+        (item.path && normalizePathForCompare(item.path) === target)
+        || (item.pendingSavePath && normalizePathForCompare(item.pendingSavePath) === target)
+      ))) throw new Error("目标文件已在其他标签中打开或正在保存，请选择其他路径");
+      if (!sourcePath || normalizePathForCompare(sourcePath) !== target) doc.pendingSavePath = path;
+    }
     const [current] = await invoke<FileRevision[]>("file_revisions", { paths: [path] });
     if (!current?.revision) throw new Error(current?.error ?? "无法检查文件状态");
     const expectedRevision = current.revision;
@@ -4881,6 +4899,10 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
           encoding: encodingToSave,
           sourceEncoding: doc.sourceEncoding,
           sourcePath,
+          otherOpenPaths: forceSaveAs || !sourcePath
+            ? state.documents.filter((item) => item !== doc)
+              .flatMap((item) => [item.path, item.pendingSavePath].filter((value): value is string => Boolean(value)))
+            : [],
           lineEnding: lineEndingToSave || "LF",
         },
       }),
@@ -4892,8 +4914,9 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
       return true;
     }
     const editedDuringSave = model.getAlternativeVersionId() !== savedAlternativeVersionId;
-    const currentText = applyImageMigrations(model.getValue(), migratedImages);
-    if (currentText !== model.getValue()) {
+    const modelText = model.getValue();
+    const currentText = editedDuringSave ? applyImageMigrations(modelText, migratedImages) : textToSave;
+    if (currentText !== modelText) {
       model.pushStackElement();
       replaceModelText(model, currentText);
       model.pushStackElement();
@@ -4943,6 +4966,7 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
     reportPersistenceError(`save:${doc.id}`, `${automatic ? "自动保存" : "保存"}失败：${doc.title}`, error);
     throw error;
   } finally {
+    doc.pendingSavePath = undefined;
     doc.saving = false;
     renderChrome();
   }
@@ -6001,12 +6025,8 @@ async function revealTreeEntry() {
 }
 
 async function revealPathInExplorer(path: string, root = pathDirectory(path)) {
-  await invoke("reveal_workspace_entry", {
-    request: {
-      root,
-      path,
-    },
-  });
+  try { await invoke("reveal_workspace_entry", { request: { root, path } }); }
+  catch (error) { await showWorkbenchError(error); }
 }
 
 async function refreshWorkspaceFromTreeMenu() {
@@ -7099,6 +7119,7 @@ async function searchWorkspace() {
       renderSearchSidebarResults();
       renderCurrentFindCount();
       if (event.error) log(`搜索失败：${event.error}`);
+      else if (event.truncated) log(`已保留前 ${report.total} 个目录查找命中，请缩小查找范围`);
       else log(`${event.cancelled ? "搜索已取消，保留" : "目录查找"} ${report.total} 个命中`);
       return;
     }
@@ -7173,7 +7194,8 @@ async function applyWorkspaceReplace() {
   const preview = state.replacePreview;
   if (!preview || state.replacePreviewApplied) return;
   const selections = preview.items.map((item) => ({ fileId: item.fileId, matchIds: [...(replaceSelections.get(item.fileId) ?? [])] })).filter((item) => item.matchIds.length);
-  const selectedFiles = preview.items.filter((item) => selections.some((selection) => selection.fileId === item.fileId));
+  const selectedCounts = new globalThis.Map(selections.map(selection => [selection.fileId, selection.matchIds.length]));
+  const selectedFiles = preview.items.filter(item => selectedCounts.has(item.fileId));
   const total = selections.reduce((sum, item) => sum + item.matchIds.length, 0);
   if (!total) { log("尚未选择要应用的替换"); return; }
   const dirty = state.documents.filter((doc) => doc.dirty && selectedFiles.some((file) => doc.path && normalizePathForCompare(file.path) === normalizePathForCompare(doc.path)));
@@ -7195,9 +7217,20 @@ async function applyWorkspaceReplace() {
     }
     const applied = await invoke<ReplaceApplyResult>("apply_workspace_replace", { request: { previewId: preview.previewId, selections } });
     if (!finishWorkspaceSearch(requestId)) return;
-    if (applied.appliedFiles) { lastReplaceBatchId = applied.batchId; lastReplacePreview = { ...preview, items: selectedFiles.filter((item) => !applied.failures.some((failure) => failure.path === item.path)) }; }
+    const failures = new globalThis.Map(applied.failures.map(failure => [failure.path, failure.error]));
+    const written = selectedFiles.filter(item => !failures.has(item.path));
+    for (const item of preview.items) {
+      const count = selectedCounts.get(item.fileId) ?? 0;
+      item.writeStatus = !count ? "未选择" : failures.has(item.path)
+        ? `写入失败：${failures.get(item.path)}` : `已写入 ${count} 处`;
+    }
+    const writtenPreview = { ...preview, items: written };
+    if (applied.appliedFiles) {
+      lastReplaceBatchId = applied.batchId;
+      lastReplacePreview = writtenPreview;
+    }
     state.replacePreviewApplied = true;
-    await refreshOpenDocumentsAfterReplace({ ...preview, items: selectedFiles.filter((item) => !applied.failures.some((failure) => failure.path === item.path)) });
+    await refreshOpenDocumentsAfterReplace(writtenPreview);
     state.panel = "preview"; renderSearchSidebarResults();
     log(`已替换 ${applied.appliedFiles} 个文件的 ${applied.appliedMatches} 处匹配；跳过 ${applied.failures.length} 个文件`);
     if (applied.failures.length) await showWorkbenchError(applied.failures.map((item) => `${item.path}：${item.error}`).join("\n"));
@@ -7207,8 +7240,13 @@ async function applyWorkspaceReplace() {
 async function undoWorkspaceReplace() {
   if (!lastReplaceBatchId || !lastReplacePreview) throw new Error("没有可撤销的目录替换");
   const result = await invoke<ReplaceApplyResult>("undo_workspace_replace", { batchId: lastReplaceBatchId });
-  await refreshOpenDocumentsAfterReplace({ ...lastReplacePreview, items: lastReplacePreview.items.filter((item) => !result.failures.some((failure) => failure.path === item.path)) });
-  if (!result.failures.length) { lastReplaceBatchId = null; lastReplacePreview = null; }
+  const failedPaths = new Set(result.failures.map(failure => failure.path));
+  const undone = lastReplacePreview.items.filter(item => !failedPaths.has(item.path));
+  for (const item of undone) item.writeStatus = "已撤销";
+  await refreshOpenDocumentsAfterReplace({ ...lastReplacePreview, items: undone });
+  lastReplacePreview.items = lastReplacePreview.items.filter(item => failedPaths.has(item.path));
+  if (!lastReplacePreview.items.length) { lastReplaceBatchId = null; lastReplacePreview = null; }
+
   log(`已撤销 ${result.undoneFiles} 个文件的替换`);
   if (result.failures.length) await showWorkbenchError(result.failures.map((item) => `${item.path}：${item.error}`).join("\n"));
 }
@@ -8903,7 +8941,6 @@ function renderSearchSidebarResults() {
       }
       return;
     }
-    const replaceStatus = state.replacePreviewApplied ? "已写入" : "待确认";
     summary.textContent = `${state.replacePreview.total} 处 · ${state.replacePreview.items.length} 个文件`;
     const applyButton = state.replacePreviewApplied
       ? ""
@@ -8918,7 +8955,7 @@ function renderSearchSidebarResults() {
         void openResult(row.dataset.path ?? "", Number(row.dataset.line ?? "1"), Number(row.dataset.column ?? "1"));
       }
     });
-    renderProgressiveReplaceResults(state.replacePreview, list, replaceStatus, renderVersion);
+    renderProgressiveReplaceResults(state.replacePreview, list, renderVersion);
     return;
   }
   title.textContent = "搜索结果";
@@ -9120,7 +9157,6 @@ function renderProgressiveSearchResults(
 function renderProgressiveReplaceResults(
   report: ReplacePreviewDto,
   list: HTMLElement,
-  replaceStatus: string,
   renderVersion: number,
 ) {
   let itemIndex = 0;
@@ -9137,7 +9173,7 @@ function renderProgressiveReplaceResults(
       if (matchIndex === 0) {
         const group = document.createElement("section");
         group.className = "find-result-group";
-        group.innerHTML = `<header>${iconSvg("FileText")}<strong title="${escapeAttr(item.path)}">${escapeHtml(item.fileName)}</strong><span>${item.matches.length} 处 · ${replaceStatus}</span></header><div></div>`;
+        group.innerHTML = `<header>${iconSvg("FileText")}<strong title="${escapeAttr(item.path)}">${escapeHtml(item.fileName)}</strong><span>${item.matches.length} 处 · ${escapeHtml(item.writeStatus ?? "待确认")}</span></header><div></div>`;
         const check = document.createElement("input"); check.type = "checkbox"; check.setAttribute("aria-label", `选择 ${item.fileName} 的全部替换`);
         const selected = replaceSelections.get(item.fileId) ?? new Set<number>();
         check.checked = selected.size === item.matches.length; check.indeterminate = selected.size > 0 && !check.checked; check.disabled = state.replacePreviewApplied;
@@ -9187,6 +9223,24 @@ function appendMoreResultsButton(list: HTMLElement, remaining: number) {
   list.appendChild(footer);
 }
 
+function currentOutlineHeadings(): { level: number; text: string; line?: number }[] {
+  if (isReadingDocument()) {
+    const preview = $("markdownPreview");
+    if (preview.dataset.documentId !== String(state.activeId)) return [];
+    return [...preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].map(heading => ({
+      level: Number(heading.tagName.slice(1)), text: heading.textContent ?? "",
+    }));
+  }
+  const locations = markdownHeadingLocations(documentText(activeDocument()));
+  const muyaOutline = isMarkdownWysiwygActive() ? markdownEditor?.getOutline() : null;
+  return muyaOutline
+    ? muyaOutline.map((heading, index) => ({
+      ...heading,
+      line: locations[index]?.line ?? 1,
+    }))
+    : locations;
+}
+
 function renderMarkdownOutline() {
   outlineNavigation = null;
   const list = $("outlineList");
@@ -9194,18 +9248,11 @@ function renderMarkdownOutline() {
     list.innerHTML = "";
     return;
   }
-  const locations = markdownHeadingLocations(documentText(activeDocument()));
-  const muyaOutline = isMarkdownWysiwygActive() ? markdownEditor?.getOutline() : null;
-  const headings = muyaOutline
-    ? muyaOutline.map((heading, index) => ({
-      ...heading,
-      line: locations[index]?.line ?? 1,
-    }))
-    : locations;
+  const headings = currentOutlineHeadings();
   list.innerHTML = headings.length > 0
     ? headings.map((heading, index) => {
       const indent = (heading.level - 1) * 10;
-      return `<button class="outline-row" title="${escapeHtml(heading.text)}" aria-label="${escapeHtml(heading.text)}" data-outline-line="${heading.line}" data-outline-index="${index}" data-outline-level="${heading.level}" style="--outline-indent:${indent}px"><i class="outline-mark" aria-hidden="true"></i><span>${escapeHtml(heading.text)}</span></button>`;
+      return `<button class="outline-row" title="${escapeHtml(heading.text)}" aria-label="${escapeHtml(heading.text)}" data-outline-line="${heading.line ?? ""}" data-outline-index="${index}" data-outline-level="${heading.level}" style="--outline-indent:${indent}px"><i class="outline-mark" aria-hidden="true"></i><span>${escapeHtml(heading.text)}</span></button>`;
     }).join("")
     : `<p class="outline-empty">添加标题后在这里导航</p>`;
   scheduleOutlineActiveHeading();
@@ -9306,6 +9353,7 @@ function renderSearchDecorations() {
 }
 
 function rangeFromMatch(match: TextMatchDto) {
+  if (match.endPosition) return new monaco.Range(match.line, match.column, ...match.endPosition);
   const parts = match.matchedText.split(/\r\n|\n|\r/);
   if (parts.length === 1) {
     return new monaco.Range(match.line, match.column, match.line, match.column + match.matchedText.length);
@@ -9693,7 +9741,7 @@ function markdownHeadingLocations(markdown: string) {
   return headings;
 }
 
-async function renderMarkdownPreview() {
+async function renderMarkdownPreview(syncScroll = true) {
   const doc = activeDocument();
   const preview = $("markdownPreview");
   const editorArea = preview.parentElement;
@@ -9714,14 +9762,15 @@ async function renderMarkdownPreview() {
   }
   applyMarkdownPreviewWidth();
   const source = documentText(doc);
+  const previousDocumentId = preview.dataset.documentId;
+  preview.dataset.documentId = String(doc.id);
   if (!source.trim()) {
     preview.innerHTML = markdownPreviewShell(doc, source, `<div class="markdown-preview-empty">空白 Markdown</div>`);
+    if (isReadingDocument(doc) && isOutlineVisible()) renderMarkdownOutline();
     requestEditorLayout();
     return;
   }
 
-  const previousDocumentId = preview.dataset.documentId;
-  preview.dataset.documentId = String(doc.id);
   if (!preview.querySelector(".markdown-preview-body") || previousDocumentId !== String(doc.id)) {
     preview.innerHTML = markdownPreviewShell(doc, source, `<div class="markdown-preview-empty">正在生成预览</div>`);
   }
@@ -9748,12 +9797,13 @@ async function renderMarkdownPreview() {
         });
     }
     requestEditorLayout();
-    window.requestAnimationFrame(syncMarkdownPreviewScroll);
+    if (syncScroll) window.requestAnimationFrame(syncMarkdownPreviewScroll);
   } catch (error) {
     if (!isCurrentMarkdownPreview(renderVersion, doc, source)) return;
     preview.innerHTML = markdownPreviewShell(doc, source, `<div class="markdown-preview-empty">预览生成失败</div>`);
     log(`Markdown 预览失败：${error instanceof Error ? error.message : String(error)}`);
   }
+  if (isReadingDocument(doc) && isOutlineVisible()) renderMarkdownOutline();
 }
 
 function markdownPreviewShell(doc: OpenDocument, source: string, body: string) {
@@ -9856,7 +9906,9 @@ function toggleBookmark() {
   const doc = commandDocument();
   const localLine = commandEditor().getPosition()?.lineNumber;
   if (!doc || !localLine) return;
-  const line = localLine;
+  const firstLine = doc.paged ? pagedDocuments.get(doc.id)?.page?.startLine : 1;
+  if (!firstLine) return;
+  const line = firstLine + localLine - 1;
   const key = documentSessionKey(doc);
   const lines = new Set(state.bookmarks[key] ?? []);
   if (lines.has(line)) lines.delete(line);
@@ -9876,12 +9928,22 @@ function navigateBookmark(delta: number) {
     log("当前文档没有书签");
     return;
   }
-  const current = (targetEditor.getPosition()?.lineNumber ?? 1);
+  const firstLine = doc.paged ? pagedDocuments.get(doc.id)?.page?.startLine : 1;
+  if (!firstLine) return;
+  const current = firstLine + (targetEditor.getPosition()?.lineNumber ?? 1) - 1;
   const ordered = delta > 0 ? lines : [...lines].reverse();
   const target = ordered.find((line) => delta > 0 ? line > current : line < current) ?? ordered[0];
+  if (doc.paged) return navigateSourceLine(doc, target, 1);
   targetEditor.setPosition({ lineNumber: target, column: 1 });
   targetEditor.revealLineInCenterIfOutsideViewport(target);
   targetEditor.focus();
+}
+
+function visibleBookmarkLines(doc: OpenDocument, sourceLines: number[]) {
+  const firstLine = doc.paged ? pagedDocuments.get(doc.id)?.page?.startLine : 1;
+  if (!firstLine) return [];
+  const count = documentLineCount(doc);
+  return sourceLines.filter(line => line >= firstLine && line < firstLine + count).map(line => line - firstLine + 1);
 }
 
 function renderBookmarkDecorations() {
@@ -9890,8 +9952,7 @@ function renderBookmarkDecorations() {
   if (sideDoc && sideBookmarkDecorations) targets.push({ doc: sideDoc, decorations: sideBookmarkDecorations });
   for (const { doc, decorations } of targets) {
     if (!doc.model || !decorations) continue;
-    const lineCount = documentLineCount(doc);
-    const lines = (state.bookmarks[documentSessionKey(doc)] ?? []).filter((line) => line >= 1 && line <= lineCount);
+    const lines = visibleBookmarkLines(doc, state.bookmarks[documentSessionKey(doc)] ?? []);
     decorations.set(lines.map((line) => ({
       range: new monaco.Range(line, 1, line, 1),
       options: {
@@ -9909,9 +9970,7 @@ function renderBookmarkDecorations() {
 function renderAnalyseBookmarkDecorations() {
   if (!analyseBookmarkDecorations || !editor?.getModel()) return;
   const doc = activeDocument();
-  const lineCount = documentLineCount(doc);
-  const lines = (analyseBookmarkLines.get(doc.id) ?? [])
-    .filter((line) => line >= 1 && line <= lineCount);
+  const lines = visibleBookmarkLines(doc, analyseBookmarkLines.get(doc.id) ?? []);
   analyseBookmarkDecorations.set(lines.map((line) => ({
     range: new monaco.Range(line, 1, line, 1),
     options: {
@@ -9926,6 +9985,7 @@ function renderAnalyseBookmarkDecorations() {
 }
 
 function syncActiveBookmarkLines(doc = activeDocument()) {
+  if (doc.paged) return; // The read-only window contains only a subset of the source bookmarks.
   const decorations = editor.getModel() === doc.model ? bookmarkDecorations
     : sideEditor?.editor.getModel() === doc.model ? sideBookmarkDecorations : null;
   if (!decorations) return;
@@ -12396,23 +12456,36 @@ async function openMarkdownLink(href: string) {
 
 async function revealMarkdownAnchor(anchor: string) {
   const doc = activeDocument();
+  if (isMarkdownPreviewEnabled(doc)) {
+    const preview = $("markdownPreview");
+    if (preview.dataset.documentId !== String(doc.id) || !preview.querySelector(".markdown-body")) {
+      await renderMarkdownPreview(false);
+    }
+    if (state.activeId !== doc.id) return;
+    const body = preview.querySelector<HTMLElement>(".markdown-body");
+    if (!body) return;
+    const target = body.querySelector<HTMLElement>(`#${CSS.escape(anchor)}`)
+      ?? [...body.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].find(heading => heading.textContent === anchor);
+    if (!target) { log(`未找到锚点：${anchor}`); return; }
+    if (state.markdownEditMode === "split") {
+      const index = [...body.querySelectorAll(":scope > :is(h1,h2,h3,h4,h5,h6)")].indexOf(target);
+      if (index >= 0) {
+        const line = markdownHeadingLocations(documentText(doc))[index]?.line;
+        if (line) editor.setPosition({ lineNumber: line, column: 1 });
+      }
+    }
+    preview.scrollTop += target.getBoundingClientRect().top - preview.getBoundingClientRect().top - markdownPreviewHeadingOffset();
+    return;
+  }
   const renderer = await loadMarkdownModule();
+  if (state.activeId !== doc.id) return;
   const parsed = new DOMParser().parseFromString(renderer.renderMarkdownPreviewHtml(documentText(doc), markdownPreviewOptions()), "text/html");
-  const headings = [...parsed.querySelectorAll("h1,h2,h3,h4,h5,h6")];
+  const headings = [...parsed.querySelectorAll(".markdown-body > :is(h1,h2,h3,h4,h5,h6)")];
   const index = headings.findIndex((heading) => heading.id === anchor || heading.textContent === anchor);
   if (index < 0) { log(`未找到标题：${anchor}`); return; }
-  if (state.activeId !== doc.id) return;
   const line = markdownHeadingLocations(documentText(doc))[index]?.line ?? 1;
   editor.setPosition({ lineNumber: line, column: 1 }); editor.revealLineInCenter(line);
   if (state.markdownEditMode === "wysiwyg") (await ensureMarkdownEditor(doc))?.revealHeading(index);
-  else if (isMarkdownPreviewEnabled(doc)) {
-    await renderMarkdownPreview();
-    const target = $("markdownPreview").querySelector<HTMLElement>(`#${CSS.escape(headings[index].id)}`);
-    if (target) {
-      const preview = $("markdownPreview");
-      preview.scrollTop += target.getBoundingClientRect().top - preview.getBoundingClientRect().top - markdownPreviewHeadingOffset();
-    }
-  }
 }
 
 async function navigateMarkdownHistory(direction: "back" | "forward") {
@@ -12666,7 +12739,8 @@ async function restoreSnapshotDocument(snapshot: SnapshotEntry, asCopy: boolean)
   const meta = (() => { try { return JSON.parse(snapshot.metadata || "{}"); } catch { return {}; } })();
   let existing = snapshot.path ? state.documents.find((doc) => doc.path && normalizePathForCompare(doc.path) === normalizePathForCompare(snapshot.path!))
     : state.documents.find((doc) => doc.draftId && doc.draftId === meta.draftId);
-  if (!asCopy && existing && documentText(existing) === snapshot.text) return;
+  if (!asCopy && existing && documentText(existing) === snapshot.text
+    && existing.encoding === snapshot.encoding && (!meta.lineEnding || existing.lineEnding === meta.lineEnding)) return;
   if (existing?.dirty || asCopy) existing = undefined;
   const detached = asCopy || (snapshot.path && state.documents.some((doc) => doc.path === snapshot.path && doc.dirty));
   let disk: DocumentDto | null = null;
@@ -12679,9 +12753,15 @@ async function restoreSnapshotDocument(snapshot: SnapshotEntry, asCopy: boolean)
     text: snapshot.text, encoding: snapshot.encoding, lineEnding: meta.lineEnding || "LF",
     fileSize: new Blob([snapshot.text]).size, language: meta.language || "plaintext", readOnly: false, largeFile: false,
   }, { dirty: true, draftId: detached ? undefined : meta.draftId });
-  if (existing) { ensureDocumentModel(doc).pushStackElement(); replaceModelText(ensureDocumentModel(doc), snapshot.text); }
-  else state.documents.push(doc);
+  if (existing) {
+    if (documentText(doc) !== snapshot.text) {
+      const model = ensureDocumentModel(doc);
+      model.pushStackElement();
+      replaceModelText(model, snapshot.text);
+    }
+  } else state.documents.push(doc);
   doc.encoding = snapshot.encoding;
+  doc.lineEnding = meta.lineEnding || doc.lineEnding;
   doc.sourceEncoding = meta.sourceEncoding || disk?.encoding || snapshot.encoding;
   doc.diskRevision = meta.diskRevision ?? disk?.diskRevision;
   doc.externalRevision = doc.path ? (!disk ? "missing" : disk.diskRevision !== doc.diskRevision ? disk.diskRevision ?? "changed" : undefined) : undefined;
@@ -12710,54 +12790,6 @@ async function storeMarkdownImage(doc: OpenDocument, source: string, allowRemote
     directory: state.workbench.imageDirectory || null, allowRemote,
   } });
   return doc.path ? asset.relativePath : asset.path.replace(/\\/g, "/").split("/").map((part, index) => index === 0 && /^[a-z]:$/i.test(part) ? part : encodeURIComponent(part)).join("/");
-}
-
-function markdownImageContentMask(markdown: string) {
-  const blank = (value: string) => value.replace(/[^\r\n]/g, " ");
-  let fence: { char: string; length: number } | null = null;
-  let masked = markdown.split(/(?<=\n)/).map((line) => {
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (fence) {
-      if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length
-        && /^\s*$/.test(line.slice(marker[0].length))) fence = null;
-      return blank(line);
-    }
-    if (marker) { fence = { char: marker[1][0], length: marker[1].length }; return blank(line); }
-    return /^(?: {4}|\t)/.test(line) ? blank(line) : line;
-  }).join("");
-  masked = masked.replace(/(`+)[\s\S]*?\1(?!`)/g, blank);
-  return masked.replace(/\\[!<\[]/g, blank);
-}
-
-function markdownImageReferences(markdown: string) {
-  markdown = markdownImageContentMask(markdown);
-  const sources = new Set<string>();
-  for (const match of markdown.matchAll(/!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^]*?["'])?\s*\)|<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)) {
-    const source = match[1] || match[2] || match[3];
-    if (source) sources.add(source);
-  }
-  const labels = new Set([...markdown.matchAll(/!\[([^\]]+)\](?:\[([^\]]*)\])?(?!\()/g)].map((match) => (match[2] || match[1]).trim().toLowerCase()));
-  for (const match of markdown.matchAll(/^ {0,3}\[([^\]]+)\]:\s*(?:<([^>]+)>|([^\s]+))/gm)) {
-    if (labels.has(match[1].trim().toLowerCase())) sources.add(match[2] || match[3]);
-  }
-  return [...sources];
-}
-
-function replaceImageReference(markdown: string, source: string, target: string) {
-  const mask = markdownImageContentMask(markdown);
-  const inline = markdown.replace(/(!\[[^\]]*\]\(\s*)(?:<([^>]+)>|([^\s)]+))|(<img\b[^>]*\bsrc=["'])([^"']+)/gi,
-    (whole, prefix, angle, plain, html, url, offset) => mask.slice(offset, offset + whole.length) === whole && (angle || plain || url) === source
-      ? html ? `${html}${target}` : `${prefix}<${target}>` : whole);
-  const inlineMask = markdownImageContentMask(inline);
-  return inline.replace(/(^ {0,3}\[[^\]]+\]:\s*)(?:<([^>]+)>|([^\s]+))/gm,
-    (whole, prefix, angle, plain, offset) => inlineMask.slice(offset, offset + whole.length) === whole && (angle || plain) === source ? `${prefix}<${target}>` : whole);
-}
-
-interface ImageMigration { source: string; relativePath: string }
-
-function applyImageMigrations(text: string, migrated: ImageMigration[] = []) {
-  for (const asset of migrated) text = replaceImageReference(text, asset.source, asset.relativePath);
-  return text;
 }
 
 async function migrateDocumentImages(doc: OpenDocument, newPath: string): Promise<ImageMigration[]> {
@@ -12792,7 +12824,7 @@ async function localizeMarkdownImages() {
   for (const source of sources) {
     try {
       const path = await storeMarkdownImage(doc, source, true);
-      replaceModelText(ensureDocumentModel(doc), replaceImageReference(documentText(doc), source, path));
+      replaceModelText(ensureDocumentModel(doc), applyImageMigrations(documentText(doc), [{ source, relativePath: path }]));
       count++;
     } catch (error) { log(`图片本地化失败：${source}：${String(error)}`); }
   }

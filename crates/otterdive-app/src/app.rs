@@ -409,6 +409,7 @@ impl OpenRequestQueue {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchReportDto {
+    pub truncated: bool,
     pub hits: Vec<FileHitDto>,
     pub skipped: Vec<String>,
     pub total: usize,
@@ -455,6 +456,8 @@ pub struct TextMatchDto {
     pub matched_text: String,
     pub line_text: String,
     pub preview_start_column: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_position: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -463,6 +466,8 @@ pub struct SaveRequest {
     pub source_path: Option<String>,
     pub source_encoding: Option<String>,
     pub expected_revision: Option<String>,
+    #[serde(default)]
+    pub other_open_paths: Vec<String>,
     pub path: Option<String>,
     pub text: String,
     pub encoding: String,
@@ -916,6 +921,20 @@ async fn save_document(request: SaveRequest) -> Result<DocumentDto, String> {
         if let Some(expected) = &request.expected_revision {
             crate::file_revision::ensure_revision(&path, expected)?;
         }
+        if !request.other_open_paths.is_empty() && path.try_exists().map_err(|e| e.to_string())? {
+            let target = same_file::Handle::from_path(&path).map_err(|e| e.to_string())?;
+            for other in &request.other_open_paths {
+                match same_file::Handle::from_path(other) {
+                    Ok(handle) if handle == target => {
+                        return Err(format!("目标文件已在其他标签中打开或正在保存：{other}"));
+                    }
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(format!("无法检查其他标签的路径：{other}：{e}"));
+                    }
+                    _ => {}
+                }
+            }
+        }
         doc.save_as(&path)
             .map_err(|err| format!("保存失败：{}：{err}", path.display()))?;
 
@@ -1076,19 +1095,57 @@ async fn reveal_workspace_entry(request: WorkspacePathRequest) -> Result<(), Str
         let root = PathBuf::from(request.root);
         let path = workspace_existing_path(&root, &PathBuf::from(request.path))?;
         let metadata = fs::metadata(&path).map_err(|err| format!("读取文件信息失败：{err}"))?;
-        let mut command = Command::new("explorer.exe");
-        if metadata.is_dir() {
-            command.arg(&path);
-        } else {
-            command.arg(format!("/select,{}", path.display()));
-        }
-        command
+        let mut command = reveal_command(&path, metadata.is_dir());
+        #[cfg(windows)]
+        return command
             .spawn()
             .map(|_| ())
-            .map_err(|err| format!("打开资源管理器失败：{err}"))
+            .map_err(|err| format!("打开文件管理器失败：{err}"));
+        #[cfg(not(windows))]
+        {
+            let status = command
+                .status()
+                .map_err(|err| format!("打开文件管理器失败：{err}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("打开文件管理器失败：{status}"))
+            }
+        }
     })
     .await
     .map_err(|err| format!("打开资源管理器任务失败：{err}"))?
+}
+
+fn reveal_command(path: &Path, is_dir: bool) -> Command {
+    #[cfg(windows)]
+    let mut command = Command::new("explorer.exe");
+    #[cfg(windows)]
+    if is_dir {
+        command.arg(path);
+    } else {
+        command.arg(format!("/select,{}", path.display()));
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("/usr/bin/open");
+    #[cfg(target_os = "macos")]
+    {
+        if !is_dir {
+            command.arg("-R");
+        }
+        command.arg(path);
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let mut command = Command::new("xdg-open");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    command.arg(if is_dir {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    });
+    command
 }
 
 #[tauri::command]
@@ -1473,7 +1530,7 @@ fn rename_file_in_place(path: &Path, requested_name: &str) -> Result<PathBuf, St
 
 #[cfg(test)]
 mod tests {
-    use super::{SUPPORTED_LANGUAGES, language_from_path, rename_file_in_place};
+    use super::{SUPPORTED_LANGUAGES, language_from_path, rename_file_in_place, reveal_command};
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1484,6 +1541,39 @@ mod tests {
             .expect("system clock should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("otterdive-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn file_manager_reveals_a_file_and_opens_a_directory() {
+        let directory = Path::new("/notes with spaces");
+        let file = directory.join("example.txt");
+        let reveal = reveal_command(&file, false);
+        let open = reveal_command(directory, true);
+        assert_eq!(open.get_args().collect::<Vec<_>>(), [directory.as_os_str()]);
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(reveal.get_program(), "/usr/bin/open");
+            assert_eq!(
+                reveal.get_args().collect::<Vec<_>>(),
+                [std::ffi::OsStr::new("-R"), file.as_os_str()]
+            );
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(reveal.get_program(), "explorer.exe");
+            assert_eq!(
+                reveal.get_args().next().unwrap().to_string_lossy(),
+                format!("/select,{}", file.display())
+            );
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            assert_eq!(reveal.get_program(), "xdg-open");
+            assert_eq!(
+                reveal.get_args().collect::<Vec<_>>(),
+                [directory.as_os_str()]
+            );
+        }
     }
 
     #[test]
@@ -1552,6 +1642,7 @@ pub(crate) fn search_report_to_dto(report: DirectorySearchReport) -> SearchRepor
     let files_scanned = report.files_scanned;
     let elapsed_ms = report.elapsed_ms;
     SearchReportDto {
+        truncated: report.truncated,
         hits: report
             .hits
             .into_iter()
@@ -1659,6 +1750,7 @@ fn match_to_dto(value: TextMatch) -> TextMatchDto {
         matched_text: value.matched_text,
         line_text: value.line_text,
         preview_start_column: value.line_text_start_column,
+        end_position: value.end_position,
     }
 }
 
@@ -1955,6 +2047,7 @@ mod save_encoding_tests {
             source_path: Some(source.to_string_lossy().into_owned()),
             source_encoding: Some(source_encoding.into()),
             expected_revision: None,
+            other_open_paths: Vec::new(),
             path: Some(path.to_string_lossy().into_owned()),
             text: text.into(),
             encoding: "UTF-8".into(),
@@ -1973,6 +2066,41 @@ mod save_encoding_tests {
         save(&target, &source, "UTF-16 LE", "新内容").unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "新内容");
         assert_eq!(fs::read(&source).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn save_as_rejects_another_open_documents_filesystem_alias() {
+        let directory = directory();
+        let target = directory.join("Target.txt");
+        fs::write(&target, "another document").unwrap();
+        let hard_link = directory.join("hard-link.txt");
+        fs::hard_link(&target, &hard_link).unwrap();
+        let mut aliases = vec![hard_link];
+        #[cfg(unix)]
+        {
+            let link = directory.join("symbolic-link.txt");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            aliases.push(link);
+        }
+        let lower_case = directory.join("target.txt");
+        if lower_case.exists() {
+            aliases.push(lower_case);
+        }
+        for path in aliases {
+            let result = tauri::async_runtime::block_on(save_document(SaveRequest {
+                path: Some(path.to_string_lossy().into_owned()),
+                source_path: None,
+                source_encoding: None,
+                expected_revision: None,
+                other_open_paths: vec![target.to_string_lossy().into_owned()],
+                text: "draft".into(),
+                encoding: "UTF-8".into(),
+                line_ending: "LF".into(),
+            }));
+            assert!(matches!(result, Err(ref message) if message.contains("其他标签")));
+            assert_eq!(fs::read_to_string(&path).unwrap(), "another document");
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -258,7 +258,7 @@ impl Document {
         }
         let bytes = encode_text(&self.text, self.meta.encoding)?;
         if path.exists() {
-            crate::fs::write_text_atomically(path, &self.text, self.meta.encoding)?;
+            crate::fs::replace_file_atomically(path, &bytes)?;
         } else {
             fs::write(path, &bytes)?;
         }

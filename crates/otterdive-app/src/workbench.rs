@@ -171,7 +171,7 @@ fn read_snapshot_from(connection: &Connection, id: i64) -> Result<Option<Snapsho
 pub(crate) fn save_snapshot_at(
     path: &Path,
     request: SaveSnapshotRequest,
-) -> Result<Snapshot, String> {
+) -> Result<SnapshotInfo, String> {
     let byte_length = request.text.len() + request.metadata.as_ref().map_or(0, String::len);
     if request.key.is_empty() || request.key.len() > 8192 || request.title.len() > 8192 {
         return Err("快照文档标识或标题无效".into());
@@ -186,37 +186,23 @@ pub(crate) fn save_snapshot_at(
     let mut connection = snapshot_connection(path)?;
     let transaction = connection.transaction().map_err(db_error)?;
     // Repeated autosave ticks must not exhaust the user's history quota.
-    let previous_id: Option<i64> = transaction
-        .query_row(
-            "SELECT id FROM snapshots WHERE kind = ?1 AND document_key = ?2
-         AND text = ?3 AND encoding = ?4 AND metadata IS ?5 AND path IS ?6 AND title = ?7
-         ORDER BY id DESC LIMIT 1",
-            params![
-                request.kind.label(),
-                request.key,
-                request.text,
-                request.encoding,
-                request.metadata,
-                request.path,
-                request.title
-            ],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(db_error)?;
-    let newest_id: Option<i64> = transaction.query_row(
-        "SELECT id FROM snapshots WHERE kind = ?1 AND document_key = ?2 ORDER BY id DESC LIMIT 1",
-        params![request.kind.label(), request.key], |row| row.get(0),
+    let previous = transaction.query_row(
+        "SELECT id, kind, document_key, title, path, encoding, NULL, created_at, byte_length
+         FROM (SELECT * FROM snapshots WHERE kind = ?1 AND document_key = ?2 ORDER BY id DESC LIMIT 1)
+         WHERE text = ?3 AND encoding = ?4 AND metadata IS ?5 AND path IS ?6 AND title = ?7",
+        params![request.kind.label(), request.key, request.text, request.encoding,
+            request.metadata, request.path, request.title],
+        info_from_row,
     ).optional().map_err(db_error)?;
-    if previous_id.is_some() && previous_id == newest_id {
-        return read_snapshot_from(&transaction, previous_id.unwrap())?
-            .ok_or_else(|| "快照已不存在".into());
+    if let Some(previous) = previous {
+        return Ok(previous);
     }
+    let created_at = now_ms();
     transaction.execute(
         "INSERT INTO snapshots(kind, document_key, title, path, encoding, text, metadata, created_at, byte_length)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![request.kind.label(), request.key, request.title, request.path, request.encoding,
-            request.text, request.metadata, now_ms(), byte_length as i64],
+            request.text, request.metadata, created_at, byte_length as i64],
     ).map_err(db_error)?;
     let id = transaction.last_insert_rowid();
     let keep = if request.kind == SnapshotKind::Recovery {
@@ -263,9 +249,18 @@ pub(crate) fn save_snapshot_at(
                 .map_err(db_error)?;
         }
     }
-    let snapshot = read_snapshot_from(&transaction, id)?.ok_or("快照保存失败")?;
     transaction.commit().map_err(db_error)?;
-    Ok(snapshot)
+    Ok(SnapshotInfo {
+        id,
+        kind: request.kind.label().into(),
+        key: request.key,
+        title: request.title,
+        path: request.path,
+        encoding: request.encoding,
+        metadata: None,
+        created_at,
+        byte_length,
+    })
 }
 
 #[tauri::command]
@@ -274,14 +269,9 @@ pub async fn save_snapshot(
     request: SaveSnapshotRequest,
 ) -> Result<SnapshotInfo, String> {
     let path = database_path(&app)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut info = save_snapshot_at(&path, request)?.info;
-        // Autosave only needs the key and id; don't echo megabytes over IPC.
-        info.metadata = None;
-        Ok(info)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || save_snapshot_at(&path, request))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1535,11 +1525,9 @@ mod tests {
         let latest =
             save_snapshot_at(&database, snapshot("latest", SnapshotKind::Recovery)).unwrap();
         let connection = snapshot_connection(&database).unwrap();
-        assert!(
-            read_snapshot_from(&connection, first.info.id)
-                .unwrap()
-                .is_none()
-        );
+        assert!(read_snapshot_from(&connection, first.id).unwrap().is_none());
+        assert!(latest.metadata.is_none());
+        let latest = read_snapshot_from(&connection, latest.id).unwrap().unwrap();
         assert_eq!(latest.text, "latest");
         assert!(latest.info.metadata.unwrap().contains("diskRevision"));
         assert_eq!(
@@ -1557,7 +1545,7 @@ mod tests {
         let database = directory.0.join("test.db");
         let first = save_snapshot_at(&database, snapshot("one", SnapshotKind::History)).unwrap();
         let repeated = save_snapshot_at(&database, snapshot("one", SnapshotKind::History)).unwrap();
-        assert_eq!(first.info.id, repeated.info.id);
+        assert_eq!(first.id, repeated.id);
         for value in ["two", "three", "four"] {
             let mut request = snapshot(value, SnapshotKind::History);
             request.max_entries = Some(2);
@@ -1571,11 +1559,7 @@ mod tests {
                 .unwrap(),
             2
         );
-        assert!(
-            read_snapshot_from(&connection, first.info.id)
-                .unwrap()
-                .is_none()
-        );
+        assert!(read_snapshot_from(&connection, first.id).unwrap().is_none());
         assert!(
             save_snapshot_at(
                 &database,
@@ -1621,11 +1605,7 @@ mod tests {
             .execute("UPDATE snapshots SET created_at = 1", [])
             .unwrap();
         save_snapshot_at(&database, snapshot("new", SnapshotKind::History)).unwrap();
-        assert!(
-            read_snapshot_from(&connection, old.info.id)
-                .unwrap()
-                .is_none()
-        );
+        assert!(read_snapshot_from(&connection, old.id).unwrap().is_none());
     }
 
     #[test]
@@ -1866,19 +1846,15 @@ mod tests {
         connection
             .execute(
                 "UPDATE snapshots SET byte_length = ?1 WHERE id = ?2",
-                params![SNAPSHOT_BUDGET as i64, first.info.id],
+                params![SNAPSHOT_BUDGET as i64, first.id],
             )
             .unwrap();
         let mut request = snapshot("new", SnapshotKind::History);
         request.key = "another document".into();
         let newest = save_snapshot_at(&database, request).unwrap();
-        assert!(
-            read_snapshot_from(&connection, first.info.id)
-                .unwrap()
-                .is_none()
-        );
+        assert!(read_snapshot_from(&connection, first.id).unwrap().is_none());
         assert_eq!(
-            read_snapshot_from(&connection, newest.info.id)
+            read_snapshot_from(&connection, newest.id)
                 .unwrap()
                 .unwrap()
                 .text,

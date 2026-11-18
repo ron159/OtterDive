@@ -47,7 +47,7 @@ pub fn start_workspace_search(
             &request.query,
             &options,
             &cancel,
-            usize::MAX,
+            otterdive_core::fs::MAX_DIRECTORY_MATCHES,
             |batch| {
                 on_event
                     .send(SearchEvent {

@@ -354,23 +354,65 @@ pub fn resolve_line_styles(
         } else {
             EffectiveStyle::default()
         };
-        match pattern.selection {
-            AnalyseSelection::Line => {
-                segments = overlay_style(segments, 0, line_text.len(), pattern.id, style);
-            }
-            AnalyseSelection::Text => {
-                for span in &line_match.spans {
-                    let start = span.start_byte_in_line.min(line_text.len());
-                    let end = span.end_byte_in_line.min(line_text.len());
-                    if start < end {
-                        segments = overlay_style(segments, start, end, pattern.id, style);
-                    }
+        if pattern.selection == AnalyseSelection::Line {
+            segments = vec![StyledSegment {
+                start_byte_in_line: 0,
+                end_byte_in_line: line_text.len(),
+                pattern_id: Some(pattern.id),
+                style,
+            }];
+            continue;
+        }
+        // Sweep both ordered lists once so dense lines do not rebuild every earlier segment.
+        let mut ranges: Vec<_> = line_match
+            .spans
+            .iter()
+            .map(|span| {
+                (
+                    span.start_byte_in_line,
+                    span.end_byte_in_line.min(line_text.len()),
+                )
+            })
+            .filter(|(start, end)| start < end)
+            .collect();
+        ranges.sort_unstable();
+        let mut ranges = ranges.into_iter().peekable();
+        let mut output = Vec::with_capacity(segments.len());
+        for segment in segments {
+            let mut pos = segment.start_byte_in_line;
+            while pos < segment.end_byte_in_line {
+                let Some(&(start, end)) = ranges.peek() else {
+                    output.push(StyledSegment {
+                        start_byte_in_line: pos,
+                        ..segment
+                    });
+                    break;
+                };
+                if end <= pos {
+                    ranges.next();
+                    continue;
                 }
+                let covered = start <= pos;
+                let next = segment
+                    .end_byte_in_line
+                    .min(if covered { end } else { start });
+                output.push(StyledSegment {
+                    start_byte_in_line: pos,
+                    end_byte_in_line: next,
+                    pattern_id: if covered {
+                        Some(pattern.id)
+                    } else {
+                        segment.pattern_id
+                    },
+                    style: if covered { style } else { segment.style },
+                });
+                pos = next;
             }
         }
+        segments = merge_adjacent_segments(output);
     }
 
-    merge_adjacent_segments(segments)
+    segments
 }
 
 fn style_for_pattern(pattern: &AnalysePattern) -> EffectiveStyle {
@@ -382,45 +424,6 @@ fn style_for_pattern(pattern: &AnalysePattern) -> EffectiveStyle {
         foreground: pattern.foreground,
         background: pattern.background,
     }
-}
-
-fn overlay_style(
-    segments: Vec<StyledSegment>,
-    start: usize,
-    end: usize,
-    pattern_id: PatternId,
-    style: EffectiveStyle,
-) -> Vec<StyledSegment> {
-    let mut output = Vec::with_capacity(segments.len() + 2);
-    for segment in segments {
-        if segment.end_byte_in_line <= start || segment.start_byte_in_line >= end {
-            output.push(segment);
-            continue;
-        }
-        if segment.start_byte_in_line < start {
-            output.push(StyledSegment {
-                start_byte_in_line: segment.start_byte_in_line,
-                end_byte_in_line: start,
-                pattern_id: segment.pattern_id,
-                style: segment.style,
-            });
-        }
-        output.push(StyledSegment {
-            start_byte_in_line: segment.start_byte_in_line.max(start),
-            end_byte_in_line: segment.end_byte_in_line.min(end),
-            pattern_id: Some(pattern_id),
-            style,
-        });
-        if segment.end_byte_in_line > end {
-            output.push(StyledSegment {
-                start_byte_in_line: end,
-                end_byte_in_line: segment.end_byte_in_line,
-                pattern_id: segment.pattern_id,
-                style: segment.style,
-            });
-        }
-    }
-    output
 }
 
 fn merge_adjacent_segments(segments: Vec<StyledSegment>) -> Vec<StyledSegment> {
@@ -595,6 +598,38 @@ mod tests {
         assert_eq!(segments[1].pattern_id, Some(2));
         assert!(segments[1].style.bold);
         assert_eq!(segments[2].pattern_id, Some(1));
+    }
+
+    #[test]
+    fn overlapping_unordered_spans_keep_later_pattern_precedence() {
+        let matches = |id, ranges: &[(usize, usize)]| LinePatternMatch {
+            pattern_id: id,
+            spans: ranges
+                .iter()
+                .map(|&(start, end)| LineSpan {
+                    line: 1,
+                    start_byte_in_line: start,
+                    end_byte_in_line: end,
+                })
+                .collect(),
+        };
+        let mut patterns = [pattern(1, "a"), pattern(2, "b")];
+        for pattern in &mut patterns {
+            pattern.selection = AnalyseSelection::Text;
+        }
+        let result = resolve_line_styles(
+            "0123456789",
+            &[
+                matches(1, &[(7, 10), (0, 4)]),
+                matches(2, &[(5, 8), (2, 6), (3, 3)]),
+            ],
+            &patterns,
+        );
+        let spans: Vec<_> = result
+            .iter()
+            .map(|s| (s.start_byte_in_line, s.end_byte_in_line, s.pattern_id))
+            .collect();
+        assert_eq!(spans, [(0, 2, Some(1)), (2, 8, Some(2)), (8, 10, Some(1))]);
     }
 
     #[test]
