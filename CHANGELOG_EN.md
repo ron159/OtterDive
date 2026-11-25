@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.10 — 2026-11-25
+
+- Apply security fixes to the Vite build tooling, TLS, and certificate verification.
+- Update the app updater and document ZIP export. Apply fixes for bundled SQLite, Markdown parsing, and URL and cookie handling.
+- Update Linux trash, filesystem, and async executor dependencies.
+
 ## 0.8.9 — 2026-11-18
 
 - Preserve the original path and macOS Finder tags during replacement saves. Protect open Save As destinations and restore draft encoding and line endings.
