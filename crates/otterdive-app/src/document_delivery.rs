@@ -779,7 +779,7 @@ mod tests {
                 file.enclosed_name().is_some(),
                 "ZIP must contain no escaping paths"
             );
-            let name = file.name().to_owned();
+            let name = file.name().unwrap().into_owned();
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes).unwrap();
             assert!(entries.insert(name, bytes).is_none());
