@@ -34,7 +34,7 @@ same-file = "1"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 trash = "5.2.9"
 url = "2.5.9"
-zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg.workspace = true
