@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.11 — 2026-11-28
+
+- Filter Markdown outlines and jump by keyboard. Reading mode supports section folding, heading bookmarks, local link and footnote previews, and persistent highlights and annotations with excerpt export.
+- Markdown tabs remember their display modes independently. Check workspace links and image references, and browse backlinks by document or heading.
+- Read UTF-8 Markdown files over 20 MiB one section at a time, with paged source and full-file search still available.
+
 ## 0.8.10 — 2026-11-25
 
 - Apply security fixes to the Vite build tooling, TLS, and certificate verification.
