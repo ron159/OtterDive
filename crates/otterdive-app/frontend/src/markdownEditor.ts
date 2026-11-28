@@ -252,8 +252,9 @@ export function renderMarkdownPopoverDocument(markdown: string, options: Markdow
 export function renderMarkdownPreviewHtml(markdown: string, options: MarkdownPreviewOptions) {
   const extensions = options.extensions ?? {};
   const body = staticMarkdownBody(markdown, options);
-  const container = document.createElement("div");
-  container.innerHTML = body;
+  const template = document.createElement("template");
+  template.innerHTML = body;
+  const container = template.content;
   assignHeadingIds(container);
   if (extensions.toc !== false) {
     const headings = [...container.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")];
@@ -276,7 +277,7 @@ export function renderMarkdownPreviewHtml(markdown: string, options: MarkdownPre
       quote.prepend(title);
     });
   }
-  const imageSafeBody = container.innerHTML
+  const imageSafeBody = template.innerHTML
     .replace(/<img\b(?![^>]*\bloading=)/gi, '<img loading="lazy"')
     .replace(/<img\b(?![^>]*\bdecoding=)/gi, '<img decoding="async"')
     .replace(/<img\b(?![^>]*\breferrerpolicy=)/gi, '<img referrerpolicy="no-referrer"');
@@ -297,7 +298,7 @@ export async function renderMarkdownPreviewDiagrams(root: HTMLElement, options: 
   await Promise.all(diagrams.map((code) => renderDiagram(code, options)));
 }
 
-function assignHeadingIds(root: HTMLElement) {
+function assignHeadingIds(root: ParentNode) {
   const headings = [...root.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")];
   const headingSet = new Set(headings);
   const used = new Set(

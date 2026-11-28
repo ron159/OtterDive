@@ -72,6 +72,7 @@ function harness(snapshot = {}, options = {}) {
   };
   const context = {
     busyDepth: 0, editorBusyDepth: 0, setBusy: message => { state.busyMessage = message; },
+    referencePanel: { reset: noop },
     readPaths: [], sessionSaves: [], alerts: [], showAlert: async prompt => { context.alerts.push(prompt); },
     Blob, state, performance, SESSION_KEY: "session", analysePanel: null, markdownLocations: {}, readingBookmarks: {}, restoredReading: [],
     restoreMarkdownLocation: async (doc, location) => context.restoredReading.push({ id: doc.id, location }),

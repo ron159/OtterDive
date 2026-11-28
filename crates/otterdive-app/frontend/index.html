@@ -1146,6 +1146,7 @@
             <button class="bottom-results-tab" id="bottomSearchResultsTab" type="button" role="tab" data-bottom-result="search" aria-controls="searchResultsPane">
               <span class="icon-slot" data-icon="Search"></span><span>搜索结果</span>
             </button>
+            <button class="bottom-results-tab hidden" id="bottomReferenceResultsTab" type="button" role="tab" data-bottom-result="references" aria-controls="markdownReferencePane">Markdown 引用</button>
             <button class="bottom-results-tab" id="bottomAnalyseResultsTab" type="button" role="tab" data-bottom-result="analyse" aria-controls="analyseResultHost">
               <span class="icon-slot" data-icon="Sigma"></span><span>Analyse 结果</span>
             </button>
@@ -1182,6 +1183,20 @@
               <span id="resultAnalysisStatus" role="status"></span>
             </div>
             <div class="find-results-body" id="findResultsBody"><div class="empty">输入关键词，让水獭帮你捞出线索</div></div>
+          </section>
+          <section class="find-results-pane hidden" id="markdownReferencePane" aria-label="Markdown 引用">
+            <header><strong id="referenceTitle">工作区链接检查</strong></header>
+            <div class="reference-results-scroll">
+              <div class="find-result-actions">
+                <button class="tool-button" id="referenceIssues" type="button">工作区问题</button>
+                <button class="tool-button" id="referenceBacklinks" type="button">当前文档的反向引用</button>
+                <select id="referenceSection" aria-label="被引用的章节" hidden></select>
+                <button class="tool-button" id="referenceCancel" type="button" hidden>取消扫描</button>
+                <button class="tool-button" id="referenceRescan" type="button">重新扫描</button>
+              </div>
+              <p id="referenceScanStatus" role="status"></p>
+              <div id="referenceRows"></div>
+            </div>
           </section>
           <section class="analyse-result-host hidden" id="analyseResultHost" aria-label="Analyse 结果"></section>
         </div>

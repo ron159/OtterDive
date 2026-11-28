@@ -316,6 +316,14 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let markdown_insert_toc = macos_menu_item(app, "markdown.insertToc", "插入正文目录", None)?;
     let markdown_check_links = macos_menu_item(app, "markdown.checkLinks", "检查本地链接…", None)?;
+    let workspace_links = macos_menu_item(
+        app,
+        "markdown.workspaceLinks",
+        "检查工作区 Markdown 链接…",
+        None,
+    )?;
+    let markdown_backlinks =
+        macos_menu_item(app, "markdown.backlinks", "查看当前文档的反向引用…", None)?;
     let navigate_back = macos_menu_item(app, "navigation.back", "返回上一个文档位置", None)?;
     let navigate_forward = macos_menu_item(app, "navigation.forward", "前往下一个文档位置", None)?;
     let view_menu = SubmenuBuilder::new(app, "视图")
@@ -335,6 +343,8 @@ fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &markdown_insert_toc,
             &markdown_localize_images,
             &markdown_check_links,
+            &workspace_links,
+            &markdown_backlinks,
         ])
         .separator()
         .items(&[&side_editor, &side_scroll_sync])
@@ -737,6 +747,8 @@ pub fn run() {
             pick_file_path,
             open_path,
             crate::file_revision::file_revisions,
+            crate::markdown_references::markdown_reference_locations,
+            crate::markdown_references::list_markdown_reference_directory,
             reopen_path_with_encoding,
             pick_save_path,
             pick_pdf_save_path,

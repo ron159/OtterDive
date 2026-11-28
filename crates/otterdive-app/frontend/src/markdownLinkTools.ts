@@ -14,21 +14,25 @@ export type MarkdownLinkCompletionOptions = {
   renderHtml: RenderHtml;
 };
 
-function comparablePath(path: string) {
+export function comparablePath(path: string) {
   const normalized = normalizeResourcePath(path);
   return /^[a-z]:[\\/]|^[\\/]{2}/i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
-function parseHtml(html: string) { return new DOMParser().parseFromString(html, "text/html"); }
+function parseHtml(html: string) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  return template.content;
+}
 function documentDirectory(path: string) { return path.replace(/[\\/][^\\/]*$/, "") || "/"; }
 function isExternalLink(href: string) {
   return /^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href) && !/^[a-z]:[\\/]/i.test(href)
     || href.startsWith("//");
 }
 
-async function readLinkTarget(path: string): Promise<{ text: string; warning?: string }> {
+export async function readLinkTarget(path: string): Promise<{ text: string; warning?: string }> {
   const chunk = await invoke<FileChunk>("read_file_chunk", { request: { path, offset: 0, limit: 1024 * 1024, tail: false, encoding: "auto" } });
-  return { text: chunk.text, warning: chunk.warning || (chunk.hasMore ? "目标文档超过 1 MiB，标题检查未完成" : undefined) };
+  return { text: chunk.text, warning: chunk.warning || (chunk.hasMore || chunk.size > 1024 * 1024 ? "文件超过 1 MiB，已跳过" : chunk.text.includes("\0") ? "已跳过二进制内容" : undefined) };
 }
 
 export function registerMarkdownLinkCompletions(options: MarkdownLinkCompletionOptions): monaco.IDisposable {
@@ -92,56 +96,96 @@ export function registerMarkdownLinkCompletions(options: MarkdownLinkCompletionO
   return { dispose: () => registrations.forEach(item => item.dispose()) };
 }
 
-/** Inspect local file links and document anchors; external URLs are never requested. */
+type Revision = { path: string; revision: string | null; error: string | null };
+type ReadText = typeof readLinkTarget;
+export type CheckedReference<T> = T & { resolved: string; anchor: string; reason: string };
+
+// A workspace-wide scan may inspect its selected UNC share, but must not initiate
+// connections to other network shares named by arbitrary documents.
+function shareRoot(key: string) {
+  return /^\\\\[^\\]+\\[^\\]+/.exec(key)?.[0];
+}
+
+export function markdownReferenceChecker(renderHtml: RenderHtml, readText: ReadText = readLinkTarget, scanRoot?: string) {
+  const allowedShare = scanRoot && shareRoot(comparablePath(scanRoot));
+  const revisions = new Map<string, Revision>();
+  const headings = new Map<string, Set<string> | string>();
+  function ids(text: string) {
+    return Promise.resolve(renderHtml(text)).then(html =>
+      new Set([...parseHtml(html).querySelectorAll<HTMLElement>("[id]")].map(element => element.id)));
+  }
+  return async function check<T extends { href: string }>(items: T[], source: LinkDocument,
+    workspaceRoot?: string | null, signal?: AbortSignal): Promise<CheckedReference<T>[]> {
+    const links = items.map(item => {
+      const { path, anchor } = splitMarkdownLink(item.href);
+      const resolved = path ? resolveMarkdownResource(path, source.path, workspaceRoot) : source.path || "";
+      const key = comparablePath(resolved);
+      const share = scanRoot && shareRoot(key);
+      return { item, path, anchor, resolved, key, skippedShare: Boolean(share && share !== allowedShare) };
+    });
+    const missingStatus = new Map<string, string>();
+    for (const link of links) {
+      if (link.path && link.resolved && !link.skippedShare && !revisions.has(link.key)) missingStatus.set(link.key, link.resolved);
+    }
+    if (missingStatus.size && !signal?.aborted) {
+      try {
+        const files = await invoke<Revision[]>("file_revisions", { paths: [...missingStatus.values()] });
+        for (const file of files) revisions.set(comparablePath(file.path), file);
+      } catch (error) {
+        for (const [key, path] of missingStatus) revisions.set(key, { path, revision: null, error: String(error) });
+      }
+    }
+    let currentIds: Set<string> | undefined;
+    const checked: CheckedReference<T>[] = [];
+    for (const { item, path, anchor, resolved, key, skippedShare } of links) {
+      if (signal?.aborted) break;
+      let reason = "";
+      const revision = revisions.get(key);
+      if (skippedShare) reason = "已跳过工作区以外的网络共享";
+      else if (path && !resolved) reason = "相对链接缺少文档保存位置或工作区目录";
+      else if (path && revision?.revision === "missing") reason = "目标文件不存在";
+      else if (path && !revision?.revision) reason = `无法检查目标文件：${revision?.error || "没有文件状态"}`;
+      else if (anchor) {
+        try {
+          if (!path || source.path && comparablePath(source.path) === key) {
+            currentIds ??= await ids(source.text);
+            if (!currentIds.has(anchor)) reason = `未找到文档锚点 #${anchor}`;
+          } else if (/\.(?:md|markdown|mdx|rmd)$/i.test(resolved)) {
+            let found = headings.get(key);
+            if (found === undefined) {
+              const target = await readText(resolved);
+              if (signal?.aborted) break;
+              found = target.warning || await ids(target.text);
+              // Bound rendered heading sets independently of the result count.
+              if (headings.size >= 32) headings.delete(headings.keys().next().value!);
+              headings.set(key, found);
+            }
+            if (typeof found === "string") reason = found;
+            else if (!found.has(anchor)) reason = `目标文档没有锚点 #${anchor}`;
+          }
+        } catch (error) { reason = `无法检查目标标题：${String(error)}`; }
+      }
+      checked.push({ ...item, resolved, anchor, reason });
+    }
+    return checked;
+  };
+}
+
+/** Inspect local file links, images and anchors; external URLs are never requested. */
 export async function checkMarkdownLinks(options: LinkDocument & { workspaceRoot?: string | null; renderHtml: RenderHtml }): Promise<MarkdownLinkIssue[]> {
-  const current = parseHtml(await options.renderHtml(options.text));
-  const currentIds = new Set([...current.querySelectorAll<HTMLElement>("[id]")].map(element => element.id));
+  const html = await options.renderHtml(options.text);
+  const current = parseHtml(html);
   const links = new Map<string, string>();
-  for (const anchor of current.querySelectorAll<HTMLAnchorElement>("a[href]")) {
-    const href = anchor.getAttribute("href")?.trim();
-    if (href && !isExternalLink(href)) links.set(href, anchor.textContent?.trim() || href);
+  for (const [selector, attribute] of [["a[href]", "href"], ["img[src]", "src"]] as const) {
+    for (const element of current.querySelectorAll<HTMLElement>(selector)) {
+      const href = element.getAttribute(attribute)?.trim();
+      if (href && !isExternalLink(href)) links.set(href, element.textContent?.trim() || element.getAttribute("alt") || href);
+    }
   }
   const issues: MarkdownLinkIssue[] = [];
   if (links.size > 500) issues.push({ href: "", label: "检查范围", reason: "链接超过 500 个，本次仅检查前 500 个" });
-  const selected = [...links].slice(0, 500).map(([href, label]) => {
-    const link = splitMarkdownLink(href);
-    const path = link.path ? resolveMarkdownResource(link.path, options.path, options.workspaceRoot) : options.path;
-    return { href, label, ...link, resolved: path };
-  });
-  const paths = [...new Set(selected.filter(link => link.path && link.resolved).map(link => link.resolved!))];
-  const revisions = paths.length ? await invoke<Array<{ path: string; revision: string | null; error: string | null }>>("file_revisions", { paths }) : [];
-  const files = new Map(revisions.map(file => [comparablePath(file.path), file]));
-  const idsByPath = new Map<string, Promise<Set<string> | string>>();
-  for (const link of selected) {
-    let reason = "";
-    if (!link.path) {
-      if (link.anchor && !currentIds.has(link.anchor)) reason = `未找到文档锚点 #${link.anchor}`;
-    } else if (!link.resolved) reason = "相对链接缺少文档保存位置或工作区目录";
-    else {
-      const file = files.get(comparablePath(link.resolved));
-      if (file?.revision === "missing") reason = "目标文件不存在";
-      else if (!file?.revision) reason = `无法检查目标文件：${file?.error || "没有文件状态"}`;
-      else if (link.anchor && options.path && comparablePath(link.resolved) === comparablePath(options.path)) {
-        if (!currentIds.has(link.anchor)) reason = `未找到文档锚点 #${link.anchor}`;
-      } else if (link.anchor && /\.(?:md|markdown|mdx)$/i.test(link.resolved)) {
-        const key = comparablePath(link.resolved);
-        let ids = idsByPath.get(key);
-        if (!ids) {
-          ids = (async () => {
-            try {
-              const target = await readLinkTarget(link.resolved!);
-              if (target.warning) return target.warning;
-              return new Set([...parseHtml(await options.renderHtml(target.text)).querySelectorAll<HTMLElement>("[id]")].map(element => element.id));
-            } catch (error) { return `无法检查目标标题：${String(error)}`; }
-          })();
-          idsByPath.set(key, ids);
-        }
-        const found = await ids;
-        if (typeof found === "string") reason = found;
-        else if (!found.has(link.anchor)) reason = `目标文档没有锚点 #${link.anchor}`;
-      }
-    }
-    if (reason) issues.push({ href: link.href, label: link.label, reason });
-  }
+  const selected = [...links].slice(0, 500).map(([href, label]) => ({ href, label }));
+  const check = markdownReferenceChecker(text => text === options.text ? html : options.renderHtml(text));
+  issues.push(...(await check(selected, options, options.workspaceRoot)).filter(link => link.reason));
   return issues;
 }

@@ -76,6 +76,7 @@ test("workspace close clears recovery, parallel views and sessions only for its 
   const state = { workspace: { name: "test" }, documents: [workspace, standalone], activeId: 1, collapsedDirs: new Set() };
   const sessions = new Map([[1, {}], [2, {}]]), stats = new Map([[1, {}], [2, {}]]);
   const context = harness(["closeWorkspace", "activeDocument"], {
+    referencePanel: { reset: () => calls.push("reset references") },
     state, confirmDocumentCanClose: async () => true, editor: { saveViewState: () => ({}) },
     rememberMarkdownLocation: noop,
     discardRecovery: doc => calls.push(`discard:${doc.id}`), closeSideEditorFor: doc => calls.push(`side:${doc.id}`),
@@ -84,7 +85,7 @@ test("workspace close clears recovery, parallel views and sessions only for its 
     renderAll: noop, renderSettingsMenu: noop, scheduleSessionSave: noop, log: noop,
   });
   await context.closeWorkspace();
-  assert.deepEqual(calls, ["discard:1", "side:1", "dispose"]);
+  assert.deepEqual(calls, ["discard:1", "side:1", "dispose", "reset references"]);
   assert.equal(state.documents.length, 1); assert.equal(state.documents[0], standalone);
   assert.equal(state.activeId, standalone.id);
   assert.equal(sessions.has(1), false); assert.equal(stats.has(1), false); assert.equal(sessions.has(2), true); assert.equal(stats.has(2), true);

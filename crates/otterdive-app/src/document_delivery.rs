@@ -18,14 +18,17 @@ pub struct ReferenceSpan {
     pub destination: String,
 }
 
+pub(crate) fn reference_parser_options() -> Options {
+    Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
+}
+
 /// Byte ranges cover destinations only; code, labels and Markdown formatting stay intact.
 /// Destinations are Markdown-unescaped but keep URL percent encoding.
 pub fn markdown_reference_spans(text: &str) -> Vec<ReferenceSpan> {
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS;
-    let parser = Parser::new_ext(text, options);
+    let parser = Parser::new_ext(text, reference_parser_options());
     let mut references = Vec::new();
     for (_, definition) in parser.reference_definitions().iter() {
         let raw = &text[definition.span.clone()];
@@ -107,7 +110,7 @@ pub fn markdown_reference_spans(text: &str) -> Vec<ReferenceSpan> {
                 }
             }
             Event::Html(_) | Event::InlineHtml(_) => {
-                html_reference_spans(text, span, &mut raw_html_tag, &mut references)
+                html_reference_spans(text, span, &mut raw_html_tag, &mut references, false)
             }
             _ => {}
         }
@@ -165,16 +168,17 @@ fn decode_destination(raw: &str) -> String {
     raw.to_owned()
 }
 
-fn html_reference_spans(
+pub(crate) fn html_reference_spans(
     text: &str,
     span: Range<usize>,
     raw_html_tag: &mut Option<String>,
     references: &mut Vec<ReferenceSpan>,
+    links_and_images_only: bool,
 ) {
     // Only inspect actual attribute names, never `data-src` or HTML/script text.
     static ATTRIBUTES: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r#"(?i)(?:^|\s)(?:href|src|poster)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#,
+            r#"(?i)\s+([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?"#,
         )
         .unwrap()
     });
@@ -246,10 +250,19 @@ fn html_reference_spans(
             break;
         }
         for captures in ATTRIBUTES.captures_iter(&raw[start..index]) {
+            let attribute = captures[1].to_ascii_lowercase();
+            let include = if links_and_images_only {
+                (tag == "a" && attribute == "href") || (tag == "img" && attribute == "src")
+            } else {
+                matches!(attribute.as_str(), "href" | "src" | "poster")
+            };
+            if !include {
+                continue;
+            }
             if let Some(value) = captures
-                .get(1)
-                .or_else(|| captures.get(2))
+                .get(2)
                 .or_else(|| captures.get(3))
+                .or_else(|| captures.get(4))
             {
                 references.push(ReferenceSpan {
                     range: span.start + start + value.start()..span.start + start + value.end(),

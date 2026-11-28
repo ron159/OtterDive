@@ -18,11 +18,12 @@ function setup(files, targets) {
       const fixture = JSON.parse(source);
       return { querySelectorAll: selector => selector === "a[href]"
         ? (fixture.links ?? []).map(link => ({ getAttribute: () => link.href, textContent: link.label || link.href }))
+        : selector === "img[src]" ? (fixture.images ?? []).map(href => ({ getAttribute: attr => attr === "src" ? href : "" }))
         : (fixture.ids ?? []).map(id => ({ id })) };
     }
   }
   const context = vm.createContext({
-    DOMParser, URL,
+    document: { createElement: () => ({ set innerHTML(html) { this.content = new DOMParser().parseFromString(html); } }) }, URL,
     async invoke(command, args) {
       calls.push({ command, args });
       if (command === "file_revisions") return args.paths.map(path => ({ path, revision: files[path] ?? "missing", error: null }));
@@ -64,4 +65,11 @@ test("explicit current-file links use unsaved current headings instead of stale 
   const issues = await check({ ids: ["unsaved-heading"], links: [{ href: "current.md#unsaved-heading" }] });
   assert.equal(issues.length, 0);
   assert.equal(calls.filter(call => call.command === "read_file_chunk").length, 0);
+});
+
+test("checks local images alongside links without probing remote images", async () => {
+  const { check, calls } = setup({}, {});
+  const issues = await check({ images: ["image.png", "https://example.org/remote.png"] });
+  assert.deepEqual(Array.from(issues, issue => issue.href), ["image.png"]);
+  assert.deepEqual(Array.from(calls[0].args.paths), ["/notes/image.png"]);
 });

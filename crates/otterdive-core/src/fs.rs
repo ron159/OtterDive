@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
 pub struct DecodedText {
@@ -230,7 +230,7 @@ pub fn search_directory_stream(
     let started = Instant::now();
     let matcher = SearchMatcher::new(query, options)?;
     let file_glob = FileGlobMatcher::new(&options.file_glob);
-    let skip_dirs = parse_list(&options.skip_dirs);
+    let includes = workspace_entry_filter(options.include_hidden, &options.skip_dirs);
     let mut walker = WalkDir::new(root);
     if !options.recursive {
         walker = walker.max_depth(1);
@@ -239,10 +239,13 @@ pub fn search_directory_stream(
     let max_results = max_results.min(MAX_DIRECTORY_MATCHES);
     let mut total = 0;
     let mut preview_bytes = 0;
-    for entry in walker
-        .into_iter()
-        .filter_entry(|entry| should_visit(entry, options, &skip_dirs))
-    {
+    for entry in walker.into_iter().filter_entry(|entry| {
+        entry.depth() == 0
+            || includes(
+                &entry.file_name().to_string_lossy(),
+                entry.file_type().is_dir(),
+            )
+    }) {
         if cancel.is_cancelled() || summary.truncated {
             break;
         }
@@ -361,7 +364,7 @@ pub fn preview_directory_replace(
 ) -> Result<(Vec<FileReplacePreview>, Vec<String>), SearchError> {
     let matcher = SearchMatcher::new(query, options)?;
     let file_glob = FileGlobMatcher::new(&options.file_glob);
-    let skip_dirs = parse_list(&options.skip_dirs);
+    let includes = workspace_entry_filter(options.include_hidden, &options.skip_dirs);
     let mut walker = WalkDir::new(root);
     if !options.recursive {
         walker = walker.max_depth(1);
@@ -370,10 +373,13 @@ pub fn preview_directory_replace(
     let mut skipped = Vec::new();
     let mut retained_bytes = 0usize;
     let mut retained_matches = 0usize;
-    for entry in walker
-        .into_iter()
-        .filter_entry(|entry| should_visit(entry, options, &skip_dirs))
-    {
+    for entry in walker.into_iter().filter_entry(|entry| {
+        entry.depth() == 0
+            || includes(
+                &entry.file_name().to_string_lossy(),
+                entry.file_type().is_dir(),
+            )
+    }) {
         let path = match entry {
             Ok(entry) if entry.file_type().is_file() && file_glob.matches(entry.path()) => {
                 entry.into_path()
@@ -717,19 +723,15 @@ pub(crate) fn replace_file_atomically(path: &Path, bytes: &[u8]) -> io::Result<(
     Ok(())
 }
 
-fn should_visit(entry: &DirEntry, options: &SearchOptions, skip_dirs: &[String]) -> bool {
-    // The user explicitly selected this root; filters apply only to its descendants.
-    if entry.depth() == 0 {
-        return true;
-    }
-    let name = entry.file_name().to_string_lossy();
-    if !options.include_hidden && name.starts_with('.') {
-        return false;
-    }
-    if entry.file_type().is_dir() {
-        !skip_dirs.iter().any(|dir| dir.eq_ignore_ascii_case(&name))
-    } else {
-        true
+/// The selected root is always visited. Apply these search settings to descendants.
+pub fn workspace_entry_filter(
+    include_hidden: bool,
+    skip_dirs: &str,
+) -> impl Fn(&str, bool) -> bool + use<> {
+    let directories = parse_list(skip_dirs);
+    move |name, is_dir| {
+        (include_hidden || !name.starts_with('.'))
+            && !(is_dir && directories.iter().any(|dir| dir.eq_ignore_ascii_case(name)))
     }
 }
 

@@ -1168,6 +1168,13 @@ select:focus-visible {
   height: 36px;
 }
 
+#markdownReferencePane [hidden] { display: none; }
+.reference-results-scroll { min-height: 0; overflow: auto; }
+.reference-results-scroll .find-result-actions { justify-content: flex-start; flex-wrap: wrap; }
+.reference-results-scroll select { max-width: min(100%, 24em); }
+#referenceScanStatus, #referenceRows details { margin: 6px 10px; font-size: 12px; }
+#referenceRows .find-result-row { display: block; overflow-wrap: anywhere; }
+
 .analyse-result-host {
   overflow: hidden;
   background: var(--surface);

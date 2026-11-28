@@ -6,7 +6,8 @@ import { revealReadingMatch } from "./readingSearch";
 import { captureReadingScroll, installReadingSections, readingSearchScope, restoreReadingScroll, revealReadingSections } from "./readingSections";
 import { moveReadingBookmarks, normalizeReadingBookmarks, type ReadingBookmarks } from "./readingBookmarks";
 import "./readingBookmarks.css";
-import { registerMarkdownLinkCompletions, checkMarkdownLinks } from "./markdownLinkTools";
+import { MarkdownReferencePanel } from "./markdownReferencePanel";
+import { comparablePath, readLinkTarget, registerMarkdownLinkCompletions, checkMarkdownLinks } from "./markdownLinkTools";
 import { bindMarkdownLinkPopover, markdownPopoverCharacterLimit } from "./markdownLinkPopover";
 import type { FileChunk } from "./logViewerState";
 import { normalizeWorkbenchPreferences, markdownExtensionPreferences, type WorkbenchPreferences } from "./workbenchPreferences";
@@ -535,7 +536,7 @@ type MissingFileBehavior = "keep" | "close";
 type DocumentOrigin = "standalone" | "workspace";
 type FindView = "find" | "replace" | "workspace-find" | "workspace-replace";
 type RightTool = "search" | "analyse";
-type BottomResultTool = "search" | "analyse";
+type BottomResultTool = "search" | "analyse" | "references";
 type SearchScope = "current" | "open" | "workspace";
 type WorkspaceSearchStatus = "idle" | "searching" | "previewing" | "applying" | "error";
 type WorkspaceSearchAction = "search" | "preview" | "apply";
@@ -1078,6 +1079,7 @@ let editorWheelZoomAt = 0;
 let searchResultWheelZoomAt = 0;
 let searchResultFontSize = DEFAULT_SEARCH_RESULT_FONT_SIZE;
 let activeBottomResultTool: BottomResultTool = "search";
+let referencePanel: MarkdownReferencePanel;
 let analyseResultsAvailable = false;
 let markdownEditor: MarkdownEditorBridge | null = null;
 let markdownModulePromise: Promise<typeof import("./markdownEditor")> | null = null;
@@ -1419,6 +1421,30 @@ function bootstrap() {
   registerMdx();
   registerToml();
   registerCompletionProviders();
+  referencePanel = new MarkdownReferencePanel({
+    options: () => {
+      if (!state.workspace) throw Error("请先打开工作区目录");
+      syncMarkdownModelFromEditor(activeDocument());
+      return { root: state.workspace.root, includeHidden: $<HTMLInputElement>("includeHiddenInput").checked,
+        skipDirs: $<HTMLInputElement>("skipDirsInput").value || DEFAULT_SKIP_DIRS,
+        readText: readMarkdownReferenceText,
+        renderHtml: async source => (await loadMarkdownModule()).renderMarkdownPreviewHtml(source, markdownPreviewOptions()) };
+    },
+    currentPath: () => isMarkdownLikeDocument() ? activeDocument().path || null : null,
+    openPanel: () => openBottomResults("references"),
+    openSource: async row => {
+      const open = state.documents.find(doc => doc.path && comparablePath(doc.path) === comparablePath(row.source));
+      if (open) activateDocument(open.id);
+      else await openPath(row.source);
+      const doc = activeDocument();
+      if (!doc.path || comparablePath(doc.path) !== comparablePath(row.source)) return;
+      ++markdownLocationRevision;
+      pendingMarkdownLocation = null;
+      if (isMarkdownLikeDocument(doc) && state.markdownEditMode !== "split") setMarkdownEditMode("source", false);
+      await navigateSourceLine(doc, row.line, row.column);
+    },
+    showError: showWorkbenchError,
+  });
   registerMarkdownLinkCompletions({
     getDocument: (model) => {
       const doc = state.documents.find((item) => item.model === model);
@@ -5222,6 +5248,7 @@ async function openWorkspacePath(path: string) {
   const workspace = await withBusy(`读取目录 ${fileNameFromPath(path)}`, () =>
     invoke<WorkspaceDto>("read_workspace", { path }),
   );
+  if (state.workspace?.root !== workspace.root) { referencePanel.reset(); syncBottomResults(); }
   state.workspace = workspace;
   state.mode = "workspace";
   state.showDirectory = true;
@@ -5265,6 +5292,7 @@ async function closeWorkspace() {
   });
   if (state.documents.length === 0) state.documents.push(createDefaultUntitledDocument());
 
+  referencePanel.reset();
   state.workspace = null;
   state.mode = "single";
   state.showDirectory = false;
@@ -6669,11 +6697,12 @@ function syncPinnedSearchResultScroll(event: Event) {
 
 function renderPinnedSearchResult() {
   const pins = state.pinnedResults;
-  $("pinnedSearchComparison").classList.toggle("hidden", pins.length === 0 || !pinnedResultsOpen);
-  $("togglePinnedResultsButton").classList.toggle("hidden", pins.length === 0);
+  const showPins = pins.length > 0 && activeBottomResultTool !== "references";
+  $("pinnedSearchComparison").classList.toggle("hidden", !showPins || !pinnedResultsOpen);
+  $("togglePinnedResultsButton").classList.toggle("hidden", !showPins);
   $("togglePinnedResultsButton").setAttribute("aria-expanded", String(pins.length > 0 && pinnedResultsOpen));
   $("pinnedResultsToggleLabel").textContent = `固定对比 · ${pins.length}`;
-  $("pinnedResultsActions").classList.toggle("hidden", pins.length === 0 || !pinnedResultsOpen);
+  $("pinnedResultsActions").classList.toggle("hidden", !showPins || !pinnedResultsOpen);
   const list = $("pinnedResultsList");
   const existing = new globalThis.Map([...list.children].map(node => [(node as HTMLElement).dataset.pinId, node]));
   const retained = new Set(pins.map(pin => pin.id));
@@ -8886,6 +8915,7 @@ function nativeResultsAvailable() {
 function openBottomResults(tool: BottomResultTool) {
   if (tool === "search" && !nativeResultsAvailable()) return;
   if (tool === "analyse" && !analyseResultsAvailable) return;
+  if (tool === "references" && !referencePanel?.available) return;
   activeBottomResultTool = tool;
   $("bottomResultsDock").classList.remove("hidden");
   $("app").classList.add("bottom-results-open");
@@ -8903,30 +8933,27 @@ function closeBottomResults() {
 }
 
 function syncBottomResults() {
+  const tabs = [
+    { tool: "search", tab: "bottomSearchResultsTab", pane: "searchResultsPane", available: nativeResultsAvailable() },
+    { tool: "analyse", tab: "bottomAnalyseResultsTab", pane: "analyseResultHost", available: analyseResultsAvailable },
+    { tool: "references", tab: "bottomReferenceResultsTab", pane: "markdownReferencePane", available: referencePanel?.available },
+  ] as const;
+  const fallback = tabs.find(tab => tab.available);
+  if (!tabs.some(tab => tab.tool === activeBottomResultTool && tab.available) && fallback) activeBottomResultTool = fallback.tool;
+  for (const { tool, tab, pane, available } of tabs) {
+    const selected = Boolean(available && tool === activeBottomResultTool);
+    $(tab).classList.toggle("hidden", !available);
+    $(tab).classList.toggle("active", selected);
+    $(tab).setAttribute("aria-selected", String(selected));
+    $(pane).classList.toggle("hidden", !selected);
+  }
   renderPinnedSearchResult();
-  const searchAvailable = nativeResultsAvailable();
-  const analyseAvailable = analyseResultsAvailable;
-  const searchTab = $<HTMLButtonElement>("bottomSearchResultsTab");
-  const analyseTab = $<HTMLButtonElement>("bottomAnalyseResultsTab");
-  searchTab.classList.toggle("hidden", !searchAvailable);
-  analyseTab.classList.toggle("hidden", !analyseAvailable);
-
-  if (!searchAvailable && !analyseAvailable) {
+  if (!fallback) {
     $("bottomResultsDock").classList.add("hidden");
     $("app").classList.remove("bottom-results-open");
     requestEditorLayout();
     return;
   }
-  if (activeBottomResultTool === "search" && !searchAvailable) activeBottomResultTool = "analyse";
-  if (activeBottomResultTool === "analyse" && !analyseAvailable) activeBottomResultTool = "search";
-
-  const searchActive = activeBottomResultTool === "search";
-  searchTab.classList.toggle("active", searchActive);
-  searchTab.setAttribute("aria-selected", String(searchActive));
-  analyseTab.classList.toggle("active", !searchActive);
-  analyseTab.setAttribute("aria-selected", String(!searchActive));
-  $("searchResultsPane").classList.toggle("hidden", !searchActive);
-  $("analyseResultHost").classList.toggle("hidden", searchActive);
   if (!$("bottomResultsDock").classList.contains("hidden")) {
     window.requestAnimationFrame(() => analysePanel?.layout());
   }
@@ -11570,6 +11597,8 @@ function insertMarkdownSnippet(text: string) {
 
 function commandVisibleInPalette(item: AppCommand) {
   if (!(item.enabled?.() ?? true)) return false;
+  if (item.id === "markdown.workspaceLinks") return Boolean(state.workspace);
+  if (item.id === "markdown.backlinks") return Boolean(state.workspace && activeDocument().path && isMarkdownLikeDocument());
   if (item.id.startsWith("markdown.")) return isMarkdownLikeDocument();
   return true;
 }
@@ -13087,6 +13116,8 @@ function bindWorkbenchActions() {
     ["markdown.focus", "切换专注模式", "Markdown", () => updateWorkbenchPreferences({ ...state.workbench, focusMode: !state.workbench.focusMode }), "viewMenu"],
     ["markdown.typewriter", "切换打字机模式", "Markdown", () => updateWorkbenchPreferences({ ...state.workbench, typewriterMode: !state.workbench.typewriterMode }), "viewMenu"],
     ["markdown.checkLinks", "检查 Markdown 链接", "Markdown", checkActiveMarkdownLinks, "editMenu"],
+    ["markdown.workspaceLinks", "检查工作区 Markdown 链接", "Markdown", () => referencePanel.show("issues"), "editMenu"],
+    ["markdown.backlinks", "查看当前 Markdown 文档的反向引用", "Markdown", () => referencePanel.show("backlinks"), "editMenu"],
     ["markdown.localizeImages", "将远程图片保存到本地", "Markdown", localizeMarkdownImages, "editMenu"],
     ["markdown.insertToc", "插入正文目录", "Markdown", () => insertMarkdownText("\n[TOC]\n"), "editMenu"],
     ["workspace.undoReplace", "撤销最近一次目录替换", "编辑", undoWorkspaceReplace, "editMenu"],
@@ -13392,6 +13423,17 @@ async function showExternalConflict(doc: OpenDocument) {
     ],
   });
   return reload;
+}
+
+async function readMarkdownReferenceText(path: string): ReturnType<typeof readLinkTarget> {
+  const key = comparablePath(path);
+  const doc = state.documents.find(item => item.path && comparablePath(item.path) === key);
+  if (!doc || doc.paged) return readLinkTarget(path);
+  if (documentValueLength(doc) <= 1024 * 1024) {
+    const text = documentText(doc);
+    if (new TextEncoder().encode(text).length <= 1024 * 1024) return { text };
+  }
+  return { text: "", warning: "打开的文档超过 1 MiB，已跳过" };
 }
 
 async function checkActiveMarkdownLinks() {
