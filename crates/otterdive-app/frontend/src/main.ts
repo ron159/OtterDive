@@ -2,6 +2,7 @@ import { PagedDocumentController, pageLocalPosition, type PageTarget } from "./p
 import { regexReplacementAt } from "./searchReplacement";
 import { textSpacingEdits } from "./textSpacing";
 import { revealReadingMatch } from "./readingSearch";
+import { captureReadingScroll, installReadingSections, readingSearchScope, restoreReadingScroll, revealReadingSections } from "./readingSections";
 import { registerMarkdownLinkCompletions, checkMarkdownLinks } from "./markdownLinkTools";
 import { normalizeWorkbenchPreferences, markdownExtensionPreferences, type WorkbenchPreferences } from "./workbenchPreferences";
 import { mountWorkbenchSettings, syncWorkbenchSettings } from "./workbenchSettings";
@@ -304,6 +305,7 @@ interface FileReplacePreviewDto {
 
 interface OpenDocument extends DocumentDto {
   markdownEditMode: MarkdownEditMode;
+  collapsedMarkdownHeadings?: Set<string>;
   sourceEncoding?: EncodingLabel;
   languageDetectionChecked?: boolean;
   externalRevision?: string;
@@ -6250,6 +6252,8 @@ function findCurrent(showPanel = false, recordHistory = true, navigateToInitial 
   if (!activeMarkdownEditor && matches.length > 0) {
     if (navigateToInitial) {
       void openSearchResult(activeIndex);
+    } else if (isReadingDocument(doc)) {
+      revealReadingSearchResult(matches[activeIndex], matches);
     } else {
       // Live search may scroll, but must not activate/focus the editor asynchronously.
       const match = matches[activeIndex];
@@ -6717,14 +6721,6 @@ async function openSearchResult(index: number, revealInResults = true) {
   } finally {
     searchResultNavigationDepth -= 1;
   }
-  if (targetDocument && isReadingDocument(targetDocument)) {
-    await renderMarkdownPreview();
-    const targetHit = state.results?.hits.find((hit) => hit.path === item.path);
-    const occurrence = targetHit?.matches.filter((match) => match.matchedText === item.match.matchedText
-      && (match.line < item.match.line || match.line === item.match.line && match.column < item.match.column)).length ?? 0;
-    const body = $("markdownPreview").querySelector<HTMLElement>(".markdown-preview-body");
-    if (body) revealReadingMatch(body, item.match.matchedText, occurrence);
-  }
   if (targetDocument && isMarkdownWysiwygActive(targetDocument)) {
     const targetEditor = await ensureMarkdownEditor(targetDocument);
     const targetHit = state.results?.hits.find((hit) => hit.path === item.path);
@@ -6757,7 +6753,7 @@ async function openHistoricalSearchResult(batchId: number, resultIndex: number) 
   if (item) {
     searchResultNavigationDepth += 1;
     try {
-      await openResult(item.path, item.match.line, item.match.column);
+      await openResult(item.path, item.match.line, item.match.column, entry.report.hits);
     } finally {
       searchResultNavigationDepth -= 1;
     }
@@ -8979,7 +8975,7 @@ function renderSearchSidebarResults() {
     list.addEventListener("click", (event) => {
       const row = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-path]");
       if (row && !mouseClickHasTextSelection(event, row)) {
-        void openResult(row.dataset.path ?? "", Number(row.dataset.line ?? "1"), Number(row.dataset.column ?? "1"));
+        void openResult(row.dataset.path ?? "", Number(row.dataset.line ?? "1"), Number(row.dataset.column ?? "1"), state.replacePreview?.items);
       }
     });
     renderProgressiveReplaceResults(state.replacePreview, list, renderVersion);
@@ -9297,6 +9293,7 @@ function renderMarkdownOutline() {
         const index = Number(button.dataset.outlineIndex ?? "0");
         const heading = preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")[index];
         if (heading) {
+          revealReadingSections(heading);
           preview.scrollTop += heading.getBoundingClientRect().top - preview.getBoundingClientRect().top - markdownPreviewHeadingOffset();
           outlineNavigation = { index, scrollTop: preview.scrollTop };
           preview.focus({ preventScroll: true });
@@ -9319,7 +9316,19 @@ function renderMarkdownOutline() {
   });
 }
 
-async function openResult(path: string, line: number, column: number) {
+function revealReadingSearchResult(target: TextMatchDto, matches: TextMatchDto[]) {
+  const body = $("markdownPreview").querySelector<HTMLElement>(".markdown-body");
+  if (!body) return;
+  const { root, firstLine, endBefore } = readingSearchScope(body, target.line);
+  const occurrence = matches.filter(match => match.line >= firstLine && match.matchedText === target.matchedText
+    && (match.line < target.line || match.line === target.line && match.column < target.column)).length;
+  if (!revealReadingMatch(root, target.matchedText, occurrence, endBefore) && root !== body) {
+    revealReadingSections(root);
+    root.scrollIntoView({ block: "start" });
+  }
+}
+
+async function openResult(path: string, line: number, column: number, hits = state.results?.hits) {
   const openDocument = state.documents.find((doc) => doc.path === path || (!doc.path && doc.title === path));
   if (openDocument && openDocument.id !== state.activeId) {
     activateDocument(openDocument.id);
@@ -9327,6 +9336,18 @@ async function openResult(path: string, line: number, column: number) {
     await openPath(path);
   }
   const current = activeDocument();
+  if (isReadingDocument(current)) {
+    const revision = ++markdownLocationRevision;
+    pendingMarkdownLocation = null;
+    await renderMarkdownPreview(false);
+    if (state.activeId !== current.id || revision !== markdownLocationRevision || !isReadingDocument(current)) return;
+    const matches = hits?.find(hit => hit.path === path)?.matches;
+    const match = matches?.find(item => item.line === line && item.column === column);
+    editor.setPosition({ lineNumber: line, column });
+    $("markdownPreview").focus({ preventScroll: true });
+    if (match && matches) revealReadingSearchResult(match, matches);
+    return current;
+  }
   if (isMarkdownWysiwygActive(current)) {
     (await ensureMarkdownEditor(current))?.focus();
     return current;
@@ -9818,6 +9839,15 @@ async function renderMarkdownPreview(syncScroll = true) {
     preview.innerHTML = markdownPreviewShell(doc, source, body);
     const previewBody = preview.querySelector<HTMLElement>(".markdown-preview-body");
     if (previewBody) {
+      const article = previewBody.querySelector<HTMLElement>(".markdown-body");
+      if (article && isReadingDocument(doc)) {
+        doc.collapsedMarkdownHeadings ??= new Set(markdownLocations[documentSessionKey(doc)]?.collapsedHeadings);
+        installReadingSections(article, markdownHeadingLocations(source), doc.collapsedMarkdownHeadings, () => {
+          outlineNavigation = null;
+          scheduleOutlineActiveHeading();
+          scheduleSessionSave();
+        });
+      }
       refreshMarkdownResources(previewBody, doc);
       void renderMarkdownPreviewDiagrams(previewBody, markdownPreviewOptions())
         .then(() => {
@@ -10481,7 +10511,8 @@ function scheduleOutlineActiveHeading() {
       const preview = $("markdownPreview");
       const top = preview.getBoundingClientRect().top + markdownPreviewHeadingOffset() + 1;
       preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6").forEach((heading, index) => {
-        if (heading.getBoundingClientRect().top <= top) active = index;
+        const rect = heading.getClientRects()[0];
+        if (rect && rect.top <= top) active = index;
       });
     } else if (isMarkdownWysiwygActive()) {
       const top = $("markdownWysiwyg").getBoundingClientRect().top + outlineHeadingOffset + 1;
@@ -12413,10 +12444,7 @@ function currentMarkdownLocation(doc = activeDocument()): MarkdownDocumentLocati
     cursor = markdownEditor.getCursorOffset();
     scroll = markdownEditor.getScrollAnchor();
   } else if (mode === "reading") {
-    const preview = $("markdownPreview");
-    const top = preview.getBoundingClientRect().top;
-    scroll = captureMarkdownScrollAnchor(preview.scrollTop, preview.scrollHeight - preview.clientHeight,
-      [...preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].map(heading => heading.getBoundingClientRect().top - top + preview.scrollTop));
+    scroll = captureReadingScroll($("markdownPreview"));
   } else {
     scroll = captureMarkdownScrollAnchor(editor.getScrollTop(), editor.getScrollHeight() - editor.getLayoutInfo().height,
       markdownHeadingLocations(documentText(doc)).map(heading => editor.getTopForLineNumber(heading.line)));
@@ -12430,8 +12458,10 @@ function rememberMarkdownLocation(doc: OpenDocument) {
   if (state.activeId !== doc.id || !isMarkdownLikeDocument(doc)) return;
   const key = documentSessionKey(doc);
   const location = currentMarkdownLocation(doc);
+  const collapsedHeadings = doc.collapsedMarkdownHeadings
+    ? [...doc.collapsedMarkdownHeadings] : markdownLocations[key]?.collapsedHeadings;
   delete markdownLocations[key];
-  markdownLocations[key] = location;
+  markdownLocations[key] = { ...location, collapsedHeadings };
 }
 
 function currentMarkdownHistoryEntry(): MarkdownHistoryEntry {
@@ -12461,10 +12491,7 @@ async function restoreMarkdownLocation(doc: OpenDocument, location: MarkdownDocu
     if (mode === "wysiwyg") {
       markdownEditor?.revealScrollAnchor(location.scroll);
     } else if (mode === "reading") {
-      const preview = $("markdownPreview");
-      const top = preview.getBoundingClientRect().top;
-      preview.scrollTop = restoreMarkdownScrollAnchor(location.scroll, preview.scrollHeight - preview.clientHeight,
-        [...preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].map(heading => heading.getBoundingClientRect().top - top + preview.scrollTop));
+      restoreReadingScroll($("markdownPreview"), location.scroll);
     } else {
       editor.setScrollTop(restoreMarkdownScrollAnchor(location.scroll, editor.getScrollHeight() - editor.getLayoutInfo().height,
         markdownHeadingLocations(documentText(doc)).map(heading => editor.getTopForLineNumber(heading.line))));
@@ -12519,6 +12546,7 @@ async function revealMarkdownAnchor(anchor: string) {
     const target = body.querySelector<HTMLElement>(`#${CSS.escape(anchor)}`)
       ?? [...body.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].find(heading => heading.textContent === anchor);
     if (!target) { log(`未找到锚点：${anchor}`); return; }
+    revealReadingSections(target);
     if (doc.markdownEditMode === "split") {
       const index = [...body.querySelectorAll(":scope > :is(h1,h2,h3,h4,h5,h6)")].indexOf(target);
       if (index >= 0) {

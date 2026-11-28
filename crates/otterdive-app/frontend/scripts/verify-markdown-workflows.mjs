@@ -4,6 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { verifyOutlineFilter } from "./verify-outline-filter.mjs";
+import { sectionFixture, verifyReadingSections } from "./verify-reading-sections.mjs";
 
 const modulePath = process.env.PLAYWRIGHT_MODULE;
 const playwright = await import(modulePath ? pathToFileURL(modulePath).href : "playwright");
@@ -11,9 +12,10 @@ const baseUrl = process.env.MARKDOWN_QA_URL ?? "http://127.0.0.1:1421";
 const artifactDirectory = process.env.MARKDOWN_QA_ARTIFACT_DIR ?? "../../../tasks/markdown-workflows-2026-10-18";
 await mkdir(artifactDirectory, { recursive: true });
 const engines = (process.env.MARKDOWN_QA_ENGINES ?? "chromium,webkit").split(",");
+const timeoutMs = Number(process.env.MARKDOWN_QA_TIMEOUT_MS ?? 15000);
 const results = [];
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-async function until(check, message, timeout = 15000) {
+async function until(check, message, timeout = timeoutMs) {
   const start = Date.now();
   while (Date.now() - start < timeout) { if (await check()) return; await pause(80); }
   throw new Error(message);
@@ -22,7 +24,7 @@ async function until(check, message, timeout = 15000) {
 for (const engine of engines) {
   const notes = "# 阅读验证\n\n[前往目标章节](target.md#target-section)\n\n脚注入口[^note]。\n\n> ## 引用中的标题\n\n" + Array.from({ length: 22 }, (_, index) =>
     `## ${index === 3 || index === 6 ? "API 使用" : `第 ${index + 1} 章`}\n\n` + Array.from({ length: 9 }, (_, paragraph) => `这是第 ${index + 1} 章第 ${paragraph + 1} 段，用于检查阅读位置与模式切换。Local Markdown reading fixture.\n\n`).join("")).join("") + "\n[^note]: 验证脚注目标\n";
-  const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", "# Target document\n\n## Target section\n\nBack and forward navigation target.\n\n" + "Target paragraph.\n\n".repeat(60)]]);
+  const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", sectionFixture]]);
   files.set("/qa/fresh.md", "# Fresh file\n");
   const revisions = new Map([...files.keys()].map(path => [path, "r1"]));
   const workspace = () => ({ root: "/qa", name: "QA workspace", items: [
@@ -57,7 +59,7 @@ for (const engine of engines) {
       return item;
     }
     if (command === "template_delete") { custom = custom.filter(item => item.id !== args.id); return null; }
-    if (command === "pick_save_path") return `/qa/${args.request.fileName}`;
+    if (command === "pick_save_path" || command === "pick_pdf_save_path") return `/qa/${args.request.fileName}`;
     if (command === "save_document") {
       files.set(args.request.path, args.request.text);
       revisions.set(args.request.path, `r${Date.now()}`);
@@ -154,6 +156,8 @@ for (const engine of engines) {
     await shot("reading-restored");
     checks.push("Source and reading mode switch retains the current chapter");
 
+    await verifyReadingSections({ page, command, until, shot, calls, saved: () => JSON.parse(saved) });
+    checks.push("Reading folds, nested navigation, keyboard, persisted state and clean print/export");
     await page.locator('#markdownPreview a[href="target.md#target-section"]').click();
     await until(async () => (await activeTab().innerText()).includes("target.md"), "Markdown link did not open target document");
     await page.locator("#markdownPreview h2").filter({ hasText: "Target section" }).waitFor();

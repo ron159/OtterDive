@@ -34,6 +34,7 @@ export type MarkdownDocumentLocation = {
   column: number;
   cursor: MarkdownCursor | null;
   scroll: MarkdownScrollAnchor;
+  collapsedHeadings?: string[];
 };
 export type MarkdownHistoryEntry = { key: string; path?: string | null; location: MarkdownDocumentLocation };
 
@@ -53,7 +54,11 @@ export function normalizeMarkdownLocations(value: unknown): Record<string, Markd
     if (!["wysiwyg", "source", "split", "reading"].includes(location.mode)
       || !finite(location.line) || location.line < 1 || !finite(location.column) || location.column < 1
       || !s || !finite(s.headingIndex) || !finite(s.offsetPx) || !finite(s.fraction)) continue;
+    const collapsedHeadings = Array.isArray(location.collapsedHeadings)
+      ? [...new Set(location.collapsedHeadings.filter(id => typeof id === "string" && id.length > 0))]
+      : [];
     result[key] = {
+      ...(collapsedHeadings.length ? { collapsedHeadings } : {}),
       mode: location.mode, line: Math.floor(location.line), column: Math.floor(location.column),
       cursor: location.cursor ? { anchor: point(location.cursor.anchor), focus: point(location.cursor.focus) } : null,
       scroll: { headingIndex: Math.max(-1, Math.floor(s.headingIndex)), offsetPx: Math.max(0, s.offsetPx),

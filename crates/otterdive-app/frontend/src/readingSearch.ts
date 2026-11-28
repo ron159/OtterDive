@@ -1,5 +1,7 @@
-/** Select a rendered match without modifying markup or the underlying document. */
-export function revealReadingMatch(root: HTMLElement, text: string, occurrence = 0) {
+import { revealReadingSections } from "./readingSections";
+
+/** Select a rendered match, including text inside folded sections. */
+export function revealReadingMatch(root: HTMLElement, text: string, occurrence = 0, endBefore?: Element) {
   if (!text) return false;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -9,6 +11,7 @@ export function revealReadingMatch(root: HTMLElement, text: string, occurrence =
   const nodes: Array<{ node: Text; start: number; end: number }> = [];
   let content = '';
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (endBefore && (endBefore.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
     const start = content.length;
     content += node.textContent ?? '';
     nodes.push({ node: node as Text, start, end: content.length });
@@ -23,6 +26,10 @@ export function revealReadingMatch(root: HTMLElement, text: string, occurrence =
   const start = nodes.find((item) => item.end > index);
   const end = nodes.find((item) => item.end >= index + text.length);
   if (!start || !end) return false;
+  for (const item of nodes) {
+    if (item.start >= index + text.length) break;
+    if (item.end > index) revealReadingSections(item.node.parentElement);
+  }
   const range = document.createRange();
   range.setStart(start.node, index - start.start);
   range.setEnd(end.node, index + text.length - end.start);

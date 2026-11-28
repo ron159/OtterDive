@@ -2424,6 +2424,52 @@ body.dark .markdown-wysiwyg {
   font-family: var(--editor-font);
 }
 
+#markdownPreview .reading-section-heading {
+  position: relative;
+}
+
+#markdownPreview .reading-section-toggle {
+  position: absolute;
+  inset-inline-start: -22px;
+  top: 0;
+  display: grid;
+  width: 22px;
+  height: 1.24em;
+  min-height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: inherit;
+  cursor: pointer;
+}
+
+#markdownPreview .reading-section-toggle::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+#markdownPreview .reading-section-toggle[aria-expanded="false"]::before {
+  transform: rotate(-45deg);
+}
+
+#markdownPreview .reading-section-toggle:hover,
+#markdownPreview .reading-section-toggle:focus-visible {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+@media print {
+  #markdownPreview .reading-section-toggle { display: none; }
+  #markdownPreview .reading-section-content[hidden] { display: contents; }
+}
+
 .markdown-preview h1,
 .markdown-preview h2,
 .markdown-preview h3,

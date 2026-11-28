@@ -43,6 +43,16 @@ test("reading positions survive JSON roundtrip while malformed or excessive stat
   assert.equal(Object.keys(normalizeMarkdownLocations(huge)).length, 200);
 });
 
+test("saved folds keep distinct heading IDs and older reading positions load expanded", () => {
+  const raw = {
+    notes: { ...entry("notes").location, collapsedHeadings: ["repeat", "repeat-1", "repeat", 42, ""] },
+    other: entry("other").location,
+  };
+  const saved = normalizeMarkdownLocations(JSON.parse(JSON.stringify(raw)));
+  assert.deepEqual(Array.from(saved.notes.collapsedHeadings ?? []), ["repeat", "repeat-1"]);
+  assert.equal(saved.other.collapsedHeadings, undefined);
+});
+
 test("history is bounded and rename remaps both navigation directions", () => {
   const history = new MarkdownHistory(3);
   for (let i = 0; i < 5; i++) history.record(entry(`old/${i}.md`));
