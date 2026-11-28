@@ -4,15 +4,17 @@ import { textSpacingEdits } from "./textSpacing";
 import { revealReadingMatch } from "./readingSearch";
 import { captureReadingScroll, installReadingSections, readingSearchScope, restoreReadingScroll, revealReadingSections } from "./readingSections";
 import { registerMarkdownLinkCompletions, checkMarkdownLinks } from "./markdownLinkTools";
+import { bindMarkdownLinkPopover, markdownPopoverCharacterLimit } from "./markdownLinkPopover";
+import type { FileChunk } from "./logViewerState";
 import { normalizeWorkbenchPreferences, markdownExtensionPreferences, type WorkbenchPreferences } from "./workbenchPreferences";
 import { mountWorkbenchSettings, syncWorkbenchSettings } from "./workbenchSettings";
 import { bindMarkdownDiagramActions } from "./markdownDiagramActions";
-import { resolveMarkdownResource, relativeMarkdownResource, splitMarkdownLink } from "./markdownPaths";
+import { isMarkdownFilePath, resolveMarkdownResource, relativeMarkdownResource, splitMarkdownLink } from "./markdownPaths";
 import { applyImageMigrations, markdownImageReferences, type ImageMigration } from "./markdownImages";
 import { writingStats } from "./writingStats";
 import { THEME_PRESETS, resolveThemePalette, matchingThemePreset, normalizeThemeColor, normalizeThemeOverrides, customEditorThemeColors, type ThemeMode, type ThemeColorKey, type ThemePalette, type ThemeOverrides } from "./themePresets";
 import { mapScrollPosition } from "./scrollSync";
-import { sourceSelectionToMarkdownCursor, markdownCursorToSourceSelection, captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, MarkdownHistory, normalizeMarkdownLocations, type MarkdownScrollAnchor, type MarkdownDocumentLocation, type MarkdownHistoryEntry } from "./markdownNavigation";
+import { findMarkdownAnchor, sourceSelectionToMarkdownCursor, markdownCursorToSourceSelection, captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, MarkdownHistory, normalizeMarkdownLocations, type MarkdownScrollAnchor, type MarkdownDocumentLocation, type MarkdownHistoryEntry } from "./markdownNavigation";
 import { documentOutlineLayout, filterOutlineRows, handleOutlineNavigationKey, restoreOutlinePreferences, outlineHeadingSelector, outlineHeadingOffset, retainedOutlineNavigation } from "./documentOutline";
 import { exportResultRows, type ResultRow, type AnalysisStep } from "./resultAnalysis";
 import { appendPinnedResults, removePinnedResult, type PinnedResult, type PinnedResultInput } from "./pinnedSearchResult";
@@ -1060,6 +1062,7 @@ let editorLayoutHeight = -1;
 let editorLayoutFrozen = false;
 let markdownPreviewTimer = 0;
 let markdownPreviewRenderVersion = 0;
+let dismissMarkdownLinkPopover: (() => void) | undefined;
 let markdownModelSyncTimer = 0;
 let currentFindTimer = 0;
 let currentFindHistoryActiveIndex = -1;
@@ -2226,6 +2229,16 @@ function bindActions() {
   });
   bindAppMenus();
   bindMarkdownContextMenu();
+  dismissMarkdownLinkPopover = bindMarkdownLinkPopover($("markdownPreview"), {
+    macOS: isMacOSRuntime,
+    context: () => {
+      const doc = activeDocument();
+      return isReadingDocument(doc) ? { id: doc.id, path: doc.path, workspaceRoot: state.workspace?.root } : null;
+    },
+    samePath: (a, b) => normalizePathForCompare(a) === normalizePathForCompare(b),
+    read: readMarkdownPopoverSource,
+    render: async text => (await loadMarkdownModule()).renderMarkdownPopoverDocument(text, markdownPreviewOptions()),
+  });
   $("markdownPreview").addEventListener("click", handleMarkdownPreviewClick);
   $("tree").addEventListener("scroll", scheduleSessionSave, { passive: true });
   $("tree").addEventListener("click", (event) => {
@@ -9798,6 +9811,7 @@ function markdownHeadingLocations(markdown: string) {
 }
 
 async function renderMarkdownPreview(syncScroll = true) {
+  dismissMarkdownLinkPopover?.();
   const doc = activeDocument();
   const preview = $("markdownPreview");
   const editorArea = preview.parentElement;
@@ -9847,6 +9861,10 @@ async function renderMarkdownPreview(syncScroll = true) {
           scheduleOutlineActiveHeading();
           scheduleSessionSave();
         });
+      }
+      if (isReadingDocument(doc)) {
+        // WebKit's default Tab traversal skips links without an explicit tab stop.
+        previewBody.querySelectorAll<HTMLAnchorElement>("a[href]:not([tabindex])").forEach(link => { link.tabIndex = 0; });
       }
       refreshMarkdownResources(previewBody, doc);
       void renderMarkdownPreviewDiagrams(previewBody, markdownPreviewOptions())
@@ -9900,6 +9918,21 @@ function handleMarkdownPreviewClick(event: Event) {
   event.preventDefault();
   const href = anchor.getAttribute("href") ?? "";
   void openMarkdownLink(href);
+}
+
+async function readMarkdownPopoverSource(path: string) {
+  const key = normalizePathForCompare(path);
+  const opened = state.documents.find(doc => !doc.paged && doc.path && normalizePathForCompare(doc.path) === key);
+  const limit = markdownPopoverCharacterLimit;
+  if (opened) {
+    const model = opened.model;
+    const text = model
+      ? model.getValueInRange(monaco.Range.fromPositions({ lineNumber: 1, column: 1 }, model.getPositionAt(limit)))
+      : opened.text.slice(0, limit);
+    return { text, truncated: documentValueLength(opened) > limit };
+  }
+  const chunk = await invoke<FileChunk>("read_file_chunk", { request: { path, offset: 0, limit, encoding: "auto" } });
+  return { text: chunk.text, truncated: chunk.hasMore };
 }
 
 function scheduleMarkdownPreviewRender() {
@@ -10115,8 +10148,7 @@ function markdownEditModeLabel(mode: MarkdownEditMode) {
 function isMarkdownLikeDocument(doc = activeDocument()) {
   if (doc.paged) return false;
   if (isMarkdownLikeLanguage(doc.language)) return true;
-  const name = (doc.path || doc.title).toLowerCase();
-  return /\.(md|markdown|mdx|rmd)$/.test(name);
+  return isMarkdownFilePath(doc.path || doc.title);
 }
 
 function isMarkdownLikeLanguage(language: string) {
@@ -12543,8 +12575,7 @@ async function revealMarkdownAnchor(anchor: string) {
     if (state.activeId !== doc.id) return;
     const body = preview.querySelector<HTMLElement>(".markdown-body");
     if (!body) return;
-    const target = body.querySelector<HTMLElement>(`#${CSS.escape(anchor)}`)
-      ?? [...body.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].find(heading => heading.textContent === anchor);
+    const target = findMarkdownAnchor(body, anchor);
     if (!target) { log(`未找到锚点：${anchor}`); return; }
     revealReadingSections(target);
     if (doc.markdownEditMode === "split") {

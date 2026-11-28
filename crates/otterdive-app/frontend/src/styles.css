@@ -2807,6 +2807,32 @@ body.dark .markdown-preview .token.variable {
   margin-left: 4px;
 }
 
+.markdown-link-popover {
+  position: fixed;
+  z-index: 100;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
+  max-height: min(240px, calc(100vh - 16px));
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: var(--ui-font-size);
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.markdown-link-popover strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-2);
+}
+
 .markdown-preview hr {
   height: 1px;
   margin: 18px 0;

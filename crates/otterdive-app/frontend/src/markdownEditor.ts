@@ -27,7 +27,9 @@ import { Link2, createElement as createLucideElement } from "lucide";
 import type Format from "../vendor/marktext-muya/src/block/base/format";
 import type TableBodyCell from "../vendor/marktext-muya/src/block/gfm/table/cell";
 import { cancelPendingDiagramRenders } from "../vendor/marktext-muya/src/block/extra/diagram/diagramPreview";
-import { BLOCK_DOM_PROPERTY } from "../vendor/marktext-muya/src/config";
+import { BLOCK_DOM_PROPERTY, EXPORT_DOMPURIFY_CONFIG } from "../vendor/marktext-muya/src/config";
+import purify from "../vendor/marktext-muya/src/utils/dompurify";
+import { escapeInBlockHtml } from "../vendor/marktext-muya/src/utils";
 import { getCursorReference } from "../vendor/marktext-muya/src/selection";
 import { injectStateSentinels, resolveStateSentinelCursor } from "../vendor/marktext-muya/src/selection/offsetCursor";
 import { SelectionCaretType, SelectionDirection } from "../vendor/marktext-muya/src/selection/types";
@@ -220,9 +222,10 @@ function registerPlugins(options: Pick<MarkdownEditorOptions, "pickImagePath" | 
   registerPlugin(PreviewToolBar);
 }
 
-export function renderMarkdownPreviewHtml(markdown: string, options: MarkdownPreviewOptions) {
+function staticMarkdownBody(markdown: string, options: MarkdownPreviewOptions, sanitize = true) {
   const extensions = options.extensions ?? {};
-  const body = renderToStaticHTML(normalizeMarkdownForEngine(markdown), {
+  return renderToStaticHTML(normalizeMarkdownForEngine(markdown), {
+    sanitize,
     footnote: extensions.footnote ?? true,
     texMathDollars: extensions.math ?? true,
     texMathGfm: extensions.math ?? true,
@@ -234,6 +237,21 @@ export function renderMarkdownPreviewHtml(markdown: string, options: MarkdownPre
     toc: extensions.toc ?? true,
     alerts: extensions.alerts ?? true,
   });
+}
+
+/** Keep every resource in the template's inert document, including during sanitization. */
+export function renderMarkdownPopoverDocument(markdown: string, options: MarkdownPreviewOptions) {
+  const inertDocument = document.createElement("template").content.ownerDocument;
+  const root = inertDocument.createElement("article");
+  root.innerHTML = escapeInBlockHtml(staticMarkdownBody(markdown, options, false));
+  purify(root, { ...EXPORT_DOMPURIFY_CONFIG, IN_PLACE: true });
+  assignHeadingIds(root);
+  return root;
+}
+
+export function renderMarkdownPreviewHtml(markdown: string, options: MarkdownPreviewOptions) {
+  const extensions = options.extensions ?? {};
+  const body = staticMarkdownBody(markdown, options);
   const container = document.createElement("div");
   container.innerHTML = body;
   assignHeadingIds(container);

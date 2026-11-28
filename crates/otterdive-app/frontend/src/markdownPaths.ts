@@ -4,6 +4,8 @@ function decodePath(value: string) {
 
 function isWindowsPath(path: string) { return /^[a-z]:[\\/]|^[\\/]{2}[^/\\]/i.test(path); }
 
+export function isMarkdownFilePath(path: string) { return /\.(?:md|markdown|mdx|rmd)$/i.test(path); }
+
 /** Normalize filesystem paths without changing POSIX case or treating a drive as a URI scheme. */
 export function normalizeResourcePath(path: string): string {
   const windows = isWindowsPath(path);

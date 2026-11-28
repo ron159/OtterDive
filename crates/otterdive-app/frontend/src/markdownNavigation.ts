@@ -1,3 +1,10 @@
+export const markdownHeadingSelector = "h1,h2,h3,h4,h5,h6";
+
+export function findMarkdownAnchor(root: HTMLElement, anchor: string) {
+  return root.querySelector<HTMLElement>(`#${CSS.escape(anchor)}`)
+    ?? [...root.querySelectorAll<HTMLElement>(markdownHeadingSelector)].find(heading => heading.textContent === anchor);
+}
+
 export type MarkdownCursor = {
   anchor: { line: number; ch: number } | null;
   focus: { line: number; ch: number } | null;
