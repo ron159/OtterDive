@@ -1,3 +1,4 @@
+import { bindMarkdownSectionView } from "./markdownSectionView";
 import { PagedDocumentController, pageLocalPosition, type PageTarget } from "./pagedDocument";
 import { regexReplacementAt } from "./searchReplacement";
 import { textSpacingEdits } from "./textSpacing";
@@ -1059,6 +1060,7 @@ let outlineNavigation: { index: number; scrollTop: number } | null = null;
 let searchResultNavigationDepth = 0;
 const pagedDocuments = new globalThis.Map<number, PagedDocumentController>();
 let pagedScrollGuard = false;
+let markdownSections: ReturnType<typeof bindMarkdownSectionView> | undefined;
 let editorLayoutFrame = 0;
 let editorLayoutSettleFrame = 0;
 let editorLayoutForceRender = false;
@@ -1605,6 +1607,24 @@ function bootstrap() {
     },
     log,
   });
+  markdownSections = bindMarkdownSectionView({
+    invoke,
+    source: () => {
+      const doc = activeDocument();
+      return doc?.paged && doc.path && doc.diskRevision && hasMarkdownFormat(doc)
+        ? { id: doc.id, path: doc.path, revision: doc.diskRevision, encoding: doc.encoding } : null;
+    },
+    visibleLine: () => (pagedController(activeDocument()).page?.startLine ?? 1)
+      + (editor.getVisibleRanges()[0]?.startLineNumber ?? 1) - 1,
+    render: async (source, current) => {
+      const renderer = await loadMarkdownModule();
+      return current() ? renderer.renderMarkdownPreviewHtml(source, markdownPreviewOptions()) : "";
+    },
+    resources: root => refreshMarkdownResources(root, activeDocument()),
+    sourceLine: line => void navigateSourceLine(activeDocument(), line, 1),
+    openLink: href => void openMarkdownLink(href),
+    layout: requestEditorLayout,
+  });
   bindPagedDocumentControls();
   for (const event of ["pointerdown", "keydown", "wheel", "beforeinput"]) {
     $("editorArea").addEventListener(event, () => { pendingMarkdownLocation = null; }, { capture: true, passive: true });
@@ -2085,13 +2105,14 @@ function bindKeybindings() {
   document.addEventListener("focusin", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest("#workbenchSidePane")) sideEditorFocused = true;
-    else if (target?.closest("#editor, #markdownWysiwyg, #markdownPreview, #currentFindDock, #findPopover")) sideEditorFocused = false;
+    else if (target?.closest("#editor, #markdownWysiwyg, #markdownPreview, #pagedSectionPreview, #currentFindDock, #findPopover")) sideEditorFocused = false;
     else return;
     renderChrome();
   });
   $("editor").addEventListener("keydown", handleEditorKeybinding, true);
   $("markdownWysiwyg").addEventListener("keydown", handleEditorKeybinding, true);
   $("markdownPreview").addEventListener("keydown", handleEditorKeybinding, true);
+  $("pagedSectionPreview").addEventListener("keydown", handleEditorKeybinding, true);
 }
 
 const NATIVE_CLIPBOARD_SHORTCUTS = new globalThis.Map([
@@ -4264,6 +4285,7 @@ function pagedController(doc: OpenDocument) {
 }
 
 function renderPagedDocumentControls() {
+  markdownSections?.sync();
   const doc = activeDocument(); const toolbar = $("pagedDocumentToolbar");
   toolbar.classList.toggle("hidden", !doc?.paged);
   $("editorWrap").classList.toggle("paged-document-open", Boolean(doc?.paged));
@@ -4291,7 +4313,7 @@ function bindPagedDocumentControls() {
   $("pagedFilePosition").addEventListener("change", () => load(() => ({ offset: Number($<HTMLInputElement>("pagedFilePosition").value) })));
   let scrollbarDragging = false;
   const continueScroll = (direction: number) => {
-    const doc = activeDocument(); if (!doc.paged || pagedScrollGuard || scrollbarDragging) return false;
+    const doc = activeDocument(); if (!doc.paged || markdownSections?.active || pagedScrollGuard || scrollbarDragging) return false;
     const controller = pagedController(doc); if (controller.busy || !controller.page) return false;
     const height = editor.getLayoutInfo().height;
     const nearBottom = editor.getScrollTop()+height >= editor.getScrollHeight()-height;
@@ -4503,6 +4525,7 @@ function nextUntitledTitle(extension = "txt") {
 async function navigateSourceLine(doc: OpenDocument, line: number, column: number) {
   if (!Number.isSafeInteger(line) || line < 1 || state.activeId !== doc.id) return;
   if (doc.paged) {
+    markdownSections?.close();
     const page = await pagedController(doc).load({ line, column });
     if (!page || !state.documents.includes(doc) || state.activeId !== doc.id) return;
     const position = pageLocalPosition(page, line, column);
@@ -10220,7 +10243,10 @@ function markdownEditModeLabel(mode: MarkdownEditMode) {
 }
 
 function isMarkdownLikeDocument(doc = activeDocument()) {
-  if (doc.paged) return false;
+  return !doc.paged && hasMarkdownFormat(doc);
+}
+
+function hasMarkdownFormat(doc: OpenDocument) {
   if (isMarkdownLikeLanguage(doc.language)) return true;
   return isMarkdownFilePath(doc.path || doc.title);
 }
@@ -10481,7 +10507,8 @@ function closeRightSidebar() {
 }
 
 function focusActiveEditor() {
-  if (isMarkdownWysiwygActive() && markdownEditor) markdownEditor.focus();
+  if (markdownSections?.active) $("pagedSectionPreview").focus();
+  else if (isMarkdownWysiwygActive() && markdownEditor) markdownEditor.focus();
   else editor.focus();
 }
 
@@ -11830,6 +11857,7 @@ async function restoreSession(initialDocument: OpenDocument) {
     const firstUsableModel = ensureDocumentModel(firstUsableDocument);
     editor.setModel(firstUsableModel);
     applyEditorPerformanceProfile(firstUsableDocument);
+    if (firstUsableDocument.paged) void pagedController(firstUsableDocument).load({ offset: 0 });
     if (firstUsableDocument.viewState) editor.restoreViewState(firstUsableDocument.viewState);
     if (placeholder && !state.documents.includes(placeholder)) placeholder.model?.dispose();
     renderAll();

@@ -338,10 +338,24 @@
               <div class="current-find-history-menu hidden" id="currentFindHistoryMenu" role="listbox" aria-label="搜索历史"></div>
             </div>
             <div id="pagedDocumentToolbar" class="paged-document-toolbar hidden" aria-label="按需只读文件导航">
+              <button id="pagedSectionToggle" type="button" hidden aria-controls="pagedSectionPreview" aria-expanded="false">按章节阅读</button>
+              <span class="paged-source-controls">
               <button id="pagedFirstButton" type="button">开头</button><button id="pagedPreviousButton" type="button">上一段</button><button id="pagedNextButton" type="button">下一段</button><button id="pagedLastButton" type="button">末尾</button><button id="pagedCancelButton" type="button">取消读取</button>
               <input id="pagedFilePosition" type="range" min="0" max="1" value="0" aria-label="完整文件位置" />
               <span id="pagedDocumentStatus" role="status">准备按需读取…</span>
+              </span>
+              <span class="paged-section-controls">
+                <button id="pagedSectionPrevious" type="button">上一节</button>
+                <input id="pagedSectionFilter" type="search" placeholder="查标题或节号" aria-label="查找全文件章节" />
+                <select id="pagedSectionSelect" aria-label="章节目录"></select>
+                <button id="pagedSectionNext" type="button">下一节</button>
+                <button id="pagedSectionCancel" type="button">取消读取</button>
+                <span id="pagedSectionStatus" role="status"></span>
+              </span>
             </div>
+            <aside id="pagedSectionPreview" class="markdown-preview" tabindex="0" aria-label="只读章节">
+              <div id="pagedSectionBody" class="markdown-preview-body"></div>
+            </aside>
             <div id="editor"></div>
             <div id="markdownWysiwyg" class="markdown-wysiwyg" aria-label="Markdown 即时编辑器" aria-hidden="true"></div>
           </div>

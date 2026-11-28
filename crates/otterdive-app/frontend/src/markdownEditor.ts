@@ -1,5 +1,5 @@
 import { revealOutlineHeading } from "./documentOutline";
-import { markdownAlertNames, markdownAlertType, markdownTocHtml } from "./markdownDecorations";
+import { githubHeadingSlug, markdownAlertNames, markdownAlertType, markdownTocHtml } from "./markdownDecorations";
 import { captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, type MarkdownScrollAnchor } from "./markdownNavigation";
 import { collectEquationLabels } from "../vendor/marktext-muya/src/utils/equationReferences";
 import {
@@ -332,14 +332,6 @@ function assignHeadingIds(root: ParentNode) {
     used.add(id);
     heading.id = id;
   });
-}
-
-function githubHeadingSlug(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
-    .replace(/\s+/g, "-");
 }
 
 async function renderDiagram(code: HTMLElement, options: MarkdownPreviewOptions) {

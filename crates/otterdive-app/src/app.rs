@@ -735,6 +735,8 @@ pub fn run() {
             crate::workbench::store_markdown_asset,
             crate::workbench::migrate_markdown_assets,
             crate::workbench::read_file_chunk,
+            crate::markdown_sections::index_markdown_sections,
+            crate::markdown_sections::read_markdown_section,
             crate::paged_document::read_document_page,
             crate::paged_document::cancel_document_page,
             crate::workbench::pandoc_status,
@@ -856,7 +858,7 @@ async fn open_path(path: String) -> Result<DocumentDto, String> {
         .map_err(|err| format!("打开任务失败：{err}"))?
 }
 
-fn load_path(path: PathBuf) -> Result<DocumentDto, String> {
+pub(crate) fn load_path(path: PathBuf) -> Result<DocumentDto, String> {
     let revision = crate::file_revision::revision(&path)?;
     if fs::metadata(&path).map_err(|e| e.to_string())?.len() > EDITABLE_FILE_LIMIT_BYTES {
         let mut dto = crate::paged_document::metadata(&path, None)?;

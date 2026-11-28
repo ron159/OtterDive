@@ -7764,3 +7764,10 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 .paged-document-toolbar button { height: 24px; padding: 2px 6px; font-size: 11px; }
 .paged-document-toolbar input { min-width: 60px; width: 120px; }
 #pagedDocumentStatus { min-width: 0; overflow-wrap: anywhere; font-size: 11px; color: var(--text-3); }
+
+
+.paged-source-controls, .paged-section-open .paged-section-controls { display: contents; }
+.paged-document-open #markdownWysiwyg, #pagedSectionToggle[hidden], .paged-section-controls, #pagedSectionPreview, .paged-section-open .paged-source-controls, .paged-section-open #editor { display: none; }
+#editorWrap.paged-section-open #pagedSectionPreview { display: block; grid-column: 1; grid-row: 3; }
+#pagedSectionSelect { min-width: 6em; max-width: min(45vw, 32em); }
+#pagedSectionStatus { font-size: 12px; overflow-wrap: anywhere; }

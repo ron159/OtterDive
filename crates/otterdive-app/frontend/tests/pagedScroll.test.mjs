@@ -12,7 +12,7 @@ function setup(){
  const controller={busy:false,page:{startOffset:262144,nextOffset:524288,hasMore:true},load:(target,transition)=>calls.push({target,transition}),cancel(){}};
  let top=0;const height=500,total=5000;
  const node=id=>{if(!nodes.has(id))nodes.set(id,{listeners:{},addEventListener(name,fn){this.listeners[name]=fn;}});return nodes.get(id);};
- const context={activeDocument:()=>doc,pagedController:()=>controller,$:node,pagedScrollGuard:false,renderPagedDocumentControls(){},editor:{getLayoutInfo:()=>({height}),getScrollTop:()=>top,getScrollHeight:()=>total,onDidScrollChange:fn=>{scroll=fn;}}};
+ const context={activeDocument:()=>doc,pagedController:()=>controller,$:node,pagedScrollGuard:false,renderPagedDocumentControls(){},markdownSections:{active:false},editor:{getLayoutInfo:()=>({height}),getScrollTop:()=>top,getScrollHeight:()=>total,onDidScrollChange:fn=>{scroll=fn;}}};
  vm.createContext(context);vm.runInContext(js,context);context.bindPagedDocumentControls();
  return {doc,controller,calls,node,context,scrollTo(value){top=value;scroll({scrollTop:top,scrollTopChanged:true});},wheel(deltaY,extra={}){let prevented=false;node('editor').listeners.wheel({deltaY,preventDefault(){prevented=true;},...extra});return prevented;}};
 }
@@ -22,6 +22,9 @@ test('normal editor scrolling automatically reads adjacent pages without navigat
 });
 test('busy/non-paged and programmatic model changes cannot create overlapping reads',()=>{
  const h=setup();h.controller.busy=true;h.scrollTo(4600);assert.equal(h.calls.length,0);h.controller.busy=false;h.context.pagedScrollGuard=true;h.scrollTo(4700);assert.equal(h.calls.length,0);h.context.pagedScrollGuard=false;h.doc.paged=false;h.scrollTo(4800);assert.equal(h.calls.length,0);
+});
+test('a hidden source model cannot auto-page while a Markdown section is displayed',()=>{
+ const h=setup();h.context.markdownSections.active=true;h.scrollTo(4600);assert.equal(h.calls.length,0);
 });
 test('dragging the Monaco vertical scrollbar pauses automatic page loads until release',()=>{
  const h=setup();

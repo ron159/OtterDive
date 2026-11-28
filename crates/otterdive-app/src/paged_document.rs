@@ -175,6 +175,11 @@ impl PagedDocumentService {
         runs.insert(id.into(), token.clone());
         Ok(token)
     }
+    pub(crate) fn finish(&self, id: &str) {
+        if let Ok(mut runs) = self.runs.lock() {
+            runs.remove(id);
+        }
+    }
     pub(crate) fn cancel(&self, id: String) {
         if let Ok(runs) = self.runs.lock() {
             if let Some(token) = runs.get(&id) {
@@ -339,9 +344,7 @@ pub async fn read_document_page(
         tauri::async_runtime::spawn_blocking(move || worker_service.read(&request, &cancel))
             .await
             .map_err(|e| e.to_string());
-    if let Ok(mut runs) = service.runs.lock() {
-        runs.remove(&id);
-    }
+    service.finish(&id);
     outcome?
 }
 #[tauri::command]

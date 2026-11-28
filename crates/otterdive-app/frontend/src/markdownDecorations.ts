@@ -12,3 +12,11 @@ export function markdownTocHtml(items: Array<{ level: number; text: string; id: 
   const minimumLevel = Math.min(...items.map((item) => item.level), 6);
   return `<nav class="markdown-toc" aria-label="文档目录"><ol>${items.map((item, index) => `<li style="margin-inline-start:${Math.max(0, item.level - minimumLevel)}em"><a href="#${escape(encodeURIComponent(item.id))}" data-heading-index="${index}">${escape(item.text || "无标题")}</a></li>`).join("")}</ol></nav>`;
 }
+
+export function githubHeadingSlug(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .replace(/\s+/g, "-");
+}
