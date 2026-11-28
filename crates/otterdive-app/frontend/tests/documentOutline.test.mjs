@@ -5,7 +5,21 @@ import ts from 'typescript';
 
 const source = fs.readFileSync(new URL('../src/documentOutline.ts', import.meta.url), 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText;
-const { documentOutlineLayout, restoreOutlinePreferences, revealOutlineHeading, retainedOutlineNavigation, outlineHeadingSelector } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+const { documentOutlineLayout, restoreOutlinePreferences, revealOutlineHeading, retainedOutlineNavigation, outlineHeadingSelector, filterOutlineRows } = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+
+test('filtering hides rows in place and preserves duplicate heading targets and the current location', () => {
+  const rows = ['简介', 'API 说明', '正文', 'API 说明'].map((textContent, index) => ({
+    textContent, index, current: index === 2, hidden: false,
+  }));
+  const visible = () => rows.filter(row => !row.hidden).map(row => row.index);
+  assert.equal(filterOutlineRows(rows, '  api 说  '), 2);
+  assert.deepEqual(visible(), [1, 3]);
+  assert.equal(filterOutlineRows(rows, '未匹配'), 0);
+  assert.deepEqual(visible(), []);
+  assert.equal(filterOutlineRows(rows, '  '), 4);
+  assert.deepEqual(visible(), [0, 1, 2, 3]);
+  assert.equal(rows.find(row => row.current).index, 2);
+});
 
 test('wide canvas centers the document and outline together', () => {
   const { outlineWidth, inset } = documentOutlineLayout(1800, '1024px', true, false);

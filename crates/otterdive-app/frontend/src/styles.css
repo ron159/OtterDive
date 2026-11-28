@@ -7437,6 +7437,21 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 .outline-left .document-outline {
   grid-column: 1;
 }
+.outline-filter {
+  min-width: 0;
+  margin: 0 12px 6px 0;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--editor);
+  color: var(--text);
+}
+.outline-left .outline-filter { margin: 0 0 6px 12px; }
+.outline-filter:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.document-outline .outline-row[hidden],
+.outline-empty:empty { display: none; }
 .document-outline .outline-list {
   overflow: auto;
   min-height: 0;
@@ -7474,6 +7489,10 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
   white-space: nowrap;
   text-overflow: ellipsis;
   transition: opacity 180ms ease, transform 500ms var(--outline-spring);
+}
+.document-outline .outline-row:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 
 .outline-mark {
@@ -7592,6 +7611,7 @@ html.window-inactive .monaco-scrollable-element > .scrollbar.horizontal > .slide
 }
 
 .document-outline.outline-on-hover:not(:hover):not(:focus-within):not(:has(details[open])) .outline-row span,
+.document-outline.outline-on-hover:not(:hover):not(:focus-within):not(:has(details[open])) .outline-filter:placeholder-shown,
 .document-outline:not(:hover):not(:focus-within):not(:has(details[open])) .outline-options summary {
   opacity: 0;
   transition-delay: 120ms;

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { verifyOutlineFilter } from "./verify-outline-filter.mjs";
 
 const modulePath = process.env.PLAYWRIGHT_MODULE;
 const playwright = await import(modulePath ? pathToFileURL(modulePath).href : "playwright");
@@ -20,7 +21,7 @@ async function until(check, message, timeout = 15000) {
 
 for (const engine of engines) {
   const notes = "# 阅读验证\n\n[前往目标章节](target.md#target-section)\n\n脚注入口[^note]。\n\n> ## 引用中的标题\n\n" + Array.from({ length: 22 }, (_, index) =>
-    `## 第 ${index + 1} 章\n\n` + Array.from({ length: 9 }, (_, paragraph) => `这是第 ${index + 1} 章第 ${paragraph + 1} 段，用于检查阅读位置与模式切换。Local Markdown reading fixture.\n\n`).join("")).join("") + "\n[^note]: 验证脚注目标\n";
+    `## ${index === 3 || index === 6 ? "API 使用" : `第 ${index + 1} 章`}\n\n` + Array.from({ length: 9 }, (_, paragraph) => `这是第 ${index + 1} 章第 ${paragraph + 1} 段，用于检查阅读位置与模式切换。Local Markdown reading fixture.\n\n`).join("")).join("") + "\n[^note]: 验证脚注目标\n";
   const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", "# Target document\n\n## Target section\n\nBack and forward navigation target.\n\n" + "Target paragraph.\n\n".repeat(60)]]);
   files.set("/qa/fresh.md", "# Fresh file\n");
   const revisions = new Map([...files.keys()].map(path => [path, "r1"]));
@@ -120,6 +121,8 @@ for (const engine of engines) {
     await page.goto(baseUrl);
     await page.locator("#markdownPreview .markdown-preview-body h1").filter({ hasText: "阅读验证" }).waitFor();
     await until(async () => (await page.locator('#tabs [role="tab"]').count()) === 2, "Fixture tabs did not restore");
+    await verifyOutlineFilter(page, notes, shot);
+    checks.push("Filtered duplicate headings navigate to their original positions in reading, live, source and split views across document switches");
     const preview = page.locator("#markdownPreview");
     const isVisibleInPreview = selector => preview.evaluate((pane, selector) => {
       const element = pane.querySelector(selector);

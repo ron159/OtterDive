@@ -12,7 +12,7 @@ import { writingStats } from "./writingStats";
 import { THEME_PRESETS, resolveThemePalette, matchingThemePreset, normalizeThemeColor, normalizeThemeOverrides, customEditorThemeColors, type ThemeMode, type ThemeColorKey, type ThemePalette, type ThemeOverrides } from "./themePresets";
 import { mapScrollPosition } from "./scrollSync";
 import { sourceSelectionToMarkdownCursor, markdownCursorToSourceSelection, captureMarkdownScrollAnchor, restoreMarkdownScrollAnchor, MarkdownHistory, normalizeMarkdownLocations, type MarkdownScrollAnchor, type MarkdownDocumentLocation, type MarkdownHistoryEntry } from "./markdownNavigation";
-import { documentOutlineLayout, restoreOutlinePreferences, outlineHeadingSelector, outlineHeadingOffset, retainedOutlineNavigation } from "./documentOutline";
+import { documentOutlineLayout, filterOutlineRows, handleOutlineNavigationKey, restoreOutlinePreferences, outlineHeadingSelector, outlineHeadingOffset, retainedOutlineNavigation } from "./documentOutline";
 import { exportResultRows, type ResultRow, type AnalysisStep } from "./resultAnalysis";
 import { appendPinnedResults, removePinnedResult, type PinnedResult, type PinnedResultInput } from "./pinnedSearchResult";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -1998,7 +1998,9 @@ function registerAppCommands() {
     command("bookmark.toggle", "切换书签", "书签", toggleBookmark, { when: editorOnly }),
     command("bookmark.next", "下一个书签", "书签", () => navigateBookmark(1), { when: editorOnly }),
     command("bookmark.previous", "上一个书签", "书签", () => navigateBookmark(-1), { when: editorOnly }),
-    command("markdown.outline", "Markdown 大纲", "Markdown", openMarkdownOutline, { when: markdownOnly, priority: 20 }),
+    command("markdown.outline", "Markdown 大纲", "Markdown", openMarkdownOutline, {
+      when: () => !isSideEditorActive() && isMarkdownLikeDocument(), priority: 20,
+    }),
     markdownCommand("markdown.bold", "粗体", "format:strong", markdownOnly),
     markdownCommand("markdown.italic", "斜体", "format:em", markdownOnly),
     markdownCommand("markdown.inlineCode", "行内代码", "format:inline_code", markdownOnly),
@@ -2190,11 +2192,25 @@ function bindActions() {
   outlineResizeObserver.observe($("documentView"));
   $("markdownWysiwyg").addEventListener("scroll", scheduleOutlineActiveHeading, true);
   $("markdownPreview").addEventListener("scroll", scheduleOutlineActiveHeading);
+  const outlineFilter = $<HTMLInputElement>("outlineFilter");
+  outlineFilter.addEventListener("input", applyOutlineFilter);
   $("documentOutline").addEventListener("keydown", (event) => {
+    if (isInputMethodComposing(event) || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
     if (event.key === "Escape") {
-      ($("outlineOptions") as HTMLDetailsElement).open = false;
-      focusActiveEditor();
+      event.preventDefault();
+      event.stopPropagation();
+      if (outlineFilter.value && (event.target === outlineFilter || $("outlineList").contains(event.target as Node))) {
+        outlineFilter.value = "";
+        applyOutlineFilter();
+        outlineFilter.focus();
+      } else {
+        ($("outlineOptions") as HTMLDetailsElement).open = false;
+        if (isReadingDocument()) $("markdownPreview").focus({ preventScroll: true });
+        else focusActiveEditor();
+      }
+      return;
     }
+    handleOutlineNavigationKey(event, outlineFilter, $("outlineList"));
   });
   $("outlineDisplayMode").addEventListener("change", () => {
     state.outlineDisplayMode = $<HTMLSelectElement>("outlineDisplayMode").value === "always" ? "always" : "hover";
@@ -2400,6 +2416,7 @@ function bindActions() {
   $("outlineButton").addEventListener("click", () => {
     state.outlineOpen = !state.outlineOpen;
     renderDocumentOutline();
+    if (state.outlineOpen) outlineFilter.focus();
     scheduleSessionSave();
   });
   $("analyseButton").addEventListener("click", openAnalysePanel);
@@ -3572,6 +3589,7 @@ function setMarkdownEditMode(mode: MarkdownEditMode, preserveLocation = true) {
   if (mode !== "wysiwyg") attachEditorModel(doc);
   closeMenus();
   renderMarkdownSurface();
+  if (isOutlineVisible()) renderMarkdownOutline();
   renderChrome();
   renderSettingsMenu();
   if (location) void restoreMarkdownLocation(doc, { ...location, mode });
@@ -9240,14 +9258,18 @@ function currentOutlineHeadings(): { level: number; text: string; line?: number 
       level: Number(heading.tagName.slice(1)), text: heading.textContent ?? "",
     }));
   }
-  const locations = markdownHeadingLocations(documentText(activeDocument()));
-  const muyaOutline = isMarkdownWysiwygActive() ? markdownEditor?.getOutline() : null;
-  return muyaOutline
-    ? muyaOutline.map((heading, index) => ({
-      ...heading,
-      line: locations[index]?.line ?? 1,
-    }))
-    : locations;
+  if (state.markdownEditMode === "wysiwyg") {
+    if (!isMarkdownWysiwygActive() || !markdownEditor) return [];
+    const locations = markdownHeadingLocations(documentText(activeDocument()));
+    return markdownEditor.getOutline().map((heading, index) => ({ ...heading, line: locations[index]?.line ?? 1 }));
+  }
+  return markdownHeadingLocations(documentText(activeDocument()));
+}
+
+function applyOutlineFilter() {
+  const rows = $("outlineList").querySelectorAll<HTMLButtonElement>(".outline-row");
+  const matches = filterOutlineRows(rows, $<HTMLInputElement>("outlineFilter").value);
+  $("outlineEmpty").textContent = matches ? "" : rows.length ? "没有匹配的标题" : "添加标题后在这里导航";
 }
 
 function renderMarkdownOutline() {
@@ -9258,15 +9280,18 @@ function renderMarkdownOutline() {
     return;
   }
   const headings = currentOutlineHeadings();
-  list.innerHTML = headings.length > 0
-    ? headings.map((heading, index) => {
-      const indent = (heading.level - 1) * 10;
-      return `<button class="outline-row" title="${escapeHtml(heading.text)}" aria-label="${escapeHtml(heading.text)}" data-outline-line="${heading.line ?? ""}" data-outline-index="${index}" data-outline-level="${heading.level}" style="--outline-indent:${indent}px"><i class="outline-mark" aria-hidden="true"></i><span>${escapeHtml(heading.text)}</span></button>`;
-    }).join("")
-    : `<p class="outline-empty">添加标题后在这里导航</p>`;
+  list.innerHTML = headings.map((heading, index) => {
+    const indent = (heading.level - 1) * 10;
+    return `<button class="outline-row" title="${escapeHtml(heading.text)}" aria-label="${escapeHtml(heading.text)}" data-outline-line="${heading.line ?? ""}" data-outline-index="${index}" data-outline-level="${heading.level}" style="--outline-indent:${indent}px"><i class="outline-mark" aria-hidden="true"></i><span>${escapeHtml(heading.text)}</span></button>`;
+  }).join("");
+  applyOutlineFilter();
   scheduleOutlineActiveHeading();
   list.querySelectorAll<HTMLButtonElement>("[data-outline-line]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (pendingMarkdownLocation) {
+        ++markdownLocationRevision;
+        pendingMarkdownLocation = null;
+      }
       if (isReadingDocument()) {
         const preview = $("markdownPreview");
         const index = Number(button.dataset.outlineIndex ?? "0");
@@ -9421,8 +9446,9 @@ async function ensureMarkdownEditor(doc: OpenDocument) {
   if (!entry) return null;
   const active = activeDocument();
   if (active.id === doc.id && isMarkdownLikeDocument(active) && doc.markdownEditMode === "wysiwyg") {
-    activateMarkdownEditor(entry, active, true);
+    activateMarkdownEditor(entry, active, !$("documentOutline").contains(document.activeElement));
     renderMarkdownSurface();
+    if (isOutlineVisible()) renderMarkdownOutline();
   }
   return entry.bridge;
 }
@@ -10397,15 +10423,24 @@ function addSelectionAsAnalysePattern() {
 
 function openMarkdownOutline() {
   if (!isMarkdownLikeDocument()) return;
-  state.outlineOpen = true;
-  renderDocumentOutline();
-  $("outlineList").querySelector<HTMLButtonElement>("button")?.focus();
-  scheduleSessionSave();
+  if (!state.outlineOpen) {
+    state.outlineOpen = true;
+    renderDocumentOutline();
+    scheduleSessionSave();
+  }
+  const filter = $<HTMLInputElement>("outlineFilter");
+  filter.focus();
+  filter.select();
 }
 
 function renderDocumentOutline() {
   const markdown = isMarkdownLikeDocument();
   const visible = markdown && state.outlineOpen;
+  const filter = $<HTMLInputElement>("outlineFilter");
+  if (!visible || filter.dataset.documentId !== String(state.activeId)) {
+    filter.value = "";
+    filter.dataset.documentId = String(state.activeId);
+  }
   const view = $("documentView");
   view.classList.toggle("has-outline", visible);
   view.classList.toggle("outline-left", state.outlinePosition === "left");
