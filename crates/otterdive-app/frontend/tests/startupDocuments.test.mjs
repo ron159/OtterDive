@@ -12,6 +12,7 @@ const names = new Set([
   "updateStartupDocumentType", "nextUntitledTitle", "documentText", "activeDocument",
   "openDocument", "openPath", "addOrReplaceDocument", "withBusy", "restoredDocumentOrigin", "showOpenFailures",
   "restoreSession", "isDoubleClickDocumentType", "closeDocument", "closeWorkspace", "draftDocumentSnapshots", "ensureDraftId",
+  "isMarkdownEditMode", "isMarkdownLikeDocument", "isMarkdownLikeLanguage", "applyRestoredDocumentMetadata",
 ]);
 const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
   .map(node => node.getText(ast)).join("\n");
@@ -23,12 +24,41 @@ test("startup restores the active Markdown draft reading anchor from the saved s
   const location = { mode: "reading", line: 42, column: 1, cursor: null, scroll: { headingIndex: 3, offsetPx: 80, fraction: 0.65, sectionFraction: 0.4 } };
   const h = harness({ markdownEditMode: "reading", activeDraftId: "reading-draft",
     draftDocuments: [{ id: "reading-draft", creationIntent: "explicit", title: "long.md", text: "# long\n\nbody", language: "markdown" }],
-    markdownLocations: { "reading-draft": location } });
+    markdownLocations: { "draft:reading-draft": location } });
   await h.context.restoreSession(h.initial);
   assert.equal(h.context.restoredReading.length, 1);
   assert.equal(h.context.restoredReading[0].id, h.state.activeId);
   assert.equal(h.context.restoredReading[0].location.scroll.sectionFraction, 0.4);
   assert.equal(h.logs.some(message => message.includes("会话恢复失败")), false, JSON.stringify(h.logs));
+});
+
+test("legacy Markdown tabs migrate individual locations and use the old mode for unvisited tabs and drafts", async () => {
+  const h = harness({
+    markdownPreviewPreferenceSet: true, showMarkdownPreview: true,
+    workbenchPreferences: { defaultReading: true },
+    openFiles: ["/first.md", "/second.md"], activePath: "/first.md",
+    draftDocuments: [{ id: "third", title: "third.md", language: "markdown", text: "draft" }],
+    markdownLocations: { "file:/first.md": { mode: "source", line: 2, column: 1, cursor: null,
+      scroll: { headingIndex: -1, offsetPx: 0, fraction: 0 } } },
+  }, { read: async path => ({ ...textDto(path), language: "markdown" }) });
+  await h.context.restoreSession(h.initial);
+  assert.equal(h.logs.some(message => message.includes("会话恢复失败")), false, JSON.stringify(h.logs));
+  const modes = Object.fromEntries(h.state.documents.map(doc => [doc.title, doc.markdownEditMode]));
+  assert.deepEqual(modes, { "first.md": "source", "second.md": "split", "third.md": "split" });
+});
+
+test("session restores each tab's mode even without a scroll location or when two drafts share a name", async () => {
+  const h = harness({
+    markdownEditMode: "wysiwyg", workbenchPreferences: { defaultReading: true },
+    openFiles: ["/read.md", "/edit.md"], activeDraftId: "two",
+    draftDocuments: ["one", "two"].map(id => ({ id, title: "notes.md", language: "markdown", text: id, dirty: true })),
+    documentMarkdownModes: { "file:/read.md": "reading", "file:/edit.md": "wysiwyg", "draft:one": "source", "draft:two": "split" },
+  }, { read: async path => ({ ...textDto(path), language: "markdown" }) });
+  await h.context.restoreSession(h.initial);
+  assert.equal(h.logs.some(message => message.includes("会话恢复失败")), false, JSON.stringify(h.logs));
+  assert.deepEqual(Object.fromEntries(h.state.documents.map(doc => [doc.path ?? doc.draftId, doc.markdownEditMode])),
+    { "/read.md": "reading", "/edit.md": "wysiwyg", one: "source", two: "split" });
+  assert.equal(h.context.activeDocument().draftId, "two");
 });
 
 function harness(snapshot = {}, options = {}) {
@@ -73,17 +103,17 @@ function harness(snapshot = {}, options = {}) {
     normalizeWorkbenchPreferences: value => value ?? {}, normalizeThemeOverrides: () => ({}),
     normalizeFontMode: (_value, fallback) => fallback, normalizeFontStack: (_value, fallback) => fallback,
     normalizeAutoSaveDelaySeconds: () => 2, normalizeKeybindingOverrides: () => ({}), normalizeBookmarkSnapshot: () => ({}),
-    isMarkdownEditMode: () => false, isMarkdownContentWidth: () => false, isShellFontPreset: () => false,
+    isMarkdownContentWidth: () => false, isShellFontPreset: () => false,
     isEditorFontPreset: () => false, isKeymapProfile: () => false, isThemePreference: () => false,
     restoreOutlinePreferences: () => ({}), resolveThemeDark: () => false,
-    documentSessionKey: doc => doc.draftId,
+    documentSessionKey: doc => doc.path ? `file:${doc.path}` : `draft:${doc.draftId}`,
     loadPathDtos: async paths => Promise.all(paths.map(async path => {
       try { return { value: await context.invoke("open_path", { path }) }; }
       catch (error) { return { error }; }
     })),
     preferredDialogDirectory: () => "/", fileNameFromPath: path => path.split("/").pop(),
     rememberRecentPath: noop, applyDocumentDto: (doc, dto) => Object.assign(doc, dto),
-    applyRestoredDocumentMetadata: noop,
+    applyDetectedDocumentLanguage: noop,
     writingStatsCache: new Map(), markdownSessions: new Map(),
     confirmDocumentCanClose: async () => true, isWorkspaceFindView: () => false,
     activateDocument: id => { state.activeId = id; }, log: message => logs.push(message),

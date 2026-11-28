@@ -19,13 +19,10 @@ async function until(check, message, timeout = 15000) {
 }
 
 for (const engine of engines) {
-  const browser = await playwright[engine].launch({ headless: true,
-    ...(engine === "chromium" && process.env.CHROME_EXECUTABLE ? { executablePath: process.env.CHROME_EXECUTABLE } : {}),
-    ...(engine === "webkit" && process.env.WEBKIT_EXECUTABLE ? { executablePath: process.env.WEBKIT_EXECUTABLE } : {}) });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 950 }, locale: "zh-CN", timezoneId: "Asia/Shanghai" });
   const notes = "# 阅读验证\n\n[前往目标章节](target.md#target-section)\n\n脚注入口[^note]。\n\n> ## 引用中的标题\n\n" + Array.from({ length: 22 }, (_, index) =>
     `## 第 ${index + 1} 章\n\n` + Array.from({ length: 9 }, (_, paragraph) => `这是第 ${index + 1} 章第 ${paragraph + 1} 段，用于检查阅读位置与模式切换。Local Markdown reading fixture.\n\n`).join("")).join("") + "\n[^note]: 验证脚注目标\n";
   const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", "# Target document\n\n## Target section\n\nBack and forward navigation target.\n\n" + "Target paragraph.\n\n".repeat(60)]]);
+  files.set("/qa/fresh.md", "# Fresh file\n");
   const revisions = new Map([...files.keys()].map(path => [path, "r1"]));
   const workspace = () => ({ root: "/qa", name: "QA workspace", items: [
     { path: "/qa/archive", name: "archive", depth: 0, isDir: true },
@@ -39,10 +36,10 @@ for (const engine of engines) {
   };
   let saved = JSON.stringify({ version: 13, themePreference: "light", markdownEditMode: "reading", workMode: "workspace", showDirectory: true,
     workspaceRoot: "/qa", openFiles: ["/qa/notes.md", "/qa/target.md"], activePath: "/qa/notes.md", draftDocuments: [],
-    outlineDisplayMode: "always", workbenchPreferences: { autoSaveMode: "off", historyEnabled: false, recoveryEnabled: true } });
+    outlineDisplayMode: "always", workbenchPreferences: { autoSaveMode: "off", historyEnabled: false, recoveryEnabled: true, defaultReading: true } });
   let custom = [], templateNumber = 0, pendingMove;
   const calls = [], errors = [], warnings = [], checks = [];
-  await context.exposeBinding("qaInvoke", async (_, command, args = {}) => {
+  const invokeFixture = async (_, command, args = {}) => {
     calls.push({ command, args });
     if (command === "load_session") return saved;
     if (command === "save_session") { saved = args.snapshot; return null; }
@@ -88,18 +85,29 @@ for (const engine of engines) {
     if (command === "plugin:window|inner_size") return { width: 1440, height: 950 };
     if (command === "plugin:window|scale_factor" || command === "plugin:event|listen") return 1;
     return null;
-  });
-  await context.addInitScript(() => {
+  };
+  const installNativeBridge = () => {
     let callbackId = 0;
     window.__TAURI_INTERNALS__ = { metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
       invoke: (command, args) => window.qaInvoke(command, args), transformCallback: () => ++callbackId,
       unregisterCallback: () => {}, convertFileSrc: path => path };
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
-  });
-  const page = await context.newPage();
-  page.setDefaultTimeout(15000);
-  page.on("pageerror", error => errors.push(error.stack ?? error.message));
-  page.on("console", message => { if (message.type() === "error") errors.push(message.text()); if (message.type() === "warning") warnings.push(message.text()); });
+  };
+  async function launchWindow() {
+    const browser = await playwright[engine].launch({ headless: true,
+      ...(engine === "chromium" && process.env.CHROME_EXECUTABLE ? { executablePath: process.env.CHROME_EXECUTABLE } : {}),
+      ...(engine === "webkit" && process.env.WEBKIT_EXECUTABLE ? { executablePath: process.env.WEBKIT_EXECUTABLE } : {}) });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 950 }, locale: "zh-CN", timezoneId: "Asia/Shanghai" });
+    await context.exposeBinding("qaInvoke", invokeFixture);
+    await context.addInitScript(installNativeBridge);
+    const page = await context.newPage();
+    page.setDefaultTimeout(15000);
+    page.setDefaultNavigationTimeout(90000);
+    page.on("pageerror", error => errors.push(error.stack ?? error.message));
+    page.on("console", message => { if (message.type() === "error") errors.push(message.text()); if (message.type() === "warning") warnings.push(message.text()); });
+    return { browser, context, page };
+  }
+  let { browser, context, page } = await launchWindow();
   const command = async (_menu, id) => {
     await page.locator("#commandButton").click();
     await page.locator("#commandInput").fill(id);
@@ -146,11 +154,88 @@ for (const engine of engines) {
     await page.locator('#markdownPreview a[href="target.md#target-section"]').click();
     await until(async () => (await activeTab().innerText()).includes("target.md"), "Markdown link did not open target document");
     await page.locator("#markdownPreview h2").filter({ hasText: "Target section" }).waitFor();
+    await page.locator("#markdownSplitButton").click();
     await page.locator("#markdownBackButton").click();
     await until(async () => (await activeTab().innerText()).includes("notes.md"), "Back navigation did not return to notes");
+    await page.locator('#markdownReadingButton[aria-pressed="true"]').waitFor();
     await page.locator("#markdownForwardButton").click();
     await until(async () => (await activeTab().innerText()).includes("target.md"), "Forward navigation did not return to target");
-    checks.push("Real Markdown link and back/forward menu navigation");
+    await page.locator('#markdownSplitButton[aria-pressed="true"]').waitFor();
+    checks.push("Real Markdown link and back/forward restore reading and split independently");
+
+    await command("file", "file.newMarkdown");
+    const richDraft = await activeTab().getAttribute("title");
+    await page.locator('#markdownWysiwygButton[aria-pressed="true"]').waitFor();
+    const richInput = page.locator('#markdownWysiwyg [contenteditable="true"]').first();
+    await richInput.click();
+    await page.keyboard.type("rich draf");
+    // Switch before Muya's animation-frame batch has delivered the last keystroke.
+    await page.locator("#markdownWysiwyg").evaluate(pane => {
+      pane.addEventListener("input", () => queueMicrotask(() => {
+        document.querySelector('#tabs [title="/qa/notes.md"] .tab-title').click();
+      }), { once: true });
+    });
+    await page.keyboard.type("t");
+    await page.locator('#markdownReadingButton[aria-pressed="true"]').waitFor();
+    await page.locator('.tree-item[data-path="/qa/fresh.md"]').click();
+    await until(async () => (await activeTab().getAttribute("title")) === "/qa/fresh.md", "Fresh file did not open");
+    await page.locator('#markdownReadingButton[aria-pressed="true"]').waitFor();
+    await page.locator(`#tabs [title="${richDraft}"] .tab-title`).click();
+    const richText = page.locator("#markdownWysiwyg").getByText("rich draft", { exact: true }).first();
+    await richText.click();
+    await page.keyboard.press("End");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await command("file", "file.newMarkdown");
+    const sourceDraft = await activeTab().getAttribute("title");
+    await page.locator("#markdownSourceButton").click();
+    await page.locator("#editor .view-lines").click();
+    await page.keyboard.type("source draft");
+    await page.keyboard.press("Shift+ArrowLeft");
+    const modes = [["/qa/notes.md", "reading"], [richDraft, "wysiwyg"], ["/qa/target.md", "split"], [sourceDraft, "source"]];
+    async function verifyTab(title, mode) {
+      await page.locator(`#tabs [role="tab"][title="${title}"] .tab-title`).click();
+      await page.locator(`[data-markdown-mode="${mode}"][aria-pressed="true"]`).waitFor();
+      if (mode === "reading" || mode === "split") await page.locator("#markdownPreview .markdown-body h1").waitFor();
+      if (mode === "wysiwyg") await page.locator("#markdownWysiwyg").getByText("rich draft", { exact: true }).first().waitFor();
+      if (mode === "source") await page.locator("#editor .view-lines").getByText("source draft", { exact: true }).waitFor();
+    }
+    for (let pass = 0; pass < 2; pass++) for (const [title, mode] of modes) await verifyTab(title, mode);
+    await page.locator('#tabs [role="tab"][title="/qa/target.md"] .tab-close').click();
+    await command("file", "file.reopenClosed");
+    assert.equal(await activeTab().getAttribute("title"), "/qa/target.md");
+    await page.locator('#markdownSplitButton[aria-pressed="true"]').waitFor();
+    async function verifySavedDrafts(activeTitle) {
+      await until(() => {
+        const snapshot = JSON.parse(saved);
+        return (snapshot.activePath ?? snapshot.draftDocuments.find(d => d.id === snapshot.activeDraftId)?.title) === activeTitle
+          && snapshot.draftDocuments.length === 2;
+      }, "Session did not capture both drafts and the active tab");
+      const snapshot = JSON.parse(saved);
+      assert.deepEqual(snapshot.draftDocuments.map(d => {
+        const key = `draft:${d.id}`;
+        const cursor = snapshot.markdownLocations[key]?.cursor;
+        return [d.title, d.text.trimEnd(), d.dirty, snapshot.documentMarkdownModes[key], cursor?.anchor?.ch, cursor?.focus?.ch];
+      }), [[richDraft, "rich draft", true, "wysiwyg", 8, 8], [sourceDraft, "source draft", true, "source", 12, 11]]);
+    }
+    await verifySavedDrafts("/qa/target.md");
+    await browser.close();
+    ({ browser, context, page } = await launchWindow());
+    await page.goto(baseUrl);
+    await page.locator('#markdownSplitButton[aria-pressed="true"]').waitFor();
+    for (const [title, mode] of modes) await verifyTab(title, mode);
+    await verifySavedDrafts(sourceDraft);
+    await page.locator("#markdownReadingButton").click();
+    await page.locator("#markdownPreview .markdown-body").waitFor();
+    await page.locator("#markdownWysiwygButton").click();
+    await page.locator("#markdownWysiwyg").getByText("source draft", { exact: true }).first().waitFor();
+    await page.locator("#markdownSourceButton").click();
+    await until(async () => (await page.locator("#statusRight").innerText()).includes("第 12 列"), "Source cursor was not restored");
+    for (const title of [richDraft, sourceDraft]) {
+      const draftTab = page.locator(`#tabs [role="tab"][title="${title}"]`);
+      await draftTab.locator(".tab-dirty-dot").waitFor();
+    }
+    checks.push("Four mixed tabs survive repeated switching, closed-tab reopen and a browser process restart with dirty drafts and distinct cursors");
 
     await command("file", "markdown.manageTemplates");
     const manager = page.getByRole("dialog", { name: "管理模板与片段" });

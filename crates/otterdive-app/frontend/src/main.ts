@@ -303,6 +303,7 @@ interface FileReplacePreviewDto {
 }
 
 interface OpenDocument extends DocumentDto {
+  markdownEditMode: MarkdownEditMode;
   sourceEncoding?: EncodingLabel;
   languageDetectionChecked?: boolean;
   externalRevision?: string;
@@ -324,6 +325,7 @@ interface OpenDocument extends DocumentDto {
 }
 
 interface ClosedDocumentSnapshot extends DocumentDto {
+  markdownEditMode: MarkdownEditMode;
   sourceEncoding?: EncodingLabel;
   externalRevision?: string;
   draftId?: string;
@@ -392,6 +394,7 @@ interface SessionSnapshot {
   documentLanguageOverrides?: Record<string, string>;
   documentViews: Record<string, monaco.editor.ICodeEditorViewState>;
   markdownLocations?: Record<string, MarkdownDocumentLocation>;
+  documentMarkdownModes?: Record<string, MarkdownEditMode>;
   recentFiles: string[];
   recentWorkspaces: string[];
   analyseRecentProfiles?: string[];
@@ -517,7 +520,7 @@ const encodings: EncodingLabel[] = [
 
 type SearchMode = "literal" | "extended" | "regex";
 type WorkMode = "single" | "workspace";
-type MarkdownEditMode = "wysiwyg" | "split" | "source" | "reading";
+type MarkdownEditMode = MarkdownDocumentLocation["mode"];
 type MarkdownContentWidth = "typora" | "compact" | "wide" | "full";
 type DoubleClickDocumentType = "txt" | "md";
 type MissingFileBehavior = "keep" | "close";
@@ -904,7 +907,7 @@ const state = {
   replaceHistory: [] as string[],
   searchFavorites: [] as string[],
   showDirectory: false,
-  markdownEditMode: "wysiwyg" as MarkdownEditMode,
+  defaultMarkdownEditMode: "wysiwyg" as Exclude<MarkdownEditMode, "reading">,
   markdownContentWidth: "typora" as MarkdownContentWidth,
   doubleClickDocumentType: "txt" as DoubleClickDocumentType,
   missingFileBehavior: "keep" as MissingFileBehavior,
@@ -1108,8 +1111,7 @@ let sideScrollSync = false;
 let markdownScrollSyncing = false;
 const markdownNavigation = new MarkdownHistory();
 let markdownLocations: Record<string, MarkdownDocumentLocation> = Object.create(null);
-let pendingMarkdownLocation: { id: number; location: MarkdownDocumentLocation; revision: number } | null = null;
-let markdownLocationRevision = 0;
+let pendingMarkdownLocation: { id: number; location: MarkdownDocumentLocation } | null = null;
 let markdownNavigating = false;
 let workspaceMoveInProgress = false;
 const replaceSelections = new globalThis.Map<number, Set<number>>();
@@ -1566,6 +1568,9 @@ function bootstrap() {
     log,
   });
   bindPagedDocumentControls();
+  for (const event of ["pointerdown", "keydown", "wheel", "beforeinput"]) {
+    $("editorArea").addEventListener(event, () => { pendingMarkdownLocation = null; }, { capture: true, passive: true });
+  }
   editor.onDidScrollChange(() => {
     if (!pendingMarkdownLocation && isMarkdownLikeDocument()) scheduleSessionSave();
     scheduleOutlineActiveHeading();
@@ -2448,7 +2453,12 @@ function bindActions() {
   bindSegmentedSetting("settingsWhitespaceControl", (value) => setWhitespace(value as RenderWhitespaceMode));
   bindSegmentedSetting("settingsKeymapProfileControl", (value) => setKeymapProfile(value));
   bindSegmentedSetting("settingsMarkdownWidthControl", (value) => setMarkdownContentWidth(value));
-  bindSegmentedSetting("settingsMarkdownControl", (value) => setMarkdownEditMode(value as MarkdownEditMode));
+  bindSegmentedSetting("settingsMarkdownControl", (value) => {
+    if (!isMarkdownEditMode(value) || value === "reading") return;
+    state.defaultMarkdownEditMode = value;
+    renderSettingsMenu();
+    scheduleSessionSave();
+  });
   bindSegmentedSetting("settingsDoubleClickDocumentControl", setDoubleClickDocumentType);
   bindSegmentedSetting("settingsMissingFileControl", setMissingFileBehavior);
   bindSegmentedSetting("settingsModeControl", (value) => {
@@ -2644,7 +2654,10 @@ function bindActions() {
   $("appUpdateCloseButton").addEventListener("click", closeAppUpdatePopover);
   $("appUpdatePopoverInstallButton").addEventListener("click", () => void installAppUpdate());
 
-  editor.onDidChangeCursorPosition(renderChrome);
+  editor.onDidChangeCursorPosition(() => {
+    renderChrome();
+    if (!pendingMarkdownLocation && isMarkdownLikeDocument()) scheduleSessionSave();
+  });
 }
 
 function bindAppMenus() {
@@ -3549,14 +3562,13 @@ function setMissingFileBehavior(value: string) {
 }
 
 function setMarkdownEditMode(mode: MarkdownEditMode, preserveLocation = true) {
-  if (!isMarkdownEditMode(mode) || state.markdownEditMode === mode) return;
   const doc = activeDocument();
+  if (!isMarkdownLikeDocument(doc) || !isMarkdownEditMode(mode) || doc.markdownEditMode === mode) return;
   syncMarkdownModelFromEditor(doc);
-  const location = preserveLocation && isMarkdownLikeDocument(doc) ? currentMarkdownLocation(doc) : null;
+  const location = preserveLocation ? currentMarkdownLocation(doc) : null;
   markdownEditor?.hideFloatTools();
-  ++markdownLocationRevision;
   pendingMarkdownLocation = null;
-  state.markdownEditMode = mode;
+  doc.markdownEditMode = mode;
   if (mode !== "wysiwyg") attachEditorModel(doc);
   closeMenus();
   renderMarkdownSurface();
@@ -4309,6 +4321,9 @@ function createDocument(
   const savedText = options.savedText ?? (dto.path ? "" : dto.text);
   const doc: OpenDocument = {
     ...dto,
+    markdownEditMode: dto.path
+      ? markdownLocations[`file:${dto.path}`]?.mode ?? (state.workbench.defaultReading ? "reading" : state.defaultMarkdownEditMode)
+      : state.defaultMarkdownEditMode,
     id: nextId++,
     sourceEncoding: dto.encoding,
     draftId: dto.path ? undefined : options.draftId ?? createDraftId(),
@@ -4432,29 +4447,26 @@ function activateDocument(id: number) {
   const doc = state.documents.find((item) => item.id === id);
   if (!doc) return;
   sideEditorFocused = false;
-  const previous = activeDocument();
-  if (previous && previous.id !== id) rememberMarkdownLocation(previous);
+  const previous = state.documents.find(item => item.id === state.activeId);
   if (previous?.id !== id) {
+    if (previous) {
+      syncMarkdownModelFromEditor(previous);
+      rememberMarkdownLocation(previous);
+      syncActiveBookmarkLines(previous);
+      saveOnFocusChange(previous);
+      if (previous.model && editor.getModel() === previous.model) previous.viewState = editor.saveViewState() ?? undefined;
+    }
+    pendingMarkdownLocation = null;
     currentSearchSelection?.clear();
     currentSearchSelectionDocumentId = 0;
   }
-  if (previous && previous.id !== id) syncActiveBookmarkLines(previous);
-  if (previous && previous.id !== id) {
-    syncMarkdownModelFromEditor(previous);
-    saveOnFocusChange(previous);
-  }
-  if (previous && previous.id !== id && previous.model && editor.getModel() === previous.model) {
-    previous.viewState = editor.saveViewState() ?? undefined;
-  }
   state.activeId = id;
-  ensureDocumentModel(doc);
-  if (!isMarkdownLikeDocument(doc) || state.markdownEditMode !== "wysiwyg") attachEditorModel(doc);
+  attachEditorModel(doc);
   renderAll();
   if (doc.paged || previous?.paged) renderPagedDocumentControls();
   if (doc.paged && !pagedController(doc).page && !pagedController(doc).busy) void pagedController(doc).load({ offset: 0 });
-  if (previous?.id !== id && markdownLocations[documentSessionKey(doc)]) {
-    void restoreMarkdownLocation(doc, markdownLocations[documentSessionKey(doc)]);
-  }
+  const location = markdownLocations[documentSessionKey(doc)];
+  if (previous?.id !== id && location) void restoreMarkdownLocation(doc, location);
   scheduleSessionSave();
   scheduleLanguageDetection();
 }
@@ -4625,7 +4637,6 @@ function addOrReplaceDocument(
   }
   const doc = createDocument(dto, { deferModel: options.deferModel, origin });
   state.documents.push(doc);
-  if (shouldActivate && state.workbench.defaultReading && isMarkdownLikeDocument(doc)) state.markdownEditMode = "reading";
   if (shouldActivate) activateDocument(doc.id);
   log(`打开 ${doc.title}`);
   return doc;
@@ -5207,9 +5218,6 @@ async function closeWorkspace() {
     doc.model?.dispose();
   });
   if (state.documents.length === 0) state.documents.push(createDefaultUntitledDocument());
-  if (!state.documents.some((doc) => doc.id === state.activeId)) {
-    state.activeId = state.documents[0].id;
-  }
 
   state.workspace = null;
   state.mode = "single";
@@ -5221,8 +5229,7 @@ async function closeWorkspace() {
   resetSearchResults();
   if (isWorkspaceFindView()) setFindView("find", false);
   if (state.rightTool === "search" && !$("findPopover").classList.contains("hidden")) closeRightSidebar();
-  attachEditorModel(activeDocument());
-  renderAll();
+  activateDocument(activeDocument().id);
   renderSettingsMenu();
   scheduleSessionSave();
   log(`已关闭工作区 ${name}`);
@@ -5277,6 +5284,7 @@ async function closeDocument(id: number, confirmClose = true): Promise<boolean> 
 
 function rememberClosedDocument(doc: OpenDocument) {
   closedDocuments.unshift({
+    markdownEditMode: doc.markdownEditMode,
     title: doc.title,
     path: doc.path,
     text: doc.paged ? "" : documentText(doc),
@@ -5330,6 +5338,7 @@ async function reopenClosedDocument() {
     origin: snapshot.origin,
     languageOverride: snapshot.languageOverride,
   });
+  doc.markdownEditMode = snapshot.markdownEditMode;
   doc.sourceEncoding = snapshot.sourceEncoding ?? snapshot.encoding;
   doc.externalRevision = snapshot.externalRevision;
   doc.metadataDirty = snapshot.metadataDirty;
@@ -7979,7 +7988,7 @@ function renderChrome() {
   $<HTMLButtonElement>("markdownBackButton").disabled = markdownNavigating || !markdownNavigation.canBack;
   $<HTMLButtonElement>("markdownForwardButton").disabled = markdownNavigating || !markdownNavigation.canForward;
   document.querySelectorAll<HTMLButtonElement>("[data-markdown-mode]").forEach((button) => {
-    const active = markdownDocument && button.dataset.markdownMode === state.markdownEditMode;
+    const active = markdownDocument && button.dataset.markdownMode === doc.markdownEditMode;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
@@ -8008,7 +8017,7 @@ function renderChrome() {
   $("menuWordWrapButton").classList.toggle("active", state.wordWrap);
   ["wysiwyg", "split", "source"].forEach((mode) => {
     const button = $<HTMLButtonElement>(`menuMarkdown${mode[0].toUpperCase()}${mode.slice(1)}Button`);
-    const active = markdownDocument && state.markdownEditMode === mode;
+    const active = markdownDocument && doc.markdownEditMode === mode;
     button.classList.toggle("active", active);
     button.setAttribute("aria-checked", String(active));
   });
@@ -8310,7 +8319,7 @@ function renderSettingsMenu() {
   setSegmentedValue("settingsWhitespaceControl", state.renderWhitespace);
   setSegmentedValue("settingsKeymapProfileControl", state.keymapProfile);
   setSegmentedValue("settingsMarkdownWidthControl", state.markdownContentWidth);
-  setSegmentedValue("settingsMarkdownControl", state.markdownEditMode);
+  setSegmentedValue("settingsMarkdownControl", state.defaultMarkdownEditMode);
   setSegmentedValue("settingsDoubleClickDocumentControl", state.doubleClickDocumentType);
   setSegmentedValue("settingsMissingFileControl", state.missingFileBehavior);
   setSegmentedValue("settingsModeControl", state.mode === "workspace" && state.workspace ? "workspace" : "single");
@@ -9369,8 +9378,8 @@ function rangeFromMatch(match: TextMatchDto) {
 function renderMarkdownSurface() {
   const doc = activeDocument();
   const markdownDocument = isMarkdownLikeDocument(doc);
-  $("editorArea").classList.toggle("markdown-reading", markdownDocument && state.markdownEditMode === "reading");
-  const wantsWysiwyg = markdownDocument && state.markdownEditMode === "wysiwyg";
+  $("editorArea").classList.toggle("markdown-reading", markdownDocument && doc.markdownEditMode === "reading");
+  const wantsWysiwyg = markdownDocument && doc.markdownEditMode === "wysiwyg";
   disposeInactiveMarkdownEditors(wantsWysiwyg ? doc.id : 0);
   const cachedEntry = wantsWysiwyg ? markdownEditorCache.get(doc.id) : null;
   if (cachedEntry) activateMarkdownEditor(cachedEntry, doc);
@@ -9411,7 +9420,7 @@ async function ensureMarkdownEditor(doc: OpenDocument) {
   const entry = await promise;
   if (!entry) return null;
   const active = activeDocument();
-  if (active.id === doc.id && isMarkdownLikeDocument(active) && state.markdownEditMode === "wysiwyg") {
+  if (active.id === doc.id && isMarkdownLikeDocument(active) && doc.markdownEditMode === "wysiwyg") {
     activateMarkdownEditor(entry, active, true);
     renderMarkdownSurface();
   }
@@ -9424,7 +9433,7 @@ async function createMarkdownEditor(doc: OpenDocument): Promise<MarkdownEditorCa
     if (
       !state.documents.some((item) => item.id === doc.id)
       || state.activeId !== doc.id
-      || state.markdownEditMode !== "wysiwyg"
+      || doc.markdownEditMode !== "wysiwyg"
       || !isMarkdownLikeDocument(doc)
     ) return null;
 
@@ -9535,7 +9544,7 @@ function handleMarkdownEditorChange(documentId: number, bridge: MarkdownEditorBr
   const modelMarkdown = markdownForDocumentModel(doc, markdown);
   if (
     doc.id !== state.activeId ||
-    state.markdownEditMode !== "wysiwyg" ||
+    doc.markdownEditMode !== "wysiwyg" ||
     bridge !== markdownEditor ||
     doc.readOnly ||
     modelMarkdown === model.getValue()
@@ -9590,15 +9599,15 @@ function markdownForDocumentModel(doc: OpenDocument, markdown: string) {
 function syncMarkdownModelFromEditor(doc = activeDocument()) {
   if (
     !markdownEditor ||
-    state.markdownEditMode !== "wysiwyg" ||
+    doc.markdownEditMode !== "wysiwyg" ||
     state.activeId !== doc.id ||
     markdownEditorDocumentId !== doc.id ||
     doc.readOnly
   ) {
     return;
   }
-  if (!markdownEditor.hasUnsynchronizedChanges()) return;
-  const editorMarkdown = markdownEditor.getMarkdown();
+  const editorMarkdown = markdownEditor.getUnsynchronizedMarkdown();
+  if (editorMarkdown === null) return;
   const markdown = markdownForDocumentModel(doc, editorMarkdown);
   const model = ensureDocumentModel(doc);
   if (markdown === model.getValue()) {
@@ -9627,13 +9636,13 @@ function scheduleMarkdownEditorSync(doc = activeDocument()) {
     markdownSyncingFromEditor ||
     doc.id !== state.activeId ||
     !isMarkdownLikeDocument(doc) ||
-    state.markdownEditMode !== "wysiwyg"
+    doc.markdownEditMode !== "wysiwyg"
   ) {
     return;
   }
   window.clearTimeout(markdownModelSyncTimer);
   markdownModelSyncTimer = window.setTimeout(() => {
-    if (doc.id === state.activeId && state.markdownEditMode === "wysiwyg") {
+    if (doc.id === state.activeId && doc.markdownEditMode === "wysiwyg") {
       syncMarkdownEditorFromModel(doc);
     }
   }, 60);
@@ -9751,7 +9760,7 @@ async function renderMarkdownPreview(syncScroll = true) {
   editorArea?.classList.toggle("preview-open", enabled);
   layoutDocumentOutline();
   scheduleOutlineActiveHeading();
-  resize.classList.toggle("hidden", !enabled || state.markdownEditMode === "reading");
+  resize.classList.toggle("hidden", !enabled || doc.markdownEditMode === "reading");
   preview.classList.toggle("hidden", !enabled);
   if (!enabled) {
     markdownPreviewResizeState = null;
@@ -9883,9 +9892,9 @@ function restoreEditorSurface() {
   const model = ensureDocumentModel(doc);
   if (editor.getModel() !== model) {
     editor.setModel(model);
+    if (doc.viewState) editor.restoreViewState(doc.viewState);
   }
   applyEditorPerformanceProfile(doc);
-  if (doc.viewState) editor.restoreViewState(doc.viewState);
   requestEditorLayout();
 }
 
@@ -9893,10 +9902,11 @@ function attachEditorModel(doc: OpenDocument) {
   // Keep model attachment to one swap. A forced render in requestEditorLayout
   // handles the first-layout race without detaching and rebuilding the view.
   const model = ensureDocumentModel(doc);
-  const changed = editor.getModel() !== model;
-  if (changed) editor.setModel(model);
+  if (editor.getModel() !== model) {
+    editor.setModel(model);
+    if (doc.viewState) editor.restoreViewState(doc.viewState);
+  }
   applyEditorPerformanceProfile(doc);
-  if (doc.viewState) editor.restoreViewState(doc.viewState);
   renderBookmarkDecorations();
   renderAnalyseBookmarkDecorations();
   requestEditorLayout();
@@ -10000,7 +10010,7 @@ function syncActiveBookmarkLines(doc = activeDocument()) {
 }
 
 function syncMarkdownPreviewScroll() {
-  if (!state.workbench.syncScroll || state.markdownEditMode !== "split" || markdownScrollSyncing || !isMarkdownLikeDocument()) return;
+  if (!state.workbench.syncScroll || activeDocument().markdownEditMode !== "split" || markdownScrollSyncing || !isMarkdownLikeDocument()) return;
   markdownScrollSyncing = true;
   $("markdownPreview").scrollTop = mapScrollPosition(editor.getScrollTop(), markdownScrollAnchors());
   window.requestAnimationFrame(() => { markdownScrollSyncing = false; });
@@ -10021,18 +10031,18 @@ function markdownScrollAnchors() {
 }
 
 function syncMarkdownSourceScroll() {
-  if (!state.workbench.syncScroll || state.markdownEditMode !== "split" || markdownScrollSyncing || !isMarkdownLikeDocument()) return;
+  if (!state.workbench.syncScroll || activeDocument().markdownEditMode !== "split" || markdownScrollSyncing || !isMarkdownLikeDocument()) return;
   markdownScrollSyncing = true;
   editor.setScrollTop(mapScrollPosition($("markdownPreview").scrollTop, markdownScrollAnchors().map(({ source, target }) => ({ source: target, target: source }))));
   window.requestAnimationFrame(() => { markdownScrollSyncing = false; });
 }
 
 function isMarkdownPreviewEnabled(doc = activeDocument()) {
-  return (state.markdownEditMode === "split" || state.markdownEditMode === "reading") && isMarkdownLikeDocument(doc);
+  return (doc.markdownEditMode === "split" || doc.markdownEditMode === "reading") && isMarkdownLikeDocument(doc);
 }
 
 function isMarkdownWysiwygActive(doc = activeDocument()) {
-  return state.markdownEditMode === "wysiwyg" && isMarkdownLikeDocument(doc) && markdownEditorDocumentId === doc.id;
+  return doc.markdownEditMode === "wysiwyg" && isMarkdownLikeDocument(doc) && markdownEditorDocumentId === doc.id;
 }
 
 function isMarkdownEditMode(value: unknown): value is MarkdownEditMode {
@@ -11491,11 +11501,12 @@ async function restoreSession(initialDocument: OpenDocument) {
     setBottomResultsHeight(state.bottomResultsHeight);
     applyExplorerWidth();
     applyMarkdownPreviewWidth();
-    state.markdownEditMode = isMarkdownEditMode(snapshot.markdownEditMode)
+    const legacyMode = isMarkdownEditMode(snapshot.markdownEditMode)
       ? snapshot.markdownEditMode
       : snapshot.markdownPreviewPreferenceSet
         ? snapshot.showMarkdownPreview ? "split" : "source"
         : "wysiwyg";
+    state.defaultMarkdownEditMode = legacyMode === "reading" ? "wysiwyg" : legacyMode;
     markdownLocations = normalizeMarkdownLocations(snapshot.markdownLocations);
     state.markdownContentWidth = isMarkdownContentWidth(snapshot.markdownContentWidth)
       ? snapshot.markdownContentWidth
@@ -11564,7 +11575,7 @@ async function restoreSession(initialDocument: OpenDocument) {
         language: state.doubleClickDocumentType === "md" ? "markdown" : "plaintext",
       } : draft, true);
       doc.origin = snapshot.documentOrigins?.[documentSessionKey(doc)] ?? "standalone";
-      doc.viewState = snapshot.documentViews?.[documentSessionKey(doc)];
+      applyRestoredDocumentMetadata(doc, snapshot, legacyMode);
       state.documents.push(doc);
       restoredDraftCount += 1;
     }
@@ -11578,7 +11589,7 @@ async function restoreSession(initialDocument: OpenDocument) {
           activate: false,
           deferModel: true,
         });
-        applyRestoredDocumentMetadata(restored, snapshot);
+        applyRestoredDocumentMetadata(restored, snapshot, legacyMode);
         restoredCount += 1;
       } catch (error) {
         failedPaths.add(normalizePathForCompare(primaryPath));
@@ -11630,7 +11641,7 @@ async function restoreSession(initialDocument: OpenDocument) {
         activate: false,
         deferModel: true,
       });
-      applyRestoredDocumentMetadata(restored, snapshot);
+      applyRestoredDocumentMetadata(restored, snapshot, legacyMode);
       restoredCount += 1;
     });
 
@@ -11647,9 +11658,7 @@ async function restoreSession(initialDocument: OpenDocument) {
       state.activeId = state.documents[0].id;
     }
     const restoredActive = activeDocument();
-    editor.setModel(ensureDocumentModel(restoredActive));
-    applyEditorPerformanceProfile(restoredActive);
-    if (!userSelectedAnotherDocument && restoredActive.viewState) editor.restoreViewState(restoredActive.viewState);
+    attachEditorModel(restoredActive);
     renderAll();
     await waitForNextPaint();
     window.requestAnimationFrame(() => {
@@ -11804,9 +11813,12 @@ function restoredDocumentOrigin(path: string, snapshot: Partial<SessionSnapshot>
   return "standalone";
 }
 
-function applyRestoredDocumentMetadata(doc: OpenDocument, snapshot: Partial<SessionSnapshot>) {
-  doc.viewState = snapshot.documentViews?.[documentSessionKey(doc)];
-  const languageOverride = snapshot.documentLanguageOverrides?.[documentSessionKey(doc)];
+function applyRestoredDocumentMetadata(doc: OpenDocument, snapshot: Partial<SessionSnapshot>, legacyMode: MarkdownEditMode) {
+  const key = documentSessionKey(doc);
+  const mode = snapshot.documentMarkdownModes?.[key];
+  doc.markdownEditMode = isMarkdownEditMode(mode) ? mode : markdownLocations[key]?.mode ?? legacyMode;
+  doc.viewState = snapshot.documentViews?.[key];
+  const languageOverride = snapshot.documentLanguageOverrides?.[key];
   if (!languageOverride) return;
   doc.languageOverride = languageOverride;
   applyDetectedDocumentLanguage(doc, doc.language);
@@ -11921,7 +11933,9 @@ async function saveSession() {
     explorerWidth: state.explorerWidth,
     markdownPreviewWidth: state.markdownPreviewWidth,
     treeScrollTop: $("tree").scrollTop,
-    markdownEditMode: state.markdownEditMode,
+    markdownEditMode: state.defaultMarkdownEditMode,
+    documentMarkdownModes: Object.fromEntries(state.documents.filter(doc => isMarkdownLikeDocument(doc))
+      .map(doc => [documentSessionKey(doc), doc.markdownEditMode])),
     markdownContentWidth: state.markdownContentWidth,
     doubleClickDocumentType: state.doubleClickDocumentType,
     missingFileBehavior: state.missingFileBehavior,
@@ -12357,14 +12371,13 @@ async function pickMarkdownImagePath() {
 
 function currentMarkdownLocation(doc = activeDocument()): MarkdownDocumentLocation {
   if (pendingMarkdownLocation?.id === doc.id) return pendingMarkdownLocation.location;
-  const mode = state.markdownEditMode;
+  const mode = doc.markdownEditMode;
   let cursor = sourceSelectionToMarkdownCursor(editor.getSelection());
   let scroll: MarkdownScrollAnchor;
   if (mode === "wysiwyg" && markdownEditorDocumentId === doc.id && markdownEditor) {
     cursor = markdownEditor.getCursorOffset();
     scroll = markdownEditor.getScrollAnchor();
   } else if (mode === "reading") {
-    cursor = null;
     const preview = $("markdownPreview");
     const top = preview.getBoundingClientRect().top;
     scroll = captureMarkdownScrollAnchor(preview.scrollTop, preview.scrollHeight - preview.clientHeight,
@@ -12392,38 +12405,41 @@ function currentMarkdownHistoryEntry(): MarkdownHistoryEntry {
 }
 
 async function restoreMarkdownLocation(doc: OpenDocument, location: MarkdownDocumentLocation) {
-  const revision = ++markdownLocationRevision;
-  const mode = state.markdownEditMode;
-  pendingMarkdownLocation = { id: doc.id, location, revision };
-  const current = () => state.activeId === doc.id && state.markdownEditMode === mode && revision === markdownLocationRevision;
+  if (state.activeId !== doc.id || !isMarkdownLikeDocument(doc)) return;
+  const mode = doc.markdownEditMode;
+  const pending = { id: doc.id, location: { ...location, mode } };
+  pendingMarkdownLocation = pending;
   try {
-    if (mode === "wysiwyg") await ensureMarkdownEditor(doc);
-    else if (mode === "reading" || mode === "split") await renderMarkdownPreview();
-    await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
-    if (!current()) return;
     if (mode === "wysiwyg") {
-      if (location.cursor) markdownEditor?.setCursorOffset(location.cursor);
-      markdownEditor?.revealScrollAnchor(location.scroll);
+      const bridge = await ensureMarkdownEditor(doc);
+      if (pendingMarkdownLocation !== pending) return;
+      if (location.cursor) bridge?.setCursorOffset(location.cursor);
     } else {
       const selection = markdownCursorToSourceSelection(location.cursor);
       if (selection) editor.setSelection(new monaco.Selection(selection.selectionStartLineNumber, selection.selectionStartColumn, selection.positionLineNumber, selection.positionColumn));
       else editor.setPosition({ lineNumber: location.line, column: location.column });
-      if (mode === "reading") {
-        const preview = $("markdownPreview");
-        const top = preview.getBoundingClientRect().top;
-        preview.scrollTop = restoreMarkdownScrollAnchor(location.scroll, preview.scrollHeight - preview.clientHeight,
-          [...preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].map(heading => heading.getBoundingClientRect().top - top + preview.scrollTop));
-      } else {
-        editor.setScrollTop(restoreMarkdownScrollAnchor(location.scroll, editor.getScrollHeight() - editor.getLayoutInfo().height,
-          markdownHeadingLocations(documentText(doc)).map(heading => editor.getTopForLineNumber(heading.line))));
-        if (mode === "split") syncMarkdownPreviewScroll();
-      }
+      if (mode === "reading" || mode === "split") await renderMarkdownPreview();
+    }
+
+    await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+    if (pendingMarkdownLocation !== pending || state.activeId !== doc.id) return;
+    if (mode === "wysiwyg") {
+      markdownEditor?.revealScrollAnchor(location.scroll);
+    } else if (mode === "reading") {
+      const preview = $("markdownPreview");
+      const top = preview.getBoundingClientRect().top;
+      preview.scrollTop = restoreMarkdownScrollAnchor(location.scroll, preview.scrollHeight - preview.clientHeight,
+        [...preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].map(heading => heading.getBoundingClientRect().top - top + preview.scrollTop));
+    } else {
+      editor.setScrollTop(restoreMarkdownScrollAnchor(location.scroll, editor.getScrollHeight() - editor.getLayoutInfo().height,
+        markdownHeadingLocations(documentText(doc)).map(heading => editor.getTopForLineNumber(heading.line))));
+      if (mode === "split") syncMarkdownPreviewScroll();
     }
     scheduleOutlineActiveHeading();
   } catch (error) {
     log(`恢复 Markdown 阅读位置失败：${String(error)}`);
   } finally {
-    if (pendingMarkdownLocation?.revision === revision) pendingMarkdownLocation = null;
+    if (pendingMarkdownLocation === pending) pendingMarkdownLocation = null;
   }
 }
 
@@ -12444,9 +12460,10 @@ async function openMarkdownLink(href: string) {
   const path = link.path ? absoluteMarkdownResourcePath(link.path, from) : from.path;
   try {
     if (path && link.path) await openPath(path, true);
-    ++markdownLocationRevision;
-    pendingMarkdownLocation = null;
-    if (link.anchor) await revealMarkdownAnchor(link.anchor);
+    if (link.anchor) {
+      pendingMarkdownLocation = null;
+      await revealMarkdownAnchor(link.anchor);
+    }
     markdownNavigation.record(origin);
     renderChrome();
     scheduleSessionSave();
@@ -12467,7 +12484,7 @@ async function revealMarkdownAnchor(anchor: string) {
     const target = body.querySelector<HTMLElement>(`#${CSS.escape(anchor)}`)
       ?? [...body.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")].find(heading => heading.textContent === anchor);
     if (!target) { log(`未找到锚点：${anchor}`); return; }
-    if (state.markdownEditMode === "split") {
+    if (doc.markdownEditMode === "split") {
       const index = [...body.querySelectorAll(":scope > :is(h1,h2,h3,h4,h5,h6)")].indexOf(target);
       if (index >= 0) {
         const line = markdownHeadingLocations(documentText(doc))[index]?.line;
@@ -12485,7 +12502,7 @@ async function revealMarkdownAnchor(anchor: string) {
   if (index < 0) { log(`未找到标题：${anchor}`); return; }
   const line = markdownHeadingLocations(documentText(doc))[index]?.line ?? 1;
   editor.setPosition({ lineNumber: line, column: 1 }); editor.revealLineInCenter(line);
-  if (state.markdownEditMode === "wysiwyg") (await ensureMarkdownEditor(doc))?.revealHeading(index);
+  if (doc.markdownEditMode === "wysiwyg") (await ensureMarkdownEditor(doc))?.revealHeading(index);
 }
 
 async function navigateMarkdownHistory(direction: "back" | "forward") {
@@ -12627,7 +12644,7 @@ function markdownPrintLayout() {
 }
 
 function isReadingDocument(doc = activeDocument()) {
-  return state.markdownEditMode === "reading" && isMarkdownLikeDocument(doc);
+  return doc.markdownEditMode === "reading" && isMarkdownLikeDocument(doc);
 }
 
 function writingStatisticsLabel(doc: OpenDocument) {

@@ -18,7 +18,8 @@ const noop = () => {};
 function harness(overrides = {}) {
   const calls = { reads: [], writes: [], conflicts: 0 };
   const context = {
-    nextId: 1, closedDocuments: [], state: { documents: [], activeId: 0, searchRevision: 0 },
+    nextId: 1, closedDocuments: [], markdownLocations: {},
+    state: { documents: [], activeId: 0, searchRevision: 0, workbench: { defaultReading: true }, defaultMarkdownEditMode: "wysiwyg" },
     appReady: true, checkingExternalFiles: false, closingEditorsLocked: false, busyDepth: 0,
     confirmResolver: null, unsavedResolver: null, textInputResolver: null,
     document: { visibilityState: "visible" },
@@ -74,6 +75,14 @@ test("reopened clean files retain their disk baseline and refresh using the chos
   assert.equal(reopened.text, "external content");
   assert.equal(h.calls.reads.length, 1);
   assert.equal(h.calls.reads[0].encoding, "GBK");
+});
+
+test("reopening a dirty split Markdown tab retains its mode ahead of the default reading preference", async () => {
+  const h = harness({ path: "/notes.md", language: "markdown", dirty: true, markdownEditMode: "split" });
+  const reopened = await h.reopen();
+  assert.equal(reopened.markdownEditMode, "split");
+  assert.equal(reopened.dirty, true);
+  assert.equal(reopened.text, h.original.text);
 });
 
 test("reopening discarded edits retains pending encoding conversion and prevents automatic conflict overwrite", async () => {

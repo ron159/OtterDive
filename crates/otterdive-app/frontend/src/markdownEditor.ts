@@ -465,6 +465,7 @@ function diagramContainer(type: string) {
 
 export class MarkdownEditorBridge {
   private readonly muya: Muya;
+  private lastCursor: MarkdownEditorSessionState["cursor"] = null;
   private readonly changeListener: () => void;
   private readonly headingCopyLinkObserver: MutationObserver;
   private readonly headingCopyListener: (payload: { key?: string }) => void;
@@ -603,6 +604,7 @@ export class MarkdownEditorBridge {
     this.setReadOnly(options.readOnly);
     this.setWritingOptions(options.writingOptions ?? {});
     this.scheduleDecorations();
+    this.root.addEventListener("focusout", () => this.getCursorOffset());
     document.addEventListener("selectionchange", this.typewriterListener);
   }
 
@@ -617,8 +619,10 @@ export class MarkdownEditorBridge {
     return markdown;
   }
 
-  hasUnsynchronizedChanges() {
-    return this.changeRevision !== this.synchronizedRevision;
+  getUnsynchronizedMarkdown() {
+    // Muya batches edits until the next frame. Flush while the outgoing tab still owns the editor.
+    this.muya.flush();
+    return this.changeRevision === this.synchronizedRevision ? null : this.getMarkdown();
   }
 
   markSynchronized(markdown: string) {
@@ -642,6 +646,7 @@ export class MarkdownEditorBridge {
       return;
     }
     this.markdown = normalizedMarkdown;
+    this.lastCursor = null;
     this.applyingMarkdown = true;
     try {
       cancelPendingDiagramRenders(this.root);
@@ -728,7 +733,7 @@ export class MarkdownEditorBridge {
     return {
       markdown,
       history: this.muya.getHistory(),
-      cursor: this.muya.getCursorOffset(),
+      cursor: this.getCursorOffset(),
       scrollTop: this.scrollContainer().scrollTop,
     };
   }
@@ -737,7 +742,7 @@ export class MarkdownEditorBridge {
   restoreSessionState(state: MarkdownEditorSessionState, currentMarkdown = this.markdown, focus = false) {
     this.setMarkdown(state.markdown);
     this.muya.setHistory(state.history);
-    if (state.cursor) this.muya.setCursorByOffset(state.cursor);
+    if (state.cursor) this.setCursorOffset(state.cursor);
     this.setMarkdown(currentMarkdown, false, true);
     this.scrollContainer().scrollTop = state.scrollTop;
     if (focus) this.focus();
@@ -749,11 +754,15 @@ export class MarkdownEditorBridge {
   }
 
   getCursorOffset() {
-    return this.muya.getCursorOffset();
+    this.muya.flush();
+    this.lastCursor = this.muya.getCursorOffset() ?? this.lastCursor;
+    return this.lastCursor;
   }
 
   setCursorOffset(cursor: NonNullable<ReturnType<Muya["getCursorOffset"]>>) {
-    return this.muya.setCursorByOffset(cursor);
+    const restored = this.muya.setCursorByOffset(cursor);
+    if (restored) this.lastCursor = cursor;
+    return restored;
   }
 
   getScrollAnchor() {

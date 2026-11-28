@@ -38,22 +38,24 @@ test("reading mode rejects current replacement before touching its model", () =>
   });
   assert.equal(context.currentReplaceContext(), null);
 });
-test("replace-all skips reading Markdown while editing eligible text documents", () => {
-  const markdown = { id: 1 }, plain = { id: 2 }, readOnly = { id: 3, readOnly: true };
+test("replace-all skips reading Markdown while editing eligible source and plain text tabs", () => {
+  const markdown = { id: 1, language: "markdown", markdownEditMode: "reading" };
+  const source = { id: 2, language: "markdown", markdownEditMode: "source" };
+  const readOnly = { id: 3, readOnly: true }, plain = { id: 4, language: "plaintext" };
   const edited = [];
-  const context = harness(["replaceOpenDocuments"], {
+  const context = harness(["replaceOpenDocuments", "isReadingDocument", "isMarkdownLikeDocument", "isMarkdownLikeLanguage"], {
     monaco: { editor: { EndOfLinePreference: { LF: 1 } } },
-    state: { documents: [markdown, plain, readOnly] }, $: id => ({ value: id === "findInput" ? "source" : "replacement", checked: false }),
+    state: { documents: [markdown, source, readOnly, plain] }, $: id => ({ value: id === "findInput" ? "source" : "replacement", checked: false }),
     currentSearchPatternError: () => "", setCurrentFindError: noop, commitSearchHistory: noop, commitReplaceHistory: noop,
-    activeDocument: () => markdown, syncMarkdownModelFromEditor: noop, isReadingDocument: doc => doc.id === 1,
+    activeDocument: () => source, syncMarkdownModelFromEditor: noop,
     getSearchMode: () => "literal", editorSearchQuery: value => value, matchAllowed: () => true, replacementForMatch: () => "replacement", findOpenDocuments: noop, log: noop,
     ensureDocumentModel(doc) {
-      assert.equal(doc, plain);
+      assert.ok(doc === source || doc === plain);
       return { findMatches: () => [{ range: {}, matches: ["source"] }], getValue: () => "source", getLineContent: () => "source", getEOL: () => "\n", getValueInRange: () => "source", getOffsetAt: () => 0, pushStackElement: noop, pushEditOperations: () => edited.push(doc.id) };
     },
   });
   context.replaceOpenDocuments();
-  assert.deepEqual(edited, [2]);
+  assert.deepEqual(edited, [2, 4]);
 });
 test("global find leaves modal and side-editor keyboard events to their own Monaco", () => {
   class Element { constructor(nested) { this.nested = nested; } closest() { return this.nested; } }
@@ -73,17 +75,18 @@ test("workspace close clears recovery, parallel views and sessions only for its 
   const standalone = { id: 2, origin: "standalone" };
   const state = { workspace: { name: "test" }, documents: [workspace, standalone], activeId: 1, collapsedDirs: new Set() };
   const sessions = new Map([[1, {}], [2, {}]]), stats = new Map([[1, {}], [2, {}]]);
-  const context = harness(["closeWorkspace"], {
-    state, confirmDocumentCanClose: async () => true, activeDocument: () => workspace, editor: { saveViewState: () => ({}) },
+  const context = harness(["closeWorkspace", "activeDocument"], {
+    state, confirmDocumentCanClose: async () => true, editor: { saveViewState: () => ({}) },
     rememberMarkdownLocation: noop,
     discardRecovery: doc => calls.push(`discard:${doc.id}`), closeSideEditorFor: doc => calls.push(`side:${doc.id}`),
     writingStatsCache: stats, markdownSessions: sessions, cancelAutoSave: noop, disposeMarkdownEditor: noop, cancelDocumentSizeUpdate: noop,
-    $: () => ({ value: "" }), resetSearchResults: noop, isWorkspaceFindView: () => false, attachEditorModel: noop,
+    $: () => ({ value: "" }), resetSearchResults: noop, isWorkspaceFindView: () => false, activateDocument: id => { state.activeId = id; },
     renderAll: noop, renderSettingsMenu: noop, scheduleSessionSave: noop, log: noop,
   });
   await context.closeWorkspace();
   assert.deepEqual(calls, ["discard:1", "side:1", "dispose"]);
   assert.equal(state.documents.length, 1); assert.equal(state.documents[0], standalone);
+  assert.equal(state.activeId, standalone.id);
   assert.equal(sessions.has(1), false); assert.equal(stats.has(1), false); assert.equal(sessions.has(2), true); assert.equal(stats.has(2), true);
 });
 test("rebinding a side editor applies reading protection and shared display preferences", async () => {
