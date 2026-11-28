@@ -1442,7 +1442,7 @@ function bootstrap() {
       if (!doc.path || comparablePath(doc.path) !== comparablePath(row.source)) return;
       ++markdownLocationRevision;
       pendingMarkdownLocation = null;
-      if (isMarkdownLikeDocument(doc) && state.markdownEditMode !== "split") setMarkdownEditMode("source", false);
+      if (isMarkdownLikeDocument(doc) && doc.markdownEditMode !== "split") setMarkdownEditMode("source", false);
       await navigateSourceLine(doc, row.line, row.column);
     },
     showError: showWorkbenchError,
@@ -9334,7 +9334,7 @@ function currentOutlineHeadings(): { level: number; text: string; line?: number 
       level: Number(heading.tagName.slice(1)), text: heading.textContent ?? "",
     }));
   }
-  if (state.markdownEditMode === "wysiwyg") {
+  if (activeDocument().markdownEditMode === "wysiwyg") {
     if (!isMarkdownWysiwygActive() || !markdownEditor) return [];
     const locations = markdownHeadingLocations(documentText(activeDocument()));
     return markdownEditor.getOutline().map((heading, index) => ({ ...heading, line: locations[index]?.line ?? 1 }));
@@ -9921,7 +9921,6 @@ async function renderMarkdownPreview(syncScroll = true) {
     const body = renderMarkdownPreviewHtml(source, markdownPreviewOptions());
     if (!isCurrentMarkdownPreview(renderVersion, doc, source)) return;
     preview.innerHTML = markdownPreviewShell(doc, source, body);
-    if (isReadingDocument(doc)) attachReadingAnnotations(preview, doc);
     const previewBody = preview.querySelector<HTMLElement>(".markdown-preview-body");
     if (previewBody) {
       const article = previewBody.querySelector<HTMLElement>(".markdown-body");
@@ -9950,6 +9949,7 @@ async function renderMarkdownPreview(syncScroll = true) {
           }
         });
     }
+    if (isReadingDocument(doc)) attachReadingAnnotations(preview, doc);
     requestEditorLayout();
     if (syncScroll) window.requestAnimationFrame(syncMarkdownPreviewScroll);
   } catch (error) {

@@ -43,7 +43,7 @@ test("replace-all skips reading Markdown while editing eligible source and plain
   const source = { id: 2, language: "markdown", markdownEditMode: "source" };
   const readOnly = { id: 3, readOnly: true }, plain = { id: 4, language: "plaintext" };
   const edited = [];
-  const context = harness(["replaceOpenDocuments", "isReadingDocument", "isMarkdownLikeDocument", "isMarkdownLikeLanguage"], {
+  const context = harness(["replaceOpenDocuments", "isReadingDocument", "isMarkdownLikeDocument", "hasMarkdownFormat", "isMarkdownLikeLanguage"], {
     monaco: { editor: { EndOfLinePreference: { LF: 1 } } },
     state: { documents: [markdown, source, readOnly, plain] }, $: id => ({ value: id === "findInput" ? "source" : "replacement", checked: false }),
     currentSearchPatternError: () => "", setCurrentFindError: noop, commitSearchHistory: noop, commitReplaceHistory: noop,

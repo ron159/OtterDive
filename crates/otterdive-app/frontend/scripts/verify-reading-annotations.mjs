@@ -131,9 +131,14 @@ try {
   await context.close();
 
   await start();
+  const chapterFold = page.locator("#markdownPreview h1 > .reading-section-toggle");
+  await chapterFold.click();
+  assert.equal(await chapterFold.getAttribute("aria-expanded"), "false");
   await list(2);
   await page.getByText("Edited note", { exact: false }).waitFor();
-  await action("关闭").click();
+  await action("回到原文").first().click();
+  assert.equal(await chapterFold.getAttribute("aria-expanded"), "true");
+  assert.equal(await page.evaluate(() => window.getSelection().toString()), "ravo and char");
   await page.locator(".tree-item.file").first().click({ button: "right" });
   await page.locator("#treeRenameButton").click();
   await page.getByRole("textbox", { name: "重命名 notes.md" }).fill("moved.md");

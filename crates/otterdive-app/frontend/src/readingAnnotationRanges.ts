@@ -1,8 +1,9 @@
+import { revealReadingSections } from "./readingSections";
 import { anchorSelection, textSignature, type ReadingText } from "./readingAnnotations";
 
 type Segment = { node: Text; start: number; end: number };
 type IndexedBody = ReadingText & { segments: Segment[] };
-const excluded = "nav,.markdown-toc,.markdown-preview-empty,code:is(.language-mermaid,.language-vega-lite,.language-plantuml,.language-flowchart,.language-sequence),svg,math,script,style,button,[hidden],[aria-hidden=true],.markdown-diagram,.katex-mathml";
+const excluded = "nav,.markdown-toc,.markdown-preview-empty,code:is(.language-mermaid,.language-vega-lite,.language-plantuml,.language-flowchart,.language-sequence),svg,math,script,style,button,[hidden]:not(.reading-section-content),[aria-hidden=true],.markdown-diagram,.katex-mathml";
 const headings = "h1,h2,h3,h4,h5,h6";
 const blocks = headings + ",p,li,td,th,pre,blockquote,div,dt,dd,figcaption";
 
@@ -43,6 +44,7 @@ export function selectedAnchor(body: HTMLElement, range: Range) {
     const left = segment.node === range.startContainer ? segment.start + range.startOffset : segment.start;
     const right = segment.node === range.endContainer ? segment.start + range.endOffset : segment.end;
     if (left >= right) continue;
+    if (segment.node.parentElement?.closest(".reading-section-content[hidden]")) return null;
     if (start < 0) start = left;
     end = right;
   }
@@ -97,6 +99,11 @@ export function revealReadingSpan(body: HTMLElement, pane: HTMLElement, start: n
   const first = segments.find(segment => segment.end > start);
   const last = segments.find(segment => segment.end >= start + length);
   if (!first || !last) return;
+  for (const { node, start: left, end: right } of segments) {
+    if (right <= start) continue;
+    if (left >= start + length) break;
+    revealReadingSections(node.parentElement);
+  }
   const range = document.createRange();
   range.setStart(first.node, start - first.start);
   range.setEnd(last.node, start + length - last.start);

@@ -24,7 +24,7 @@ async function until(check, message, timeout = timeoutMs) {
 for (const engine of engines) {
   const notes = "# 阅读验证\n\n[前往目标章节](target.md#target-section)\n\n脚注入口[^note]。\n\n> ## 引用中的标题\n\n" + Array.from({ length: 22 }, (_, index) =>
     `## ${index === 3 || index === 6 ? "API 使用" : `第 ${index + 1} 章`}\n\n` + Array.from({ length: 9 }, (_, paragraph) => `这是第 ${index + 1} 章第 ${paragraph + 1} 段，用于检查阅读位置与模式切换。Local Markdown reading fixture.\n\n`).join("")).join("") + "\n[^note]: 验证脚注目标\n";
-  const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", sectionFixture + "\n## Repeated\n\nFirst bookmark section.\n\n## Repeated\n\nEnd of document."]]);
+  const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", sectionFixture + "\n## Repeated\n\nFirst bookmark section.\n\n" + "Bookmark context.\n\n".repeat(30) + "## Repeated\n\nEnd of document."]]);
   files.set("/qa/fresh.md", "# Fresh file\n");
   const revisions = new Map([...files.keys()].map(path => [path, "r1"]));
   const workspace = () => ({ root: "/qa", name: "QA workspace", items: [
@@ -39,7 +39,7 @@ for (const engine of engines) {
   };
   let saved = JSON.stringify({ version: 13, themePreference: "light", markdownEditMode: "reading", workMode: "workspace", showDirectory: true,
     workspaceRoot: "/qa", openFiles: ["/qa/notes.md", "/qa/target.md"], activePath: "/qa/notes.md", draftDocuments: [],
-    bookmarks: { "file:/qa/target.md": [2] }, outlineDisplayMode: "always", workbenchPreferences: { autoSaveMode: "off", historyEnabled: false, recoveryEnabled: true } });
+    bookmarks: { "file:/qa/target.md": [2] }, outlineDisplayMode: "always", workbenchPreferences: { autoSaveMode: "off", historyEnabled: false, recoveryEnabled: true, defaultReading: true } });
   let custom = [], templateNumber = 0, pendingMove;
   const calls = [], errors = [], warnings = [], checks = [];
   const invokeFixture = async (_, command, args = {}) => {
@@ -125,7 +125,7 @@ for (const engine of engines) {
     await until(async () => (await page.locator('#tabs [role="tab"]').count()) === 2, "Fixture tabs did not restore");
     await verifyOutlineFilter(page, notes, shot);
     checks.push("Filtered duplicate headings navigate to their original positions in reading, live, source and split views across document switches");
-    const preview = page.locator("#markdownPreview");
+    let preview = page.locator("#markdownPreview");
     const isVisibleInPreview = selector => preview.evaluate((pane, selector) => {
       const element = pane.querySelector(selector);
       if (!element) return false;
@@ -228,6 +228,7 @@ for (const engine of engines) {
     await verifySavedDrafts("/qa/target.md");
     await browser.close();
     ({ browser, context, page } = await launchWindow());
+    preview = page.locator("#markdownPreview");
     await page.goto(baseUrl);
     await page.locator('#markdownSplitButton[aria-pressed="true"]').waitFor();
     for (const [title, mode] of modes) await verifyTab(title, mode);
@@ -244,7 +245,7 @@ for (const engine of engines) {
     }
     checks.push("Four mixed tabs survive repeated switching, closed-tab reopen and a browser process restart with dirty drafts and distinct cursors");
 
-    await verifyTab("target.md", "split");
+    await verifyTab("/qa/target.md", "split");
     await page.locator("#markdownReadingButton").click();
     await preview.locator("h2").filter({ hasText: /^Repeated$/ }).first().waitFor();
     const repeats = page.locator('#outlineList button[aria-label="Repeated"]');
@@ -368,7 +369,7 @@ for (const engine of engines) {
     const movedPath = "/qa/archive/renamed.md";
     await page.locator(`.tree-item[data-path="${movedPath}"]`).click();
     await page.locator("#markdownReadingButton").click();
-    await until(() => JSON.parse(saved).activePath === movedPath && JSON.parse(saved).markdownEditMode === "reading", "Moved tab was not saved");
+    await until(() => JSON.parse(saved).activePath === movedPath && JSON.parse(saved).documentMarkdownModes?.[`file:${movedPath}`] === "reading", "Moved tab was not saved");
     files.set(movedPath, "The bookmarked heading has been removed.");
     await page.reload();
     await preview.locator(".markdown-body").getByText("The bookmarked heading has been removed.").waitFor();
