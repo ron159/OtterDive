@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.11 — 2026-11-28
+## 0.9.0 — 2026-11-28
 
 - Filter Markdown outlines and jump by keyboard. Reading mode supports section folding, heading bookmarks, local link and footnote previews, and persistent highlights and annotations with excerpt export.
 - Markdown tabs remember their display modes independently. Check workspace links and image references, and browse backlinks by document or heading.
