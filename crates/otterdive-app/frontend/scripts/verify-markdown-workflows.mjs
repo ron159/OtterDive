@@ -190,9 +190,10 @@ for (const engine of engines) {
     await page.locator(`#tabs [title="${richDraft}"] .tab-title`).click();
     const richText = page.locator("#markdownWysiwyg").getByText("rich draft", { exact: true }).first();
     await richText.click();
-    await page.keyboard.press("End");
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+ArrowRight" : "End");
     await page.keyboard.press("ArrowLeft");
     await page.keyboard.press("ArrowLeft");
+    await until(() => page.evaluate(() => window.getSelection()?.focusOffset === 8), "Rich cursor was not placed at offset 8");
     await command("file", "file.newMarkdown");
     const sourceDraft = await activeTab().getAttribute("title");
     await page.locator("#markdownSourceButton").click();
