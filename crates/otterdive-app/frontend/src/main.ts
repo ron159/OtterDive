@@ -3,6 +3,8 @@ import { regexReplacementAt } from "./searchReplacement";
 import { textSpacingEdits } from "./textSpacing";
 import { revealReadingMatch } from "./readingSearch";
 import { captureReadingScroll, installReadingSections, readingSearchScope, restoreReadingScroll, revealReadingSections } from "./readingSections";
+import { moveReadingBookmarks, normalizeReadingBookmarks, type ReadingBookmarks } from "./readingBookmarks";
+import "./readingBookmarks.css";
 import { registerMarkdownLinkCompletions, checkMarkdownLinks } from "./markdownLinkTools";
 import { bindMarkdownLinkPopover, markdownPopoverCharacterLimit } from "./markdownLinkPopover";
 import type { FileChunk } from "./logViewerState";
@@ -399,6 +401,7 @@ interface SessionSnapshot {
   documentViews: Record<string, monaco.editor.ICodeEditorViewState>;
   markdownLocations?: Record<string, MarkdownDocumentLocation>;
   documentMarkdownModes?: Record<string, MarkdownEditMode>;
+  readingBookmarks?: ReadingBookmarks;
   recentFiles: string[];
   recentWorkspaces: string[];
   analyseRecentProfiles?: string[];
@@ -1116,7 +1119,9 @@ let sideScrollSync = false;
 let markdownScrollSyncing = false;
 const markdownNavigation = new MarkdownHistory();
 let markdownLocations: Record<string, MarkdownDocumentLocation> = Object.create(null);
+let readingBookmarks: ReadingBookmarks = Object.create(null);
 let pendingMarkdownLocation: { id: number; location: MarkdownDocumentLocation } | null = null;
+let markdownLocationRevision = 0;
 let markdownNavigating = false;
 let workspaceMoveInProgress = false;
 const replaceSelections = new globalThis.Map<number, Set<number>>();
@@ -2003,6 +2008,7 @@ function registerAppCommands() {
     command("bookmark.toggle", "切换书签", "书签", toggleBookmark, { when: editorOnly }),
     command("bookmark.next", "下一个书签", "书签", () => navigateBookmark(1), { when: editorOnly }),
     command("bookmark.previous", "上一个书签", "书签", () => navigateBookmark(-1), { when: editorOnly }),
+    command("markdown.readingBookmarks", "标题书签", "Markdown", openReadingBookmarks, { enabled: () => isReadingDocument() && !isSideEditorActive() }),
     command("markdown.outline", "Markdown 大纲", "Markdown", openMarkdownOutline, {
       when: () => !isSideEditorActive() && isMarkdownLikeDocument(), priority: 20,
     }),
@@ -2196,7 +2202,10 @@ function bindActions() {
   const outlineResizeObserver = new ResizeObserver(layoutDocumentOutline);
   outlineResizeObserver.observe($("documentView"));
   $("markdownWysiwyg").addEventListener("scroll", scheduleOutlineActiveHeading, true);
-  $("markdownPreview").addEventListener("scroll", scheduleOutlineActiveHeading);
+  $("markdownPreview").addEventListener("scroll", () => {
+    if (isReadingDocument()) outlineNavigation = retainedOutlineNavigation(outlineNavigation, $("markdownPreview").scrollTop);
+    scheduleOutlineActiveHeading();
+  });
   const outlineFilter = $<HTMLInputElement>("outlineFilter");
   outlineFilter.addEventListener("input", applyOutlineFilter);
   $("documentOutline").addEventListener("keydown", (event) => {
@@ -4986,6 +4995,7 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
     doc.savedAlternativeVersionId = savedAlternativeVersionId;
     doc.draftId = undefined;
     const nextSessionKey = documentSessionKey(doc);
+    moveReadingBookmarks(readingBookmarks, oldSessionKey, nextSessionKey, Boolean(sourcePath));
     if (oldSessionKey !== nextSessionKey && state.bookmarks[oldSessionKey]) {
       state.bookmarks[nextSessionKey] = [...state.bookmarks[oldSessionKey]];
       if (!sourcePath) delete state.bookmarks[oldSessionKey];
@@ -6099,6 +6109,9 @@ async function confirmDirtyDocumentsForTreeDelete(target: TreeContextTarget) {
 
 function updateOpenDocumentsForRename(oldPath: string, newPath: string, isDir: boolean) {
   const renamePath = (path: string) => pathMatchesTarget(path, oldPath, isDir) ? (isDir ? replacePathPrefix(path, oldPath, newPath) : newPath) : path;
+  for (const key of Object.keys(readingBookmarks)) {
+    if (key.startsWith("file:")) moveReadingBookmarks(readingBookmarks, key, `file:${renamePath(key.slice(5))}`);
+  }
   for (const [key, location] of Object.entries(markdownLocations)) {
     if (!key.startsWith("file:")) continue;
     const next = `file:${renamePath(key.slice(5))}`;
@@ -9833,6 +9846,7 @@ async function renderMarkdownPreview(syncScroll = true) {
   applyMarkdownPreviewWidth();
   const source = documentText(doc);
   const previousDocumentId = preview.dataset.documentId;
+  if (previousDocumentId !== String(doc.id)) outlineNavigation = null;
   preview.dataset.documentId = String(doc.id);
   if (!source.trim()) {
     preview.innerHTML = markdownPreviewShell(doc, source, `<div class="markdown-preview-empty">空白 Markdown</div>`);
@@ -9896,6 +9910,7 @@ function markdownPreviewShell(doc: OpenDocument, source: string, body: string) {
         <strong>预览</strong>
         <span>${escapeHtml(doc.title)}</span>
       </div>
+      ${isReadingDocument(doc) ? '<button type="button" class="tool-button" data-reading-bookmarks>标题书签</button>' : ""}
       <small>${formatBytes(new Blob([source]).size)}</small>
     </header>
     <div class="markdown-preview-body">${body}</div>
@@ -9913,6 +9928,11 @@ function isCurrentMarkdownPreview(renderVersion: number, doc: OpenDocument, sour
 }
 
 function handleMarkdownPreviewClick(event: Event) {
+  const button = $("markdownPreview").querySelector(":scope > .markdown-preview-head > [data-reading-bookmarks]");
+  if (button && event.target instanceof Node && button.contains(event.target)) {
+    void openReadingBookmarks();
+    return;
+  }
   const anchor = (event.target as Element | null)?.closest<HTMLAnchorElement>("a[href]");
   if (!anchor || !$("markdownPreview").contains(anchor)) return;
   event.preventDefault();
@@ -10533,6 +10553,51 @@ function markdownPreviewHeadingOffset() {
   return Math.max(outlineHeadingOffset, ($("markdownPreview").querySelector<HTMLElement>(".markdown-preview-head")?.offsetHeight ?? 0) + 8);
 }
 
+function activeReadingHeadingIndex(headings: NodeListOf<HTMLElement>) {
+  const preview = $("markdownPreview");
+  outlineNavigation = retainedOutlineNavigation(outlineNavigation, preview.scrollTop);
+  if (outlineNavigation && headings[outlineNavigation.index]) return outlineNavigation.index;
+  const bounds = preview.getBoundingClientRect();
+  const top = bounds.top + markdownPreviewHeadingOffset() + 1;
+  let active = -1;
+  for (let i = 0; i < headings.length; i++) {
+    const rect = headings[i].getClientRects()[0];
+    if (!rect) continue;
+    if (rect.top > top) {
+      if (active === -1 && rect.top < bounds.bottom) active = i;
+      break;
+    }
+    active = i;
+  }
+  return active;
+}
+
+async function openReadingBookmarks() {
+  const doc = activeDocument();
+  if (!isReadingDocument(doc) || markdownNavigating || workspaceMoveInProgress) return;
+  const { showReadingBookmarks } = await import("./readingBookmarkDialog");
+  const preview = $("markdownPreview");
+  if (doc !== activeDocument() || !isReadingDocument(doc) || preview.dataset.documentId !== String(doc.id)
+    || document.querySelector(".reading-bookmarks-dialog[open]")) return;
+  const headings = preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6");
+  const current = headings[activeReadingHeadingIndex(headings)];
+  const destination = await showReadingBookmarks({
+    current: current?.id ? { anchor: current.id, name: current.textContent?.trim() || current.id } : null,
+    anchors: new Set([...headings].map(heading => heading.id)),
+    bookmarks: readingBookmarks[documentSessionKey(doc)] ?? [],
+    onChange: bookmarks => {
+      const key = documentSessionKey(doc);
+      if (bookmarks.length) readingBookmarks[key] = bookmarks;
+      else delete readingBookmarks[key];
+      scheduleSessionSave();
+    },
+  });
+  if (destination && doc === activeDocument() && isReadingDocument(doc)) {
+    await openMarkdownLink(`#${encodeURIComponent(destination)}`);
+    preview.focus({ preventScroll: true });
+  }
+}
+
 function scheduleOutlineActiveHeading() {
   if (outlineActiveFrame || !isOutlineVisible()) return;
   outlineActiveFrame = requestAnimationFrame(() => {
@@ -10540,12 +10605,7 @@ function scheduleOutlineActiveHeading() {
     const rows = [...$("outlineList").querySelectorAll<HTMLButtonElement>(".outline-row")];
     let active = 0;
     if (isReadingDocument()) {
-      const preview = $("markdownPreview");
-      const top = preview.getBoundingClientRect().top + markdownPreviewHeadingOffset() + 1;
-      preview.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6").forEach((heading, index) => {
-        const rect = heading.getClientRects()[0];
-        if (rect && rect.top <= top) active = index;
-      });
+      active = activeReadingHeadingIndex($("markdownPreview").querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6"));
     } else if (isMarkdownWysiwygActive()) {
       const top = $("markdownWysiwyg").getBoundingClientRect().top + outlineHeadingOffset + 1;
       markdownEditor?.root.querySelectorAll<HTMLElement>(outlineHeadingSelector).forEach((heading, index) => {
@@ -11606,6 +11666,7 @@ async function restoreSession(initialDocument: OpenDocument) {
         : "wysiwyg";
     state.defaultMarkdownEditMode = legacyMode === "reading" ? "wysiwyg" : legacyMode;
     markdownLocations = normalizeMarkdownLocations(snapshot.markdownLocations);
+    readingBookmarks = normalizeReadingBookmarks(snapshot.readingBookmarks);
     state.markdownContentWidth = isMarkdownContentWidth(snapshot.markdownContentWidth)
       ? snapshot.markdownContentWidth
       : "typora";
@@ -11991,6 +12052,7 @@ async function saveSession() {
   const snapshot: SessionSnapshot = {
     version: 13,
     markdownLocations: normalizeMarkdownLocations(markdownLocations),
+    readingBookmarks,
     workbenchPreferences: state.workbench,
     openFiles: uniquePaths(state.documents.flatMap((doc) => (doc.path ? [doc.path] : []))),
     draftDocuments: draftDocumentSnapshots(),
@@ -12586,6 +12648,11 @@ async function revealMarkdownAnchor(anchor: string) {
       }
     }
     preview.scrollTop += target.getBoundingClientRect().top - preview.getBoundingClientRect().top - markdownPreviewHeadingOffset();
+    if (isReadingDocument(doc)) {
+      const index = [...body.querySelectorAll("h1,h2,h3,h4,h5,h6")].indexOf(target);
+      outlineNavigation = index >= 0 ? { index, scrollTop: preview.scrollTop } : null;
+      scheduleOutlineActiveHeading();
+    }
     return;
   }
   const renderer = await loadMarkdownModule();

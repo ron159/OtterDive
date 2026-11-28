@@ -17,11 +17,16 @@ const names = new Set(['checkExternalFiles', 'saveDocument', 'handleMissingDocum
   'closingDocumentSignature', 'setClosingEditorsLocked', 'blockInputDuringWindowClose', 'bindWindowCloseGuard', 'requestWindowClose',
   'scheduleAutoSave', 'cancelAutoSave', 'documentSessionKey']);
 names.add('normalizePathForCompare');
+names.add('updateOpenDocumentsForRename');
+names.add('replacePathPrefix');
+names.add('pathSeparatorFor');
 names.add('restoreSnapshotDocument');
 names.add('addOrReplaceDocument');
 const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
   .map(node => node.getText(ast)).join('\n');
 const js = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const bookmarksJs = ts.transpileModule(fs.readFileSync(new URL('../src/readingBookmarks.ts', import.meta.url), 'utf8'),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replace(/^export /gm, '');
 
 function harness(options = {}) {
   const doc = { id: 1, path: '/file.txt', title: 'file.txt', diskRevision: 'old', text: 'local',
@@ -33,6 +38,7 @@ function harness(options = {}) {
   let modelText = doc.text;
   const model = { getValue: () => modelText, getAlternativeVersionId: () => doc.version, isDisposed: () => !!options.disposed, pushStackElement() {} };
   const context = {
+    readingBookmarks: {},
     applyImageMigrations, markdownImageReferences,
     appReady: true, checkingExternalFiles: false, busyDepth: 0, editorBusyDepth: 0, workspaceMoveInProgress: false,
     closingEditorsLocked: false, closingAppWasInert: false, windowCloseConfirmed: false, windowCloseInProgress: false,
@@ -99,6 +105,7 @@ function harness(options = {}) {
     pathMatchesTarget: (path, target, isDir) => path === target || (isDir && path.startsWith(target + '/')),
   };
   vm.createContext(context);
+  vm.runInContext(bookmarksJs, context);
   vm.runInContext(js, context);
   return { doc, calls, context, model, timers,
     runTimers() { const pending = [...timers.values()]; timers.clear(); pending.forEach(callback => callback()); },
@@ -179,18 +186,35 @@ for (const sourcePath of [null, '/file.txt']) {
     const h = harness({ revision: 'missing', savePath: '/saved.txt', doc: { path: sourcePath, dirty: true, draftId: 'draft-1' } });
     const previousKey = sourcePath ? `file:${sourcePath}` : 'draft:draft-1';
     h.context.state.bookmarks[previousKey] = [2];
+    h.context.readingBookmarks[previousKey] = [{ anchor: 'section-1', name: 'Second section' }];
     h.context.syncActiveBookmarkLines = doc => {
       assert.equal(doc.path, sourcePath);
       h.context.state.bookmarks[previousKey] = [3];
     };
     assert.equal(await h.context.saveDocument(h.doc, true), true);
     assert.deepEqual(Array.from(h.context.state.bookmarks['file:/saved.txt'] ?? []), [3]);
+    assert.equal(h.context.readingBookmarks['file:/saved.txt'][0].anchor, 'section-1');
+    assert.equal(Boolean(h.context.readingBookmarks[previousKey]), Boolean(sourcePath));
     if (sourcePath) {
       assert.deepEqual(Array.from(h.context.state.bookmarks[previousKey]), [3], 'Save As preserves bookmarks for the original file');
       assert.notEqual(h.context.state.bookmarks[previousKey], h.context.state.bookmarks['file:/saved.txt']);
     } else assert.equal(h.context.state.bookmarks[previousKey], undefined, 'obsolete draft key is removed');
   });
 }
+
+test('moving a directory transfers heading bookmarks for closed documents within its path boundary', () => {
+  const { context } = harness();
+  const bookmark = [{ anchor: 'repeated-1', name: 'Second heading' }];
+  context.readingBookmarks = { 'file:/notes/sub/book.md': bookmark, 'file:/notes-old/book.md': bookmark, 'draft:1': bookmark };
+  context.markdownLocations = {};
+  context.markdownNavigation = { remap() {} };
+  context.state.recentFiles = [];
+  context.uniquePaths = paths => paths;
+  context.updateOpenDocumentsForRename('/notes', '/archive/notes', true);
+  assert.deepEqual(Object.keys(context.readingBookmarks).sort(),
+    ['draft:1', 'file:/archive/notes/sub/book.md', 'file:/notes-old/book.md']);
+  assert.equal(context.readingBookmarks['file:/archive/notes/sub/book.md'][0].anchor, 'repeated-1');
+});
 
 test('a failed save remains visible and leaves unsaved content intact', async () => {
   const h = harness({ saveFailure: true, revision: 'old', doc: { dirty: true } });

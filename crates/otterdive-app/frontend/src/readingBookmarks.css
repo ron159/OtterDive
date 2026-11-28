@@ -1,0 +1,7 @@
+.markdown-preview-head > [data-reading-bookmarks] { flex-shrink: 0; margin-inline-start: auto; }
+.workbench-dialog.reading-bookmarks-dialog { width: min(580px, 92vw); }
+.reading-bookmark-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-bottom: 16px; }
+.reading-bookmark-form label { display: grid; gap: 4px; flex: 1 1 160px; }
+.reading-bookmark-form input { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--input-surface); color: var(--text); font: inherit; }
+.reading-bookmark-form small { flex-basis: 100%; color: var(--text-3); overflow-wrap: anywhere; }
+.reading-bookmark-form + ul strong { overflow-wrap: anywhere; }

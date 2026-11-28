@@ -24,7 +24,7 @@ async function until(check, message, timeout = timeoutMs) {
 for (const engine of engines) {
   const notes = "# 阅读验证\n\n[前往目标章节](target.md#target-section)\n\n脚注入口[^note]。\n\n> ## 引用中的标题\n\n" + Array.from({ length: 22 }, (_, index) =>
     `## ${index === 3 || index === 6 ? "API 使用" : `第 ${index + 1} 章`}\n\n` + Array.from({ length: 9 }, (_, paragraph) => `这是第 ${index + 1} 章第 ${paragraph + 1} 段，用于检查阅读位置与模式切换。Local Markdown reading fixture.\n\n`).join("")).join("") + "\n[^note]: 验证脚注目标\n";
-  const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", sectionFixture]]);
+  const files = new Map([["/qa/notes.md", notes], ["/qa/target.md", sectionFixture + "\n## Repeated\n\nFirst bookmark section.\n\n## Repeated\n\nEnd of document."]]);
   files.set("/qa/fresh.md", "# Fresh file\n");
   const revisions = new Map([...files.keys()].map(path => [path, "r1"]));
   const workspace = () => ({ root: "/qa", name: "QA workspace", items: [
@@ -39,7 +39,7 @@ for (const engine of engines) {
   };
   let saved = JSON.stringify({ version: 13, themePreference: "light", markdownEditMode: "reading", workMode: "workspace", showDirectory: true,
     workspaceRoot: "/qa", openFiles: ["/qa/notes.md", "/qa/target.md"], activePath: "/qa/notes.md", draftDocuments: [],
-    outlineDisplayMode: "always", workbenchPreferences: { autoSaveMode: "off", historyEnabled: false, recoveryEnabled: true, defaultReading: true } });
+    bookmarks: { "file:/qa/target.md": [2] }, outlineDisplayMode: "always", workbenchPreferences: { autoSaveMode: "off", historyEnabled: false, recoveryEnabled: true } });
   let custom = [], templateNumber = 0, pendingMove;
   const calls = [], errors = [], warnings = [], checks = [];
   const invokeFixture = async (_, command, args = {}) => {
@@ -244,6 +244,46 @@ for (const engine of engines) {
     }
     checks.push("Four mixed tabs survive repeated switching, closed-tab reopen and a browser process restart with dirty drafts and distinct cursors");
 
+    await verifyTab("target.md", "split");
+    await page.locator("#markdownReadingButton").click();
+    await preview.locator("h2").filter({ hasText: /^Repeated$/ }).first().waitFor();
+    const repeats = page.locator('#outlineList button[aria-label="Repeated"]');
+    const ids = await preview.locator("h2").filter({ hasText: /^Repeated$/ }).evaluateAll(items => items.map(item => item.id));
+    assert.equal(ids.length, 2);
+    assert.notEqual(ids[0], ids[1]);
+    const openBookmarks = () => preview.getByRole("button", { name: "标题书签", exact: true }).click();
+    const bookmarks = page.getByRole("dialog", { name: "标题书签", exact: true });
+    const bookmarkName = bookmarks.getByLabel("书签名称", { exact: true });
+    for (const [index, name] of ["第一处", "第二处"].entries()) {
+      await repeats.nth(index).click();
+      await openBookmarks();
+      assert.equal(await bookmarkName.inputValue(), "Repeated");
+      await bookmarkName.fill(name);
+      await bookmarks.getByRole("button", { name: "添加当前标题" }).click();
+      await bookmarks.getByRole("button", { name: "关闭" }).click();
+    }
+    const savedMarks = path => JSON.parse(saved).readingBookmarks?.[`file:${path}`];
+    await until(() => savedMarks("/qa/target.md")?.length === 2, "Duplicate heading bookmarks were not saved");
+    assert.deepEqual(savedMarks("/qa/target.md").map(item => item.anchor), ids);
+    await page.reload();
+    await repeats.first().click();
+    await openBookmarks();
+    await bookmarks.getByRole("button", { name: "重命名 第二处" }).click();
+    await bookmarkName.fill("返回末章");
+    await bookmarks.getByRole("button", { name: "保存名称" }).click();
+    await shot("heading-bookmarks");
+    await bookmarks.getByRole("button", { name: /^返回末章 #/ }).click();
+    await until(() => isVisibleInPreview(`h2[id="${ids[1]}"]`), "Bookmark did not jump to the last duplicate");
+    await page.locator("#markdownBackButton").click();
+    await until(() => isVisibleInPreview(`h2[id="${ids[0]}"]`), "Back did not restore the first duplicate");
+    await openBookmarks();
+    await bookmarks.getByRole("button", { name: "删除 第一处" }).click();
+    await bookmarks.getByRole("button", { name: "关闭" }).click();
+    await until(() => savedMarks("/qa/target.md")?.length === 1, "Bookmark removal did not persist");
+    assert.deepEqual(savedMarks("/qa/target.md"), [{ anchor: ids[1], name: "返回末章" }]);
+    assert.deepEqual(JSON.parse(saved).bookmarks["file:/qa/target.md"], [2]);
+    checks.push("Named heading bookmarks distinguish duplicate anchors, survive reload, navigate and return, rename and delete alongside line bookmarks");
+
     await command("file", "markdown.manageTemplates");
     const manager = page.getByRole("dialog", { name: "管理模板与片段" });
     await manager.getByRole("button", { name: "会议记录 · 内置", exact: true }).click();
@@ -321,7 +361,24 @@ for (const engine of engines) {
     await page.locator("#inputOkButton").click();
     await page.locator("#confirmOkButton").click();
     await until(() => files.has("/qa/archive/renamed.md"), "Move did not invoke the refactor command");
+    await until(() => savedMarks("/qa/archive/renamed.md")?.[0]?.anchor === ids[1], "Moved document lost its heading bookmark");
+    assert.equal(savedMarks("/qa/target.md"), undefined);
+    assert.equal(savedMarks("/qa/renamed.md"), undefined);
     checks.push("Tree inline rename and move invoke preview/confirmed apply with matching tokens");
+    const movedPath = "/qa/archive/renamed.md";
+    await page.locator(`.tree-item[data-path="${movedPath}"]`).click();
+    await page.locator("#markdownReadingButton").click();
+    await until(() => JSON.parse(saved).activePath === movedPath && JSON.parse(saved).markdownEditMode === "reading", "Moved tab was not saved");
+    files.set(movedPath, "The bookmarked heading has been removed.");
+    await page.reload();
+    await preview.locator(".markdown-body").getByText("The bookmarked heading has been removed.").waitFor();
+    await openBookmarks();
+    assert.equal(await bookmarks.getByRole("button", { name: /^返回末章 #/ }).isDisabled(), true);
+    assert.equal(await bookmarks.getByRole("button", { name: "添加当前标题" }).isDisabled(), true);
+    await bookmarks.getByRole("button", { name: "删除 返回末章" }).click();
+    await bookmarks.getByRole("button", { name: "关闭" }).click();
+    await until(() => !savedMarks(movedPath), "Obsolete bookmark was not removed");
+    checks.push("Missing headings stay identifiable after a move and restart and can be removed in a document with no headings");
     await page.locator('.tree-item[data-path="/qa/archive/renamed.md"]').click({ button: "right" });
     await page.locator("#treeDeleteButton").click();
     await page.locator("#confirmOkButton").click();
