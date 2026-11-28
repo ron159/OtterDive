@@ -1,0 +1,37 @@
+.reading-annotation-tools, .reading-annotation-dialog footer, .reading-annotation-dialog header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.reading-annotation-tools { flex-wrap: wrap; justify-content: flex-end; }
+.reading-annotation-dialog, .reading-annotation-dialog textarea, .reading-annotation-dialog select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.reading-annotation-tools button, .reading-annotation-dialog button {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.reading-annotation-tools button:disabled, .reading-annotation-dialog button:disabled { opacity: .5; cursor: default; }
+.reading-annotation-mark { background: #ffdf77; color: #302712; }
+.reading-annotation-dialog { width: min(32rem, 90vw); max-height: 80vh; padding: 18px; overflow: auto; }
+.reading-annotation-dialog::backdrop { background: rgb(0 0 0 / .35); }
+.reading-annotation-dialog header { justify-content: space-between; }
+.reading-annotation-dialog h2 { margin: 0; font-size: 17px; }
+.reading-annotation-dialog ul { margin: 0; padding: 0; list-style: none; }
+.reading-annotation-dialog li { border-top: 1px solid var(--line-soft); padding: 12px 0; }
+.reading-annotation-dialog blockquote { border-inline-start: 3px solid #c99c16; margin: 8px 0; padding-inline-start: 9px; }
+.reading-annotation-dialog blockquote, .reading-annotation-dialog p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.reading-annotation-dialog textarea { width: 100%; min-height: 6rem; resize: vertical; padding: 8px; margin: 6px 0; font: inherit; }
+.reading-annotation-dialog details { margin-top: 12px; }
+.reading-annotation-dialog select { max-width: 100%; margin: 5px; }
+.reading-annotation-dialog output { color: var(--danger); }

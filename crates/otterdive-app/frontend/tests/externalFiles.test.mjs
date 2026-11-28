@@ -40,6 +40,7 @@ function harness(options = {}) {
   const context = {
     readingBookmarks: {},
     applyImageMigrations, markdownImageReferences,
+    readingAnnotations: { remap: mapper => { calls.annotationKeys = (calls.annotationKeys ?? []).map(mapper); } },
     appReady: true, checkingExternalFiles: false, busyDepth: 0, editorBusyDepth: 0, workspaceMoveInProgress: false,
     closingEditorsLocked: false, closingAppWasInert: false, windowCloseConfirmed: false, windowCloseInProgress: false,
     $: () => app, activeDocument: () => context.state.documents[0], isReadingDocument: () => false,
@@ -187,6 +188,7 @@ for (const sourcePath of [null, '/file.txt']) {
     const previousKey = sourcePath ? `file:${sourcePath}` : 'draft:draft-1';
     h.context.state.bookmarks[previousKey] = [2];
     h.context.readingBookmarks[previousKey] = [{ anchor: 'section-1', name: 'Second section' }];
+    h.calls.annotationKeys = [previousKey];
     h.context.syncActiveBookmarkLines = doc => {
       assert.equal(doc.path, sourcePath);
       h.context.state.bookmarks[previousKey] = [3];
@@ -195,6 +197,7 @@ for (const sourcePath of [null, '/file.txt']) {
     assert.deepEqual(Array.from(h.context.state.bookmarks['file:/saved.txt'] ?? []), [3]);
     assert.equal(h.context.readingBookmarks['file:/saved.txt'][0].anchor, 'section-1');
     assert.equal(Boolean(h.context.readingBookmarks[previousKey]), Boolean(sourcePath));
+    assert.deepEqual(h.calls.annotationKeys, [sourcePath ? previousKey : 'file:/saved.txt']);
     if (sourcePath) {
       assert.deepEqual(Array.from(h.context.state.bookmarks[previousKey]), [3], 'Save As preserves bookmarks for the original file');
       assert.notEqual(h.context.state.bookmarks[previousKey], h.context.state.bookmarks['file:/saved.txt']);

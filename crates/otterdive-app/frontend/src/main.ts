@@ -1,6 +1,7 @@
 import { PagedDocumentController, pageLocalPosition, type PageTarget } from "./pagedDocument";
 import { regexReplacementAt } from "./searchReplacement";
 import { textSpacingEdits } from "./textSpacing";
+import { ReadingAnnotationPanel } from "./readingAnnotationPanel";
 import { revealReadingMatch } from "./readingSearch";
 import { captureReadingScroll, installReadingSections, readingSearchScope, restoreReadingScroll, revealReadingSections } from "./readingSections";
 import { moveReadingBookmarks, normalizeReadingBookmarks, type ReadingBookmarks } from "./readingBookmarks";
@@ -1118,6 +1119,7 @@ let currentSearchSelectionDocumentId = 0;
 let sideScrollSync = false;
 let markdownScrollSyncing = false;
 const markdownNavigation = new MarkdownHistory();
+const readingAnnotations = new ReadingAnnotationPanel(error => void showWorkbenchError(error));
 let markdownLocations: Record<string, MarkdownDocumentLocation> = Object.create(null);
 let readingBookmarks: ReadingBookmarks = Object.create(null);
 let pendingMarkdownLocation: { id: number; location: MarkdownDocumentLocation } | null = null;
@@ -4996,6 +4998,7 @@ async function saveDocument(doc: OpenDocument, forceSaveAs: boolean, automatic =
     doc.draftId = undefined;
     const nextSessionKey = documentSessionKey(doc);
     moveReadingBookmarks(readingBookmarks, oldSessionKey, nextSessionKey, Boolean(sourcePath));
+    if (!sourcePath && oldSessionKey !== nextSessionKey) readingAnnotations.remap(key => key === oldSessionKey ? nextSessionKey : key);
     if (oldSessionKey !== nextSessionKey && state.bookmarks[oldSessionKey]) {
       state.bookmarks[nextSessionKey] = [...state.bookmarks[oldSessionKey]];
       if (!sourcePath) delete state.bookmarks[oldSessionKey];
@@ -6117,6 +6120,7 @@ function updateOpenDocumentsForRename(oldPath: string, newPath: string, isDir: b
     const next = `file:${renamePath(key.slice(5))}`;
     if (next !== key) { markdownLocations[next] = location; delete markdownLocations[key]; }
   }
+  readingAnnotations.remap(key => key.startsWith("file:") ? `file:${renamePath(key.slice(5))}` : key);
   markdownNavigation.remap(entry => entry.path ? { ...entry, path: renamePath(entry.path), key: `file:${renamePath(entry.path)}` } : entry);
   for (const doc of state.documents) {
     if (!doc.path || !pathMatchesTarget(doc.path, oldPath, isDir)) continue;
@@ -9831,6 +9835,7 @@ async function renderMarkdownPreview(syncScroll = true) {
   const enabled = isMarkdownPreviewEnabled(doc);
   const resize = $("markdownPreviewResize");
   const renderVersion = ++markdownPreviewRenderVersion;
+  if (!enabled || !isReadingDocument(doc) || preview.dataset.documentId !== String(doc.id)) readingAnnotations.leave();
   editorArea?.classList.toggle("preview-open", enabled);
   layoutDocumentOutline();
   scheduleOutlineActiveHeading();
@@ -9850,6 +9855,7 @@ async function renderMarkdownPreview(syncScroll = true) {
   preview.dataset.documentId = String(doc.id);
   if (!source.trim()) {
     preview.innerHTML = markdownPreviewShell(doc, source, `<div class="markdown-preview-empty">空白 Markdown</div>`);
+    if (isReadingDocument(doc)) attachReadingAnnotations(preview, doc);
     if (isReadingDocument(doc) && isOutlineVisible()) renderMarkdownOutline();
     requestEditorLayout();
     return;
@@ -9865,6 +9871,7 @@ async function renderMarkdownPreview(syncScroll = true) {
     const body = renderMarkdownPreviewHtml(source, markdownPreviewOptions());
     if (!isCurrentMarkdownPreview(renderVersion, doc, source)) return;
     preview.innerHTML = markdownPreviewShell(doc, source, body);
+    if (isReadingDocument(doc)) attachReadingAnnotations(preview, doc);
     const previewBody = preview.querySelector<HTMLElement>(".markdown-preview-body");
     if (previewBody) {
       const article = previewBody.querySelector<HTMLElement>(".markdown-body");
@@ -9898,9 +9905,29 @@ async function renderMarkdownPreview(syncScroll = true) {
   } catch (error) {
     if (!isCurrentMarkdownPreview(renderVersion, doc, source)) return;
     preview.innerHTML = markdownPreviewShell(doc, source, `<div class="markdown-preview-empty">预览生成失败</div>`);
+    if (isReadingDocument(doc)) attachReadingAnnotations(preview, doc);
     log(`Markdown 预览失败：${error instanceof Error ? error.message : String(error)}`);
   }
   if (isReadingDocument(doc) && isOutlineVisible()) renderMarkdownOutline();
+}
+
+function attachReadingAnnotations(pane: HTMLElement, doc: OpenDocument) {
+  const body = pane.querySelector<HTMLElement>(".markdown-preview-body")!;
+  const header = pane.querySelector<HTMLElement>(".markdown-preview-head")!;
+  readingAnnotations.attach({
+    body, pane, key: documentSessionKey(doc), title: doc.title,
+    exportFile: async (text) => {
+      const fileName = doc.title.replace(/\.[^.]+$/, "") + "-阅读摘录.md";
+      const sourcePath = doc.path;
+      const path = await invoke<string | null>("pick_save_path", { request: { defaultDir: preferredDialogDirectory(doc), fileName } });
+      if (!path) return;
+      if (sourcePath && normalizePathForCompare(sourcePath) === normalizePathForCompare(path)) throw Error("请选择源文档以外的摘录文件");
+      // The native save guard also checks aliases, symlinks and hard links.
+      const otherOpenPaths = [sourcePath, ...state.documents.flatMap(item => [item.path, item.pendingSavePath])].filter(Boolean);
+      await invoke("save_document", { request: { path, text, encoding: "UTF-8", lineEnding: "LF", otherOpenPaths } });
+      log(`已导出阅读摘录：${path}`);
+    },
+  }, header);
 }
 
 function markdownPreviewShell(doc: OpenDocument, source: string, body: string) {
